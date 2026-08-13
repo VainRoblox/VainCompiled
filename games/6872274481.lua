@@ -31,8 +31,6 @@ local gameCamera = workspace.CurrentCamera
 local lplr = playersService.LocalPlayer
 local assetfunction = getcustomasset
 
-lplr:Kick('Bedwars is no longer supported by Vain V4, thank you for 5 years of support ❤️')
-
 local vain = shared.vain
 local entitylib = vain.Libraries.entity
 local targetinfo = vain.Libraries.targetinfo

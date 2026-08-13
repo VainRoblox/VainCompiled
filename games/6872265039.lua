@@ -11,8 +11,6 @@ local entitylib = vain.Libraries.entity
 local sessioninfo = vain.Libraries.sessioninfo
 local bedwars = {}
 
-lplr:Kick('Bedwars is no longer supported by Vain V4, thank you for 5 years of support ❤️')
-
 local function notif(...)
 	return vain:CreateNotification(...)
 end
@@ -56,9 +54,9 @@ run(function()
 	end)
 end)
 
-for _, v in vain.Modules do
+for name, v in vain.Modules do
 	if v.Category == 'Combat' or v.Category == 'Minigames' then
-		vain:Remove(i)
+		vain:Remove(name)
 	end
 end
 
