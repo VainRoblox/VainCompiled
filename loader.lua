@@ -11,7 +11,7 @@ end
 local function downloadFile(path, func)
 	if not isfile(path) then
 		local suc, res = pcall(function()
-			return game:HttpGet('https://raw.githubusercontent.com/VainRoblox/VainCompiled/'..readfile('newvain/profiles/commit.txt')..'/'..select(1, path:gsub('newvain/', '')), true)
+			return game:HttpGet('https://raw.githubusercontent.com/VainRoblox/VainCompiled/'..readfile('vain/profiles/commit.txt')..'/'..select(1, path:gsub('vain/', '')), true)
 		end)
 		if not suc or res == '404: Not Found' then
 			error(res)
@@ -34,7 +34,7 @@ local function wipeFolder(path)
 	end
 end
 
-for _, folder in {'newvain', 'newvain/games', 'newvain/profiles', 'newvain/assets', 'newvain/libraries', 'newvain/guis'} do
+for _, folder in {'vain', 'vain/games', 'vain/profiles', 'vain/assets', 'vain/libraries', 'vain/guis'} do
 	if not isfolder(folder) then
 		makefolder(folder)
 	end
@@ -47,13 +47,13 @@ if not shared.VainDeveloper then
 	local commit = subbed:find('currentOid')
 	commit = commit and subbed:sub(commit + 13, commit + 52) or nil
 	commit = commit and #commit == 40 and commit or 'main'
-	if commit == 'main' or (isfile('newvain/profiles/commit.txt') and readfile('newvain/profiles/commit.txt') or '') ~= commit then
-		wipeFolder('newvain')
-		wipeFolder('newvain/games')
-		wipeFolder('newvain/guis')
-		wipeFolder('newvain/libraries')
+	if commit == 'main' or (isfile('vain/profiles/commit.txt') and readfile('vain/profiles/commit.txt') or '') ~= commit then
+		wipeFolder('vain')
+		wipeFolder('vain/games')
+		wipeFolder('vain/guis')
+		wipeFolder('vain/libraries')
 	end
-	writefile('newvain/profiles/commit.txt', commit)
+	writefile('vain/profiles/commit.txt', commit)
 end
 
-return loadstring(downloadFile('newvain/main.lua'), 'main')()
+return loadstring(downloadFile('vain/main.lua'), 'main')()

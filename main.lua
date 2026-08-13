@@ -24,7 +24,7 @@ local playersService = cloneref(game:GetService('Players'))
 local function downloadFile(path, func)
 	if not isfile(path) then
 		local suc, res = pcall(function()
-			return game:HttpGet('https://raw.githubusercontent.com/VainRoblox/VainCompiled/'..readfile('newvain/profiles/commit.txt')..'/'..select(1, path:gsub('newvain/', '')), true)
+			return game:HttpGet('https://raw.githubusercontent.com/VainRoblox/VainCompiled/'..readfile('vain/profiles/commit.txt')..'/'..select(1, path:gsub('vain/', '')), true)
 		end)
 		if not suc or res == '404: Not Found' then
 			error(res)
@@ -54,9 +54,9 @@ local function finishLoading()
 			local teleportScript = [[
 				shared.vainreload = true
 				if shared.VainDeveloper then
-					loadstring(readfile('newvain/loader.lua'), 'loader')()
+					loadstring(readfile('vain/loader.lua'), 'loader')()
 				else
-					loadstring(game:HttpGet('https://raw.githubusercontent.com/VainRoblox/VainCompiled/'..readfile('newvain/profiles/commit.txt')..'/loader.lua', true), 'loader')()
+					loadstring(game:HttpGet('https://raw.githubusercontent.com/VainRoblox/VainCompiled/'..readfile('vain/profiles/commit.txt')..'/loader.lua', true), 'loader')()
 				end
 			]]
 			if shared.VainDeveloper then
@@ -78,28 +78,28 @@ local function finishLoading()
 	end
 end
 
-if not isfile('newvain/profiles/gui.txt') then
-	writefile('newvain/profiles/gui.txt', 'new')
+if not isfile('vain/profiles/gui.txt') then
+	writefile('vain/profiles/gui.txt', 'new')
 end
-local gui = readfile('newvain/profiles/gui.txt')
+local gui = readfile('vain/profiles/gui.txt')
 
-if not isfolder('newvain/assets/'..gui) then
-	makefolder('newvain/assets/'..gui)
+if not isfolder('vain/assets/'..gui) then
+	makefolder('vain/assets/'..gui)
 end
-vain = loadstring(downloadFile('newvain/guis/'..gui..'.lua'), 'gui')()
+vain = loadstring(downloadFile('vain/guis/'..gui..'.lua'), 'gui')()
 shared.vain = vain
 
 if not shared.VainIndependent then
-	loadstring(downloadFile('newvain/games/universal.lua'), 'universal')()
-	if isfile('newvain/games/'..game.PlaceId..'.lua') then
-		loadstring(readfile('newvain/games/'..game.PlaceId..'.lua'), tostring(game.PlaceId))(...)
+	loadstring(downloadFile('vain/games/universal.lua'), 'universal')()
+	if isfile('vain/games/'..game.PlaceId..'.lua') then
+		loadstring(readfile('vain/games/'..game.PlaceId..'.lua'), tostring(game.PlaceId))(...)
 	else
 		if not shared.VainDeveloper then
 			local suc, res = pcall(function()
-				return game:HttpGet('https://raw.githubusercontent.com/VainRoblox/VainCompiled/'..readfile('newvain/profiles/commit.txt')..'/games/'..game.PlaceId..'.lua', true)
+				return game:HttpGet('https://raw.githubusercontent.com/VainRoblox/VainCompiled/'..readfile('vain/profiles/commit.txt')..'/games/'..game.PlaceId..'.lua', true)
 			end)
 			if suc and res ~= '404: Not Found' then
-				loadstring(downloadFile('newvain/games/'..game.PlaceId..'.lua'), tostring(game.PlaceId))(...)
+				loadstring(downloadFile('vain/games/'..game.PlaceId..'.lua'), tostring(game.PlaceId))(...)
 			end
 		end
 	end

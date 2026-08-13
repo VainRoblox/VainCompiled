@@ -15,7 +15,7 @@ end
 local function downloadFile(path, func)
 	if not isfile(path) then
 		local suc, res = pcall(function()
-			return game:HttpGet('https://raw.githubusercontent.com/VainRoblox/VainCompiled/'..readfile('newvain/profiles/commit.txt')..'/'..select(1, path:gsub('newvain/', '')), true)
+			return game:HttpGet('https://raw.githubusercontent.com/VainRoblox/VainCompiled/'..readfile('vain/profiles/commit.txt')..'/'..select(1, path:gsub('vain/', '')), true)
 		end)
 		if not suc or res == '404: Not Found' then
 			error(res)
@@ -29,15 +29,15 @@ local function downloadFile(path, func)
 end
 
 vain.Place = 155615604
-if isfile('newvain/games/'..vain.Place..'.lua') then
-	loadstring(readfile('newvain/games/'..vain.Place..'.lua'), 'prison life')()
+if isfile('vain/games/'..vain.Place..'.lua') then
+	loadstring(readfile('vain/games/'..vain.Place..'.lua'), 'prison life')()
 else
 	if not shared.VainDeveloper then
 		local suc, res = pcall(function()
-			return game:HttpGet('https://raw.githubusercontent.com/VainRoblox/VainCompiled/'..readfile('newvain/profiles/commit.txt')..'/games/'..vain.Place..'.lua', true)
+			return game:HttpGet('https://raw.githubusercontent.com/VainRoblox/VainCompiled/'..readfile('vain/profiles/commit.txt')..'/games/'..vain.Place..'.lua', true)
 		end)
 		if suc and res ~= '404: Not Found' then
-			loadstring(downloadFile('newvain/games/'..vain.Place..'.lua'), 'prison life')()
+			loadstring(downloadFile('vain/games/'..vain.Place..'.lua'), 'prison life')()
 		end
 	end
 end

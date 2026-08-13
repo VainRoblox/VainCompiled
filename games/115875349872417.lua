@@ -14,7 +14,7 @@ end
 local function downloadFile(path, func)
 	if not isfile(path) then
 		local suc, res = pcall(function()
-			return game:HttpGet('https://raw.githubusercontent.com/VainRoblox/VainCompiled/'..readfile('newvain/profiles/commit.txt')..'/'..select(1, path:gsub('newvain/', '')), true)
+			return game:HttpGet('https://raw.githubusercontent.com/VainRoblox/VainCompiled/'..readfile('vain/profiles/commit.txt')..'/'..select(1, path:gsub('vain/', '')), true)
 		end)
 		if not suc or res == '404: Not Found' then
 			error(res)
@@ -56,7 +56,7 @@ local entitylib = vain.Libraries.entity
 local targetinfo = vain.Libraries.targetinfo
 local sessioninfo = vain.Libraries.sessioninfo
 local whitelist = vain.Libraries.whitelist
-local drawingactor = loadstring(downloadFile('newvain/libraries/drawing.lua'), 'drawing')(...)
+local drawingactor = loadstring(downloadFile('vain/libraries/drawing.lua'), 'drawing')(...)
 local redline = {Teams = {}}
 local starttime = os.clock()
 local TargetStrafeVector
@@ -151,7 +151,7 @@ local function notif(...)
 end
 
 local function warningRoutine(hash)
-	local path = 'newvain/profiles/agreementhash.txt'
+	local path = 'vain/profiles/agreementhash.txt'
 	if (isfile(path) and readfile(path) or '') ~= hash then
 		local box = Instance.new('TextLabel')
 		box.Size = UDim2.fromScale(1, 1)
@@ -193,7 +193,7 @@ if not select(1, ...) then
 
 		task.spawn(function()
 			repeat task.wait() until not shared.vain
-			local executionString = "loadfile('newvain/main.lua')("..drawingactor..")"
+			local executionString = "loadfile('vain/main.lua')("..drawingactor..")"
 			for i, v in shared do
 				if type(v) == 'string' then
 					executionString = string.format("shared.%s = '%s'", i, v)..'\n'..executionString
