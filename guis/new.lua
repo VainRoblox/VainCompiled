@@ -5895,7 +5895,7 @@ mainapi:Clean(targets.Update)
 local watchlist
 watchlist = mainapi:CreateCategoryList({
 	Name = 'Watchlist',
-	Icon = getcustomasset('vain/assets/new/friendstab.png'),
+	Icon = getcustomasset('vain/assets/new/watchlisttab.png'),
 	Size = UDim2.fromOffset(17, 16),
 	Placeholder = 'Roblox username',
 	Function = function()
