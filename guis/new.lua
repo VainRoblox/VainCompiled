@@ -5938,6 +5938,82 @@ general:CreateButton({
 })
 
 --[[
+	Rank commands (only relevant if you're a Discord-ranked user, see /whitelist edit)
+]]
+
+local rankKeyBox
+rankKeyBox = general:CreateTextBox({
+	Name = 'Rank key',
+	Placeholder = 'Paste your personal key from Discord',
+	Tooltip = 'Your personal key from /whitelist edit in Discord. Needed to run rank commands.',
+	Function = function()
+		if vain.Libraries.rankapi then
+			vain.Libraries.rankapi.setCommandKey(rankKeyBox.Value)
+		end
+	end
+})
+
+local rankCommandDropdown = general:CreateDropdown({
+	Name = 'Rank command',
+	List = {'kick'},
+	Tooltip = 'Which command to run on the target below.'
+})
+
+local rankTargetDropdown = general:CreateDropdown({
+	Name = 'Rank target',
+	List = {},
+	Tooltip = 'Who to run it on - this list refreshes automatically to match who is currently in the server.'
+})
+
+local rankReasonBox = general:CreateTextBox({
+	Name = 'Rank reason',
+	Placeholder = 'Optional reason'
+})
+
+general:CreateButton({
+	Name = 'Run rank command',
+	Function = function()
+		if not vain.Libraries.rankapi then
+			notif('Vain', 'Rank system has not loaded yet.', 5, 'alert')
+			return
+		end
+		if rankTargetDropdown.Value == 'None' then
+			notif('Vain', 'No target selected.', 5, 'alert')
+			return
+		end
+		vain.Libraries.rankapi.issueCommand(rankCommandDropdown.Value, rankTargetDropdown.Value, rankReasonBox.Value)
+	end,
+	Tooltip = 'Runs the selected command on the selected target, if you outrank them.'
+})
+
+-- Keeps the two dropdowns above in sync: command list follows whatever commands the
+-- rank API actually supports, target list follows who's currently in the server.
+task.spawn(function()
+	local rankPlayersService = cloneref(game:GetService('Players'))
+	repeat
+		if vain.Libraries.rankapi then
+			local commandNames = {}
+			for name in vain.Libraries.rankapi.commands do
+				table.insert(commandNames, name)
+			end
+			if #commandNames > 0 then
+				rankCommandDropdown:Change(commandNames)
+			end
+		end
+
+		local names = {}
+		for _, plr in rankPlayersService:GetPlayers() do
+			if plr ~= rankPlayersService.LocalPlayer then
+				table.insert(names, plr.Name)
+			end
+		end
+		rankTargetDropdown:Change(names)
+
+		task.wait(2)
+	until mainapi.Loaded == nil
+end)
+
+--[[
 	Module Settings
 ]]
 
