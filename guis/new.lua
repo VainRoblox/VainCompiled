@@ -5887,6 +5887,24 @@ targets = mainapi:CreateCategoryList({
 targets.Update = Instance.new('BindableEvent')
 mainapi:Clean(targets.Update)
 
+--[[
+	Watchlist - notifies you when someone on the list joins the server, or is
+	already in it when Vain loads. See "universal - base/base.lua" for the
+	join-detection itself; this just creates the list UI.
+]]
+local watchlist
+watchlist = mainapi:CreateCategoryList({
+	Name = 'Watchlist',
+	Icon = getcustomasset('vain/assets/new/friendstab.png'),
+	Size = UDim2.fromOffset(17, 16),
+	Placeholder = 'Roblox username',
+	Function = function()
+		watchlist.Update:Fire()
+	end
+})
+watchlist.Update = Instance.new('BindableEvent')
+mainapi:Clean(watchlist.Update)
+
 mainapi:CreateLegit()
 mainapi:CreateSearch()
 mainapi.Categories.Main:CreateOverlayBar()

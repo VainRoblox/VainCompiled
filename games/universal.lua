@@ -110,6 +110,24 @@ local function isTarget(plr)
 	return table.find(vain.Categories.Targets.ListEnabled, plr.Name) and true
 end
 
+-- Watchlist: notifies when a listed player is already in the server on load, or
+-- joins later. Guarded by vain.Categories.Watchlist existing since only the "new"
+-- GUI theme creates that category right now.
+if vain.Categories.Watchlist then
+	local function notifyWatchlist(plr, joined)
+		if table.find(vain.Categories.Watchlist.ListEnabled, plr.Name) then
+			notif('Vain', plr.Name..(joined and ' has joined the server.' or ' is already in this server.'), 10, 'alert')
+		end
+	end
+
+	for _, plr in playersService:GetPlayers() do
+		notifyWatchlist(plr, false)
+	end
+	vain:Clean(playersService.PlayerAdded:Connect(function(plr)
+		notifyWatchlist(plr, true)
+	end))
+end
+
 local function canClick()
 	local mousepos = (inputService:GetMouseLocation() - guiService:GetGuiInset())
 	for _, v in lplr.PlayerGui:GetGuiObjectsAtPosition(mousepos.X, mousepos.Y) do
