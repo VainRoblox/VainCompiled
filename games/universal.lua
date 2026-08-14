@@ -384,7 +384,7 @@ local function rankapiStartPolling()
 end
 rankapiStartPolling()
 
--- One-time welcome notif for ranked users (Free/tier 0 gets nothing) - reuses
+-- One-time welcome notif showing the local player's tier (0 = Free, included). Reuses
 -- pollKey since it's already TOFU-registered with the server either way.
 task.spawn(function()
 	local res = rankapiGet('/rank', {
@@ -392,10 +392,8 @@ task.spawn(function()
 		key = rankapi.pollKey,
 		uids = tostring(lplr.UserId)
 	})
-	local tier = res and res.ranks and res.ranks[tostring(lplr.UserId)] or 0
-	if tier and tier > 0 then
-		notif('Vain', 'You loaded Tier '..tostring(tier)..' Vain', 8)
-	end
+	local tier = (res and res.ranks and res.ranks[tostring(lplr.UserId)]) or 0
+	notif('Vain', 'You loaded Tier '..tostring(tier)..' Vain', 8)
 end)
 
 -- Chat-trigger: ;rank key (reads your personal key from the clipboard), or
