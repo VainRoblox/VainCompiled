@@ -77,7 +77,6 @@ local getcustomassets = {
 	['vain/assets/new/colorpreview.png'] = 'rbxassetid://14368311578',
 	['vain/assets/new/combaticon.png'] = 'rbxassetid://14368312652',
 	['vain/assets/new/customsettings.png'] = 'rbxassetid://14403726449',
-	['vain/assets/new/discord.png'] = '',
 	['vain/assets/new/dots.png'] = 'rbxassetid://14368314459',
 	['vain/assets/new/edit.png'] = 'rbxassetid://14368315443',
 	['vain/assets/new/expandicon.png'] = 'rbxassetid://14368353032',
@@ -793,12 +792,14 @@ components = {
 			preview.ImageTransparency = 1 - self.Opacity
 			if self.Rainbow then
 				-- Continuous per-frame update (called every tick by the RainbowTable loop in
-				-- gui.lua) - each bar offset a quarter turn around the hue wheel so the icon
-				-- itself visibly cycles instead of only the target element it controls.
+				-- gui.lua) - a trailing wave, not a spread: bar 1 (smallest) always shows the
+				-- freshest hue, and each bar after it shows a slightly older hue (self.Hue only
+				-- increases over time), so color visibly enters at bar 1 and travels outward to
+				-- bar 4 before looping, instead of 4 unrelated colors jumping independently.
 				rainbow1.ImageColor3 = Color3.fromHSV(self.Hue, 1, 1)
-				rainbow2.ImageColor3 = Color3.fromHSV((self.Hue + 0.25) % 1, 1, 1)
-				rainbow3.ImageColor3 = Color3.fromHSV((self.Hue + 0.5) % 1, 1, 1)
-				rainbow4.ImageColor3 = Color3.fromHSV((self.Hue + 0.75) % 1, 1, 1)
+				rainbow2.ImageColor3 = Color3.fromHSV((self.Hue - 0.06) % 1, 1, 1)
+				rainbow3.ImageColor3 = Color3.fromHSV((self.Hue - 0.12) % 1, 1, 1)
+				rainbow4.ImageColor3 = Color3.fromHSV((self.Hue - 0.18) % 1, 1, 1)
 			end
 			satSlider.Slider.UIGradient.Color = ColorSequence.new({
 				ColorSequenceKeypoint.new(0, Color3.fromHSV(0, 0, self.Value)),
@@ -2540,13 +2541,6 @@ function mainapi:CreateGUI()
 	settingsicon.Image = getcustomasset('vain/assets/new/guisettings.png')
 	settingsicon.ImageColor3 = color.Light(uipallet.Main, 0.37)
 	settingsicon.Parent = settingsbutton
-	local discordbutton = Instance.new('ImageButton')
-	discordbutton.Size = UDim2.fromOffset(16, 16)
-	discordbutton.Position = UDim2.new(1, -56, 0, 11)
-	discordbutton.BackgroundTransparency = 1
-	discordbutton.Image = getcustomasset('vain/assets/new/discord.png')
-	discordbutton.Parent = window
-	addTooltip(discordbutton, 'Join discord')
 	local settingspane = Instance.new('TextButton')
 	settingspane.Size = UDim2.fromScale(1, 1)
 	settingspane.BackgroundColor3 = color.Dark(uipallet.Main, 0.02)
@@ -3409,12 +3403,15 @@ function mainapi:CreateGUI()
 			preview.ImageColor3 = Color3.fromHSV(self.Hue, self.Sat, self.Value)
 			if self.Rainbow then
 				-- Continuous per-frame update (called every tick by the RainbowTable loop
-				-- above) - each bar offset a quarter turn around the hue wheel so the icon
-				-- itself visibly cycles instead of only the target element it controls.
+				-- above) - a trailing wave, not a spread: bar 1 (smallest) always shows the
+				-- freshest hue, and each bar after it shows a slightly older hue (self.Hue
+				-- only increases over time), so color visibly enters at bar 1 and travels
+				-- outward to bar 4 before looping, instead of 4 unrelated colors jumping
+				-- independently.
 				rainbow1.ImageColor3 = Color3.fromHSV(self.Hue, 1, 1)
-				rainbow2.ImageColor3 = Color3.fromHSV((self.Hue + 0.25) % 1, 1, 1)
-				rainbow3.ImageColor3 = Color3.fromHSV((self.Hue + 0.5) % 1, 1, 1)
-				rainbow4.ImageColor3 = Color3.fromHSV((self.Hue + 0.75) % 1, 1, 1)
+				rainbow2.ImageColor3 = Color3.fromHSV((self.Hue - 0.06) % 1, 1, 1)
+				rainbow3.ImageColor3 = Color3.fromHSV((self.Hue - 0.12) % 1, 1, 1)
+				rainbow4.ImageColor3 = Color3.fromHSV((self.Hue - 0.18) % 1, 1, 1)
 			end
 			satSlider.Slider.UIGradient.Color = ColorSequence.new({
 				ColorSequenceKeypoint.new(0, Color3.fromHSV(0, 0, self.Value)),
@@ -3596,37 +3593,6 @@ function mainapi:CreateGUI()
 	end)
 	close.MouseButton1Click:Connect(function()
 		settingspane.Visible = false
-	end)
-	discordbutton.MouseButton1Click:Connect(function()
-		task.spawn(function()
-			local body = httpService:JSONEncode({
-				nonce = httpService:GenerateGUID(false),
-				args = {
-					invite = {code = 'VZEQJxMSnG'},
-					code = 'VZEQJxMSnG'
-				},
-				cmd = 'INVITE_BROWSER'
-			})
-
-			for i = 1, 14 do
-				task.spawn(function()
-					request({
-						Method = 'POST',
-						Url = 'http://127.0.0.1:64'..(53 + i)..'/rpc?v=1',
-						Headers = {
-							['Content-Type'] = 'application/json',
-							Origin = 'https://discord.com'
-						},
-						Body = body
-					})
-				end)
-			end
-		end)
-
-		task.spawn(function()
-			tooltip.Text = 'Copied!'
-			setclipboard('https://discord.gg/VZEQJxMSnG')
-		end)
 	end)
 	settingsbutton.MouseEnter:Connect(function()
 		settingsicon.ImageColor3 = uipallet.Text
@@ -5709,16 +5675,6 @@ clickgui.Size = UDim2.fromScale(1, 1)
 clickgui.BackgroundTransparency = 1
 clickgui.Visible = false
 clickgui.Parent = scaledgui
-local scarcitybanner = Instance.new('TextLabel')
-scarcitybanner.Size = UDim2.fromScale(1, 0.02)
-scarcitybanner.Position = UDim2.fromScale(0, 0.97)
-scarcitybanner.BackgroundTransparency = 1
-scarcitybanner.Text = 'The discord link has been fixed, click the discord icon to join.'
-scarcitybanner.TextScaled = true
-scarcitybanner.TextColor3 = Color3.new(1, 1, 1)
-scarcitybanner.TextStrokeTransparency = 0.5
-scarcitybanner.FontFace = uipallet.Font
-scarcitybanner.Parent = clickgui
 local modal = Instance.new('TextButton')
 modal.BackgroundTransparency = 1
 modal.Modal = true
