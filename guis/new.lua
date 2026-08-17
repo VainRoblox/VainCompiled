@@ -796,13 +796,10 @@ components = {
 				-- freshest hue, and each bar after it shows a slightly older hue (self.Hue only
 				-- increases over time), so color visibly enters at bar 1 and travels outward to
 				-- bar 4 before looping, instead of 4 unrelated colors jumping independently.
-				-- pulse fades brightness in and out (~2s period) so the whole icon breathes
-				-- rainbow -> black -> rainbow instead of staying constantly lit.
-				local pulse = (math.sin(tick() * math.pi) + 1) / 2
-				rainbow1.ImageColor3 = Color3.fromHSV(self.Hue, 1, pulse)
-				rainbow2.ImageColor3 = Color3.fromHSV((self.Hue - 0.06) % 1, 1, pulse)
-				rainbow3.ImageColor3 = Color3.fromHSV((self.Hue - 0.12) % 1, 1, pulse)
-				rainbow4.ImageColor3 = Color3.fromHSV((self.Hue - 0.18) % 1, 1, pulse)
+				rainbow1.ImageColor3 = Color3.fromHSV(self.Hue, 1, 1)
+				rainbow2.ImageColor3 = Color3.fromHSV((self.Hue - 0.06) % 1, 1, 1)
+				rainbow3.ImageColor3 = Color3.fromHSV((self.Hue - 0.12) % 1, 1, 1)
+				rainbow4.ImageColor3 = Color3.fromHSV((self.Hue - 0.18) % 1, 1, 1)
 			end
 			satSlider.Slider.UIGradient.Color = ColorSequence.new({
 				ColorSequenceKeypoint.new(0, Color3.fromHSV(0, 0, self.Value)),
@@ -3413,13 +3410,10 @@ function mainapi:CreateGUI()
 				-- only increases over time), so color visibly enters at bar 1 and travels
 				-- outward to bar 4 before looping, instead of 4 unrelated colors jumping
 				-- independently.
-				-- pulse fades brightness in and out (~2s period) so the whole icon breathes
-				-- rainbow -> black -> rainbow instead of staying constantly lit.
-				local pulse = (math.sin(tick() * math.pi) + 1) / 2
-				rainbow1.ImageColor3 = Color3.fromHSV(self.Hue, 1, pulse)
-				rainbow2.ImageColor3 = Color3.fromHSV((self.Hue - 0.06) % 1, 1, pulse)
-				rainbow3.ImageColor3 = Color3.fromHSV((self.Hue - 0.12) % 1, 1, pulse)
-				rainbow4.ImageColor3 = Color3.fromHSV((self.Hue - 0.18) % 1, 1, pulse)
+				rainbow1.ImageColor3 = Color3.fromHSV(self.Hue, 1, 1)
+				rainbow2.ImageColor3 = Color3.fromHSV((self.Hue - 0.06) % 1, 1, 1)
+				rainbow3.ImageColor3 = Color3.fromHSV((self.Hue - 0.12) % 1, 1, 1)
+				rainbow4.ImageColor3 = Color3.fromHSV((self.Hue - 0.18) % 1, 1, 1)
 			end
 			satSlider.Slider.UIGradient.Color = ColorSequence.new({
 				ColorSequenceKeypoint.new(0, Color3.fromHSV(0, 0, self.Value)),
@@ -3436,9 +3430,19 @@ function mainapi:CreateGUI()
 				-- what produced the broken-looking ring outline.
 				knob.Image = normalknob
 				knob.ImageColor3 = Color3.fromHSV(self.Hue, self.Sat, self.Value)
-				tween:Tween(knob, uipallet.Tween, {
-					Position = UDim2.fromOffset(slidercolorpos[4] - 3, -5)
-				})
+				if self.Rainbow then
+					-- Direct assignment, not tween: self.Hue moves every tick, and
+					-- tweening toward a constantly-moving target just stutters instead of
+					-- gliding. slidercolorpos[1] (4) and slidercolorpos[7] (177) are the
+					-- track's left/right pixel bounds, so this rides the knob continuously
+					-- across the whole track as hue cycles - matching how the module color
+					-- picker's knob travels along its fill bar instead of sitting still.
+					knob.Position = UDim2.fromOffset(4 + self.Hue * (177 - 4) - 3, -5)
+				else
+					tween:Tween(knob, uipallet.Tween, {
+						Position = UDim2.fromOffset(slidercolorpos[4] - 3, -5)
+					})
+				end
 			else
 				knob.Image = normalknob
 				knob.ImageColor3 = Color3.fromHSV(self.Hue, self.Sat, self.Value)
