@@ -2167,7 +2167,15 @@ run(function()
 	local anims, AnimDelay, AnimTween, armC0 = vain.Libraries.auraanims, tick()
 	local AttackRemote = {FireServer = function() end}
 	task.spawn(function()
-		AttackRemote = bedwars.Client:Get(remotes.AttackEntity).instance
+		-- Falls back to the no-op stub declared above if the remote cannot be resolved,
+		-- so a failure here degrades Killaura to "does nothing" instead of throwing on
+		-- every attack.
+		local ok, remote = pcall(function()
+			return bedwars.Client:Get(remotes.AttackEntity).instance
+		end)
+		if ok and remote then
+			AttackRemote = remote
+		end
 	end)
 
 	local function getAttackData()
@@ -2232,35 +2240,44 @@ run(function()
 					task.spawn(function()
 						local started = false
 						repeat
-							if Attacking then
-								if not armC0 then
-									armC0 = gameCamera.Viewmodel.RightHand.RightWrist.C0
-								end
-								local first = not started
-								started = true
+							-- Guarded: this touches gameCamera.Viewmodel, which does not exist while
+							-- respawning or with an empty hand. An error here used to kill the
+							-- animation thread for the rest of the session.
+							local ok = pcall(function()
+								if Attacking then
+									if not armC0 then
+										armC0 = gameCamera.Viewmodel.RightHand.RightWrist.C0
+									end
+									local first = not started
+									started = true
 
-								if AnimationMode.Value == 'Random' then
-									anims.Random = {{CFrame = CFrame.Angles(math.rad(math.random(1, 360)), math.rad(math.random(1, 360)), math.rad(math.random(1, 360))), Time = 0.12}}
-								end
+									if AnimationMode.Value == 'Random' then
+										anims.Random = {{CFrame = CFrame.Angles(math.rad(math.random(1, 360)), math.rad(math.random(1, 360)), math.rad(math.random(1, 360))), Time = 0.12}}
+									end
 
-								for _, v in anims[AnimationMode.Value] do
-									AnimTween = tweenService:Create(gameCamera.Viewmodel.RightHand.RightWrist, TweenInfo.new(first and (AnimationTween.Enabled and 0.001 or 0.1) or v.Time / AnimationSpeed.Value, Enum.EasingStyle.Linear), {
-										C0 = armC0 * v.CFrame
+									for _, v in anims[AnimationMode.Value] do
+										AnimTween = tweenService:Create(gameCamera.Viewmodel.RightHand.RightWrist, TweenInfo.new(first and (AnimationTween.Enabled and 0.001 or 0.1) or v.Time / AnimationSpeed.Value, Enum.EasingStyle.Linear), {
+											C0 = armC0 * v.CFrame
+										})
+										AnimTween:Play()
+										AnimTween.Completed:Wait()
+										first = false
+										if (not Killaura.Enabled) or (not Attacking) then break end
+									end
+								elseif started then
+									started = false
+									AnimTween = tweenService:Create(gameCamera.Viewmodel.RightHand.RightWrist, TweenInfo.new(AnimationTween.Enabled and 0.001 or 0.3, Enum.EasingStyle.Exponential), {
+										C0 = armC0
 									})
 									AnimTween:Play()
-									AnimTween.Completed:Wait()
-									first = false
-									if (not Killaura.Enabled) or (not Attacking) then break end
 								end
-							elseif started then
-								started = false
-								AnimTween = tweenService:Create(gameCamera.Viewmodel.RightHand.RightWrist, TweenInfo.new(AnimationTween.Enabled and 0.001 or 0.3, Enum.EasingStyle.Exponential), {
-									C0 = armC0
-								})
-								AnimTween:Play()
-							end
+							end)
 
-							if not started then
+							-- Always yield on failure, otherwise a repeating error spins the CPU:
+							-- the normal path only skips the wait because the tween Wait() above
+							-- provides the yield, and that never ran if we errored.
+							if (not ok) or (not started) then
+								started = started and ok
 								task.wait(1 / UpdateRate.Value)
 							end
 						until (not Killaura.Enabled) or (not Animation.Enabled)
@@ -2268,99 +2285,135 @@ run(function()
 				end
 
 				repeat
-					local attacked, sword, meta = {}, getAttackData()
-					Attacking = false
-					store.KillauraTarget = nil
-					if sword then
-						local plrs = entitylib.AllPosition({
-							Range = SwingRange.Value,
-							Wallcheck = Targets.Walls.Enabled or nil,
-							Part = 'RootPart',
-							Players = Targets.Players.Enabled,
-							NPCs = Targets.NPCs.Enabled,
-							Preference = Targets.Preference.Value,
-							Limit = MaxTargets.Value,
-							Sort = sortmethods[Sort.Value]
-						})
+					local attacked = {}
+					-- The whole pass is wrapped because this is a long-lived loop that
+					-- touches game state which can vanish mid-iteration (entities dying,
+					-- item metadata changing as you switch weapons). An uncaught error
+					-- here used to kill the coroutine outright, leaving Killaura toggled
+					-- on but permanently dead. The wait is deliberately kept outside the
+					-- pcall so a repeating error cannot turn into a busy spin.
+					local ok = pcall(function()
+						local sword, meta = getAttackData()
+						Attacking = false
+						store.KillauraTarget = nil
+						if sword then
+							local plrs = entitylib.AllPosition({
+								Range = SwingRange.Value,
+								Wallcheck = Targets.Walls.Enabled or nil,
+								Part = 'RootPart',
+								Players = Targets.Players.Enabled,
+								NPCs = Targets.NPCs.Enabled,
+								Preference = Targets.Preference.Value,
+								Limit = MaxTargets.Value,
+								Sort = sortmethods[Sort.Value]
+							})
 
-						if #plrs > 0 then
-							switchItem(sword.tool, 0)
-							local selfpos = entitylib.character.RootPart.Position
-							local localfacing = entitylib.character.RootPart.CFrame.LookVector * Vector3.new(1, 0, 1)
+							if #plrs > 0 then
+								switchItem(sword.tool, 0)
+								local selfpos = entitylib.character.RootPart.Position
+								local localfacing = entitylib.character.RootPart.CFrame.LookVector * Vector3.new(1, 0, 1)
 
-							for _, v in plrs do
-								local delta = (v.RootPart.Position - selfpos)
-								local angle = math.acos(localfacing:Dot((delta * Vector3.new(1, 0, 1)).Unit))
-								if angle > (math.rad(AngleSlider.Value) / 2) then continue end
+								for _, v in plrs do
+									-- Entities can be torn down between selection and use (NPCs
+									-- despawning), so re-check rather than indexing blind.
+									if not v.RootPart or not v.Character then continue end
+									local delta = (v.RootPart.Position - selfpos)
+									-- Flatten first, then reject a zero-length horizontal delta.
+									-- A target directly overhead - a diamond guardian sitting on
+									-- top of the generator you are standing under - makes this a
+									-- zero vector, whose .Unit is NaN. Every comparison against
+									-- NaN is false, so the angle check silently passed and the
+									-- NaN flowed into the attack maths below.
+									local flat = delta * Vector3.new(1, 0, 1)
+									if flat.Magnitude <= 0 then continue end
+									local angle = math.acos(math.clamp(localfacing:Dot(flat.Unit), -1, 1))
+									if angle > (math.rad(AngleSlider.Value) / 2) then continue end
 
-								table.insert(attacked, {
-									Entity = v,
-									Check = delta.Magnitude > AttackRange.Value and BoxSwingColor or BoxAttackColor
-								})
-								targetinfo.Targets[v] = tick() + 1
+									table.insert(attacked, {
+										Entity = v,
+										Check = delta.Magnitude > AttackRange.Value and BoxSwingColor or BoxAttackColor
+									})
+									targetinfo.Targets[v] = tick() + 1
 
-								if not Attacking then
-									Attacking = true
-									store.KillauraTarget = v
-									if not Swing.Enabled and AnimDelay < tick() and not LegitAura.Enabled then
-										AnimDelay = tick() + (meta.sword.respectAttackSpeedForEffects and meta.sword.attackSpeed or 0.11)
-										bedwars.SwordController:playSwordEffect(meta, false)
-										if meta.displayName:find(' Scythe') then
-											bedwars.ScytheController:playLocalAnimation()
-										end
+									if not Attacking then
+										Attacking = true
+										store.KillauraTarget = v
+										if not Swing.Enabled and AnimDelay < tick() and not LegitAura.Enabled then
+											AnimDelay = tick() + (meta.sword.respectAttackSpeedForEffects and meta.sword.attackSpeed or 0.11)
+											bedwars.SwordController:playSwordEffect(meta, false)
+											if meta.displayName:find(' Scythe') then
+												bedwars.ScytheController:playLocalAnimation()
+											end
 
-										if vain.ThreadFix then
-											setthreadidentity(8)
+											if vain.ThreadFix then
+												setthreadidentity(8)
+											end
 										end
 									end
-								end
 
-								if delta.Magnitude > AttackRange.Value then continue end
+									if delta.Magnitude > AttackRange.Value then continue end
 
-								local actualRoot = v.Character.PrimaryPart
-								if actualRoot then
-									local dir = CFrame.lookAt(selfpos, actualRoot.Position).LookVector
-									local pos = selfpos + dir * math.max(delta.Magnitude - 14.399, 0)
-									bedwars.SwordController.lastAttack = workspace:GetServerTimeNow()
-									store.attackReach = (delta.Magnitude * 100) // 1 / 100
-									store.attackReachUpdate = tick() + 1
+									local actualRoot = v.Character.PrimaryPart
+									if actualRoot then
+										local dir = CFrame.lookAt(selfpos, actualRoot.Position).LookVector
+										local pos = selfpos + dir * math.max(delta.Magnitude - 14.399, 0)
+										bedwars.SwordController.lastAttack = workspace:GetServerTimeNow()
+										store.attackReach = (delta.Magnitude * 100) // 1 / 100
+										store.attackReachUpdate = tick() + 1
 
-									AttackRemote:FireServer({
-										weapon = sword.tool,
-										chargedAttack = {chargeRatio = 0},
-										entityInstance = v.Character,
-										validate = {
-											raycast = {
-												cameraPosition = {value = pos},
-												cursorDirection = {value = dir}
-											},
-											targetPosition = {value = actualRoot.Position},
-											selfPosition = {value = pos}
-										}
-									})
+										AttackRemote:FireServer({
+											weapon = sword.tool,
+											chargedAttack = {chargeRatio = 0},
+											entityInstance = v.Character,
+											validate = {
+												raycast = {
+													cameraPosition = {value = pos},
+													cursorDirection = {value = dir}
+												},
+												targetPosition = {value = actualRoot.Position},
+												selfPosition = {value = pos}
+											}
+										})
+									end
 								end
 							end
 						end
-					end
 
-					for i, v in Boxes do
-						v.Adornee = attacked[i] and attacked[i].Entity.RootPart or nil
-						if v.Adornee then
-							v.Color3 = Color3.fromHSV(attacked[i].Check.Hue, attacked[i].Check.Sat, attacked[i].Check.Value)
-							v.Transparency = 1 - attacked[i].Check.Opacity
+						for i, v in Boxes do
+							v.Adornee = attacked[i] and attacked[i].Entity.RootPart or nil
+							if v.Adornee then
+								v.Color3 = Color3.fromHSV(attacked[i].Check.Hue, attacked[i].Check.Sat, attacked[i].Check.Value)
+								v.Transparency = 1 - attacked[i].Check.Opacity
+							end
 						end
-					end
 
-					for i, v in Particles do
-						v.Position = attacked[i] and attacked[i].Entity.RootPart.Position or Vector3.new(9e9, 9e9, 9e9)
-						v.Parent = attacked[i] and gameCamera or nil
-					end
+						-- RootPart is read through a local rather than indexed straight off the
+						-- entity: a target that leaves range and comes back (NPCs especially,
+						-- since they despawn and respawn) can have its RootPart torn down
+						-- between being picked above and being drawn here. Indexing .Position
+						-- on that nil threw, and since this whole thing is a bare repeat loop
+						-- with no error handling, the throw killed the loop outright and
+						-- Killaura stayed dead until you rejoined.
+						for i, v in Particles do
+							local root = attacked[i] and attacked[i].Entity.RootPart
+							v.Position = root and root.Position or Vector3.new(9e9, 9e9, 9e9)
+							v.Parent = root and gameCamera or nil
+						end
 
-					if Face.Enabled and attacked[1] then
-						local vec = attacked[1].Entity.RootPart.Position * Vector3.new(1, 0, 1)
-						entitylib.character.RootPart.CFrame = CFrame.lookAt(entitylib.character.RootPart.Position, Vector3.new(vec.X, entitylib.character.RootPart.Position.Y + 0.001, vec.Z))
-					end
+						local faceroot = attacked[1] and attacked[1].Entity.RootPart
+						if Face.Enabled and faceroot and entitylib.isAlive then
+							local vec = faceroot.Position * Vector3.new(1, 0, 1)
+							entitylib.character.RootPart.CFrame = CFrame.lookAt(entitylib.character.RootPart.Position, Vector3.new(vec.X, entitylib.character.RootPart.Position.Y + 0.001, vec.Z))
+						end
 
+					end)
+
+					if not ok then
+						-- Drop out of the attacking state so the animation thread and the
+						-- viewmodel do not stay stuck mid-swing after a failed pass.
+						Attacking = false
+						store.KillauraTarget = nil
+					end
 					task.wait(#attacked > 0 and #attacked * 0.02 or 1 / UpdateRate.Value)
 				until not Killaura.Enabled
 			else
@@ -2376,20 +2429,27 @@ run(function()
 						lplr.PlayerGui.MobileUI['2'].Visible = true
 					end)
 				end
+				-- Restores run under pcall so that a failure to put one upvalue back cannot
+				-- skip the ones after it - leaving the game's functions permanently holding
+				-- our fake table would break swords even with Killaura off.
 				if swingknitindex then
-					debug.setupvalue(oldSwing or bedwars.SwordController.playSwordEffect, swingknitindex, bedwars.Knit)
+					pcall(debug.setupvalue, oldSwing or bedwars.SwordController.playSwordEffect, swingknitindex, bedwars.Knit)
 					swingknitindex = nil
 				end
 				if scytheknitindex then
-					debug.setupvalue(bedwars.ScytheController.playLocalAnimation, scytheknitindex, bedwars.Knit)
+					pcall(debug.setupvalue, bedwars.ScytheController.playLocalAnimation, scytheknitindex, bedwars.Knit)
 					scytheknitindex = nil
 				end
 				Attacking = false
 				if armC0 then
-					AnimTween = tweenService:Create(gameCamera.Viewmodel.RightHand.RightWrist, TweenInfo.new(AnimationTween.Enabled and 0.001 or 0.3, Enum.EasingStyle.Exponential), {
-						C0 = armC0
-					})
-					AnimTween:Play()
+					-- The viewmodel is gone while dead or respawning, which is exactly when
+					-- someone is likely to toggle this off.
+					pcall(function()
+						AnimTween = tweenService:Create(gameCamera.Viewmodel.RightHand.RightWrist, TweenInfo.new(AnimationTween.Enabled and 0.001 or 0.3, Enum.EasingStyle.Exponential), {
+							C0 = armC0
+						})
+						AnimTween:Play()
+					end)
 				end
 			end
 		end,
