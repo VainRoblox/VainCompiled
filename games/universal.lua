@@ -1175,6 +1175,7 @@ run(function()
 							Part = Part.Value,
 							Players = Targets.Players.Enabled,
 							NPCs = Targets.NPCs.Enabled,
+							Preference = Targets.Preference.Value,
 							Wallcheck = Targets.Walls.Enabled,
 							Origin = gameCamera.CFrame.Position
 						})
@@ -2678,6 +2679,7 @@ run(function()
 							Part = 'RootPart',
 							Players = Targets.Players.Enabled,
 							NPCs = Targets.NPCs.Enabled,
+							Preference = Targets.Preference.Value,
 							Limit = Max.Value
 						})
 	
@@ -3659,7 +3661,8 @@ run(function()
 						Wallcheck = wallcheck,
 						Part = 'RootPart',
 						Players = Targets.Players.Enabled,
-						NPCs = Targets.NPCs.Enabled
+						NPCs = Targets.NPCs.Enabled,
+						Preference = Targets.Preference.Value
 					})
 	
 					if ent then

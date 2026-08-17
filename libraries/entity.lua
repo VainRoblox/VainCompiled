@@ -53,6 +53,28 @@ local function getMousePosition()
 	return inputService.GetMouseLocation(inputService)
 end
 
+-- Builds the comparator used to rank candidate targets. entitysettings.Preference
+-- ('Players' or 'NPCs') is a tiebreak layer *above* whatever ordering the caller asked
+-- for: preferred entities always sort ahead, and the caller's own comparator still
+-- decides the order within each group. Anything else (nil, 'None') is a no-op, so
+-- callers that never set it behave exactly as before.
+local function buildSort(entitysettings)
+	local base = entitysettings.Sort or function(a, b)
+		return a.Magnitude < b.Magnitude
+	end
+	local field = entitysettings.Preference == 'Players' and 'Player'
+		or entitysettings.Preference == 'NPCs' and 'NPC'
+	if not field then return base end
+
+	return function(a, b)
+		local prefa, prefb = a.Entity[field] and 1 or 0, b.Entity[field] and 1 or 0
+		if prefa ~= prefb then
+			return prefa > prefb
+		end
+		return base(a, b)
+	end
+end
+
 local function loopClean(tbl)
 	for i, v in tbl do
 		if type(v) == 'table' then
@@ -144,9 +166,7 @@ entitylib.EntityMouse = function(entitysettings)
 			end
 		end
 
-		table.sort(sortingTable, entitysettings.Sort or function(a, b)
-			return a.Magnitude < b.Magnitude
-		end)
+		table.sort(sortingTable, buildSort(entitysettings))
 
 		for _, v in sortingTable do
 			if entitysettings.Wallcheck then
@@ -178,9 +198,7 @@ entitylib.EntityPosition = function(entitysettings)
 			end
 		end
 
-		table.sort(sortingTable, entitysettings.Sort or function(a, b)
-			return a.Magnitude < b.Magnitude
-		end)
+		table.sort(sortingTable, buildSort(entitysettings))
 
 		for _, v in sortingTable do
 			if entitysettings.Wallcheck then
@@ -213,9 +231,7 @@ entitylib.AllPosition = function(entitysettings)
 			end
 		end
 
-		table.sort(sortingTable, entitysettings.Sort or function(a, b)
-			return a.Magnitude < b.Magnitude
-		end)
+		table.sort(sortingTable, buildSort(entitysettings))
 
 		for _, v in sortingTable do
 			if entitysettings.Wallcheck then

@@ -1421,7 +1421,7 @@ components = {
 		toollist.Parent = tool
 		local window = Instance.new('TextButton')
 		window.Name = 'TargetsTextWindow'
-		window.Size = UDim2.fromOffset(220, 145)
+		window.Size = UDim2.fromOffset(220, 190)
 		window.BackgroundColor3 = uipallet.Main
 		window.BorderSizePixel = 0
 		window.AutoButtonColor = false
@@ -1457,7 +1457,8 @@ components = {
 				Players = self.Players.Enabled,
 				NPCs = self.NPCs.Enabled,
 				Invisible = self.Invisible.Enabled,
-				Walls = self.Walls.Enabled
+				Walls = self.Walls.Enabled,
+				Preference = self.Preference.Value
 			}
 		end
 		
@@ -1473,6 +1474,11 @@ components = {
 			end
 			if self.Walls.Enabled ~= tab.Walls then
 				self.Walls:Toggle()
+			end
+			-- Preference postdates the original save format, so profiles written before it
+			-- exists have no value here - leave the default rather than clearing it to nil.
+			if tab.Preference then
+				self.Preference:SetValue(tab.Preference)
 			end
 		end
 		
@@ -1546,6 +1552,16 @@ components = {
 			end
 		}, window, {Options = {}})
 		optionapi.Walls.Object.Position = UDim2.fromOffset(0, 111)
+		-- Which entity type wins when several are valid at once. Consumed by entitylib's
+		-- buildSort, which ranks the preferred type ahead of the other before applying whatever
+		-- ordering the module itself asked for. 'None' leaves ordering untouched.
+		optionapi.Preference = components.Dropdown({
+			Name = 'Preference',
+			List = {'None', 'Players', 'NPCs'},
+			Tooltip = 'Which target type to prioritize when both are in range',
+			Function = optionsettings.Function
+		}, window, {Options = {}})
+		optionapi.Preference.Object.Position = UDim2.fromOffset(0, 141)
 		if optionsettings.Players then
 			optionapi.Players:Toggle()
 		end
