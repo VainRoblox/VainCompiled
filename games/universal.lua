@@ -145,9 +145,12 @@ end
 -- joins later. Guarded by vain.Categories.Watchlist existing since only the "new"
 -- GUI theme creates that category right now.
 if vain.Categories.Watchlist then
-	local function notifyWatchlist(plr)
+	local function notifyWatchlist(plr, left)
 		if table.find(vain.Categories.Watchlist.ListEnabled, plr.Name) then
-			notif('Vain', plr.DisplayName..' (@'..plr.Name..') is in the server!', 10, 'alert')
+			local text = left
+				and (plr.DisplayName..' (@'..plr.Name..') has left the server.')
+				or (plr.DisplayName..' (@'..plr.Name..') is in the server!')
+			notif('Vain', text, 10, 'alert')
 		end
 	end
 
@@ -155,14 +158,21 @@ if vain.Categories.Watchlist then
 	-- (see main.lua), which is what actually populates Watchlist.ListEnabled from the
 	-- save file - scanning right here would always see it empty, so nobody already in
 	-- the server would ever match. A couple seconds is comfortably more than Load()
-	-- (a local file read + a few property sets) ever takes.
+	-- (a local file read + a few property sets) ever takes. This is the ONLY scan of
+	-- current players - everything else is purely event-driven (PlayerAdded/
+	-- PlayerRemoving), no polling/interval anywhere.
 	task.spawn(function()
 		task.wait(2)
 		for _, plr in playersService:GetPlayers() do
 			notifyWatchlist(plr)
 		end
 	end)
-	vain:Clean(playersService.PlayerAdded:Connect(notifyWatchlist))
+	vain:Clean(playersService.PlayerAdded:Connect(function(plr)
+		notifyWatchlist(plr)
+	end))
+	vain:Clean(playersService.PlayerRemoving:Connect(function(plr)
+		notifyWatchlist(plr, true)
+	end))
 end
 
 local function removeTags(str)
