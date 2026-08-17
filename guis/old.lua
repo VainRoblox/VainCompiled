@@ -865,6 +865,7 @@ components = {
 					dropdownoption.TextTruncate = Enum.TextTruncate.AtEnd
 					dropdownoption.FontFace = uipallet.Font
 					dropdownoption.Parent = dropdownchildren
+					addTooltip(dropdownoption, optionsettings.Tooltips and optionsettings.Tooltips[v])
 					dropdownoption.MouseEnter:Connect(function()
 						dropdownoption.BackgroundColor3 = color.Dark(dropdown.BackgroundColor3, 0.02)
 					end)

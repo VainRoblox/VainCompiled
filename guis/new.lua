@@ -1088,6 +1088,9 @@ components = {
 					dropdownoption.TextTruncate = Enum.TextTruncate.AtEnd
 					dropdownoption.FontFace = uipallet.Font
 					dropdownoption.Parent = dropdownchildren
+					-- Per-option tooltip, from optionsettings.Tooltips keyed by option name.
+					-- addTooltip no-ops on nil, so dropdowns without the table are unaffected.
+					addTooltip(dropdownoption, optionsettings.Tooltips and optionsettings.Tooltips[v])
 					dropdownoption.MouseEnter:Connect(function()
 						tween:Tween(dropdownoption, uipallet.Tween, {
 							BackgroundColor3 = color.Light(uipallet.Main, 0.02)
