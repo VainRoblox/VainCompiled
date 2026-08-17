@@ -1348,7 +1348,8 @@ run(function()
 	})
 	Targets = AimAssist:CreateTargets({
 		Players = true,
-		Walls = true
+		Walls = true,
+		Tooltip = 'Which entities this module is allowed to target'
 	})
 	-- Damage/Distance stay pinned to the front (Damage is the default), the rest are
 	-- sorted so the dropdown order stays stable - iterating sortmethods directly is
@@ -1365,16 +1366,19 @@ run(function()
 	end
 	Sort = AimAssist:CreateDropdown({
 		Name = 'Target Mode',
+		Tooltip = 'How targets are ranked when several are valid at once',
 		List = methods
 	})
 	AimSpeed = AimAssist:CreateSlider({
 		Name = 'Aim Speed',
+		Tooltip = 'How quickly your aim moves toward the target',
 		Min = 1,
 		Max = 20,
 		Default = 6
 	})
 	Distance = AimAssist:CreateSlider({
 		Name = 'Distance',
+		Tooltip = 'Furthest a target can be, in studs',
 		Min = 1,
 		Max = 30,
 		Default = 30,
@@ -1384,18 +1388,21 @@ run(function()
 	})
 	AngleSlider = AimAssist:CreateSlider({
 		Name = 'Max angle',
+		Tooltip = 'Widest angle from your view a target may be at',
 		Min = 1,
 		Max = 360,
 		Default = 70
 	})
 	ClickAim = AimAssist:CreateToggle({
 		Name = 'Click Aim',
+		Tooltip = 'Only aims while you are clicking',
 		Default = true
 	})
 	KillauraTarget = AimAssist:CreateToggle({
-		Name = 'Use killaura target'
+		Name = 'Use killaura target',
+		Tooltip = 'Aims at whatever Killaura is currently attacking'
 	})
-	StrafeIncrease = AimAssist:CreateToggle({Name = 'Strafe increase'})
+	StrafeIncrease = AimAssist:CreateToggle({Name = 'Strafe increase', Tooltip = 'Speeds up while strafing'})
 end)
 
 run(function()
@@ -1469,6 +1476,7 @@ run(function()
 	})
 	CPS = AutoClicker:CreateTwoSlider({
 		Name = 'CPS',
+		Tooltip = 'Clicks per second, picked at random between both values',
 		Min = 1,
 		Max = 9,
 		DefaultMin = 7,
@@ -1476,6 +1484,7 @@ run(function()
 	})
 	AutoClicker:CreateToggle({
 		Name = 'Place Blocks',
+		Tooltip = 'Places blocks as part of this module',
 		Default = true,
 		Function = function(callback)
 			if BlockCPS.Object then
@@ -1485,6 +1494,7 @@ run(function()
 	})
 	BlockCPS = AutoClicker:CreateTwoSlider({
 		Name = 'Block CPS',
+		Tooltip = 'Block places per second, picked at random between both values',
 		Min = 1,
 		Max = 12,
 		DefaultMin = 12,
@@ -1525,6 +1535,7 @@ run(function()
 	})
 	Value = Reach:CreateSlider({
 		Name = 'Range',
+		Tooltip = 'How far this reaches, in studs',
 		Min = 0,
 		Max = 18,
 		Default = 18,
@@ -1623,6 +1634,7 @@ run(function()
 	})
 	CPS = TriggerBot:CreateTwoSlider({
 		Name = 'CPS',
+		Tooltip = 'Clicks per second, picked at random between both values',
 		Min = 1,
 		Max = 9,
 		DefaultMin = 7,
@@ -1668,6 +1680,7 @@ run(function()
 	})
 	Horizontal = Velocity:CreateSlider({
 		Name = 'Horizontal',
+		Tooltip = 'Horizontal offset',
 		Min = 0,
 		Max = 100,
 		Default = 0,
@@ -1675,6 +1688,7 @@ run(function()
 	})
 	Vertical = Velocity:CreateSlider({
 		Name = 'Vertical',
+		Tooltip = 'Vertical offset',
 		Min = 0,
 		Max = 100,
 		Default = 0,
@@ -1682,12 +1696,13 @@ run(function()
 	})
 	Chance = Velocity:CreateSlider({
 		Name = 'Chance',
+		Tooltip = 'Percent chance this happens',
 		Min = 0,
 		Max = 100,
 		Default = 100,
 		Suffix = '%'
 	})
-	TargetCheck = Velocity:CreateToggle({Name = 'Only when targeting'})
+	TargetCheck = Velocity:CreateToggle({Name = 'Only when targeting', Tooltip = 'Only runs while you have a target'})
 end)
 
 local AntiFallDirection
@@ -1810,6 +1825,7 @@ run(function()
 	end
 	Material = AntiFall:CreateDropdown({
 		Name = 'Material',
+		Tooltip = 'Material used for the blocks',
 		List = materials,
 		Function = function(val)
 			if AntiFallPart then
@@ -1819,6 +1835,7 @@ run(function()
 	})
 	Color = AntiFall:CreateColorSlider({
 		Name = 'Color',
+		Tooltip = 'Color used for this feature',
 		DefaultOpacity = 0.5,
 		Function = function(h, s, v, o)
 			if AntiFallPart then
@@ -1849,6 +1866,7 @@ run(function()
 	})
 	Time = FastBreak:CreateSlider({
 		Name = 'Break speed',
+		Tooltip = 'How fast blocks are broken',
 		Min = 0,
 		Max = 0.3,
 		Default = 0.25,
@@ -1976,6 +1994,7 @@ run(function()
 	})
 	Value = Fly:CreateSlider({
 		Name = 'Speed',
+		Tooltip = 'How fast this runs',
 		Min = 1,
 		Max = 23,
 		Default = 23,
@@ -1985,6 +2004,7 @@ run(function()
 	})
 	VerticalValue = Fly:CreateSlider({
 		Name = 'Vertical Speed',
+		Tooltip = 'How fast you move up and down',
 		Min = 1,
 		Max = 150,
 		Default = 50,
@@ -1994,14 +2014,17 @@ run(function()
 	})
 	WallCheck = Fly:CreateToggle({
 		Name = 'Wall Check',
+		Tooltip = 'Ignores targets behind walls',
 		Default = true
 	})
 	PopBalloons = Fly:CreateToggle({
 		Name = 'Pop Balloons',
+		Tooltip = 'Pops balloons on contact',
 		Default = true
 	})
 	TP = Fly:CreateToggle({
 		Name = 'TP Down',
+		Tooltip = 'Teleports you back down afterwards',
 		Default = true
 	})
 end)
@@ -2073,6 +2096,7 @@ run(function()
 	})
 	Expand = HitBoxes:CreateSlider({
 		Name = 'Expand amount',
+		Tooltip = 'How much larger to make the hitbox',
 		Min = 0,
 		Max = 14.4,
 		Default = 14.4,
@@ -2373,8 +2397,9 @@ run(function()
 	})
 	Targets = Killaura:CreateTargets({
 		Players = true,
-		NPCs = true
-	})
+		NPCs = true,
+	Tooltip = 'Which entities this module is allowed to target'
+})
 	-- Damage/Distance stay pinned to the front (Damage is the default), the rest are
 	-- sorted so the dropdown order stays stable - iterating sortmethods directly is
 	-- hash order, which reshuffles the list between injections.
@@ -2390,6 +2415,7 @@ run(function()
 	end
 	SwingRange = Killaura:CreateSlider({
 		Name = 'Swing range',
+		Tooltip = 'How far your swing reaches, in studs',
 		Min = 1,
 		Max = 28,
 		Default = 28,
@@ -2399,6 +2425,7 @@ run(function()
 	})
 	AttackRange = Killaura:CreateSlider({
 		Name = 'Attack range',
+		Tooltip = 'How far a target can be and still be hit',
 		Min = 1,
 		Max = 28,
 		Default = 28,
@@ -2408,12 +2435,14 @@ run(function()
 	})
 	AngleSlider = Killaura:CreateSlider({
 		Name = 'Max angle',
+		Tooltip = 'Widest angle from your view a target may be at',
 		Min = 1,
 		Max = 360,
 		Default = 360
 	})
 	UpdateRate = Killaura:CreateSlider({
 		Name = 'Update rate',
+		Tooltip = 'How many times per second targets are re-checked\nLower costs less performance',
 		Min = 1,
 		Max = 120,
 		Default = 60,
@@ -2421,19 +2450,22 @@ run(function()
 	})
 	MaxTargets = Killaura:CreateSlider({
 		Name = 'Max targets',
+		Tooltip = 'How many targets to hit per swing',
 		Min = 1,
 		Max = 5,
 		Default = 5
 	})
 	Sort = Killaura:CreateDropdown({
 		Name = 'Target Mode',
+		Tooltip = 'How targets are ranked when several are valid at once',
 		List = methods
 	})
-	Mouse = Killaura:CreateToggle({Name = 'Require mouse down'})
-	Swing = Killaura:CreateToggle({Name = 'No Swing'})
-	GUI = Killaura:CreateToggle({Name = 'GUI check'})
+	Mouse = Killaura:CreateToggle({Name = 'Require mouse down', Tooltip = 'Only acts while you hold left click'})
+	Swing = Killaura:CreateToggle({Name = 'No Swing', Tooltip = 'Attacks without playing the swing animation'})
+	GUI = Killaura:CreateToggle({Name = 'GUI check', Tooltip = 'Stops acting while a game menu is open'})
 	Killaura:CreateToggle({
 		Name = 'Show target',
+		Tooltip = 'Draws a box around the target you are attacking',
 		Function = function(callback)
 			BoxSwingColor.Object.Visible = callback
 			BoxAttackColor.Object.Visible = callback
@@ -2458,6 +2490,7 @@ run(function()
 	})
 	BoxSwingColor = Killaura:CreateColorSlider({
 		Name = 'Target Color',
+		Tooltip = 'Box color while a target is in swing range',
 		Darker = true,
 		DefaultHue = 0.6,
 		DefaultOpacity = 0.5,
@@ -2465,12 +2498,14 @@ run(function()
 	})
 	BoxAttackColor = Killaura:CreateColorSlider({
 		Name = 'Attack Color',
+		Tooltip = 'Box color while a target is being attacked',
 		Darker = true,
 		DefaultOpacity = 0.5,
 		Visible = false
 	})
 	Killaura:CreateToggle({
 		Name = 'Target particles',
+		Tooltip = 'Spawns particles on the target you hit',
 		Function = function(callback)
 			ParticleTexture.Object.Visible = callback
 			ParticleColor1.Object.Visible = callback
@@ -2513,6 +2548,7 @@ run(function()
 	})
 	ParticleTexture = Killaura:CreateTextBox({
 		Name = 'Texture',
+		Tooltip = 'Particle image asset id',
 		Default = 'rbxassetid://14736249347',
 		Function = function()
 			for _, v in Particles do
@@ -2524,6 +2560,7 @@ run(function()
 	})
 	ParticleColor1 = Killaura:CreateColorSlider({
 		Name = 'Color Begin',
+		Tooltip = 'Particle color when it spawns',
 		Function = function(hue, sat, val)
 			for _, v in Particles do
 				v.ParticleEmitter.Color = ColorSequence.new({
@@ -2537,6 +2574,7 @@ run(function()
 	})
 	ParticleColor2 = Killaura:CreateColorSlider({
 		Name = 'Color End',
+		Tooltip = 'Particle color as it fades out',
 		Function = function(hue, sat, val)
 			for _, v in Particles do
 				v.ParticleEmitter.Color = ColorSequence.new({
@@ -2550,6 +2588,7 @@ run(function()
 	})
 	ParticleSize = Killaura:CreateSlider({
 		Name = 'Size',
+		Tooltip = 'Size of the effect',
 		Min = 0,
 		Max = 1,
 		Default = 0.2,
@@ -2562,9 +2601,10 @@ run(function()
 		Darker = true,
 		Visible = false
 	})
-	Face = Killaura:CreateToggle({Name = 'Face target'})
+	Face = Killaura:CreateToggle({Name = 'Face target', Tooltip = 'Turns your character toward the target'})
 	Animation = Killaura:CreateToggle({
 		Name = 'Custom Animation',
+		Tooltip = 'Replaces the default swing with a custom animation',
 		Function = function(callback)
 			AnimationMode.Object.Visible = callback
 			AnimationTween.Object.Visible = callback
@@ -2581,12 +2621,14 @@ run(function()
 	end
 	AnimationMode = Killaura:CreateDropdown({
 		Name = 'Animation Mode',
+		Tooltip = 'Which custom swing animation to play',
 		List = animnames,
 		Darker = true,
 		Visible = false
 	})
 	AnimationSpeed = Killaura:CreateSlider({
 		Name = 'Animation Speed',
+		Tooltip = 'How fast the custom animation plays',
 		Min = 0,
 		Max = 2,
 		Default = 1,
@@ -2596,6 +2638,7 @@ run(function()
 	})
 	AnimationTween = Killaura:CreateToggle({
 		Name = 'No Tween',
+		Tooltip = 'Snaps the animation instead of smoothing it',
 		Darker = true,
 		Visible = false
 	})
@@ -2833,6 +2876,7 @@ run(function()
 	})
 	Value = LongJump:CreateSlider({
 		Name = 'Speed',
+		Tooltip = 'How fast this runs',
 		Min = 1,
 		Max = 37,
 		Default = 37,
@@ -2841,7 +2885,8 @@ run(function()
 		end
 	})
 	CameraDir = LongJump:CreateToggle({
-		Name = 'Camera Direction'
+		Name = 'Camera Direction',
+		Tooltip = 'Uses your camera direction instead of your character facing'
 	})
 end)
 
@@ -2919,6 +2964,7 @@ run(function()
 	})
 	Mode = NoFall:CreateDropdown({
 		Name = 'Mode',
+		Tooltip = 'Which method this module uses',
 		List = {'Packet', 'Gravity', 'Teleport', 'Bounce'},
 		Function = function()
 			if NoFall.Enabled then
@@ -3044,20 +3090,24 @@ run(function()
 	})
 	Targets = ProjectileAimbot:CreateTargets({
 		Players = true,
-		Walls = true
+		Walls = true,
+		Tooltip = 'Which entities this module is allowed to target'
 	})
 	TargetPart = ProjectileAimbot:CreateDropdown({
 		Name = 'Part',
+		Tooltip = 'Which body part to target',
 		List = {'RootPart', 'Head'}
 	})
 	FOV = ProjectileAimbot:CreateSlider({
 		Name = 'FOV',
+		Tooltip = 'Field of view, in degrees',
 		Min = 1,
 		Max = 1000,
 		Default = 1000
 	})
 	OtherProjectiles = ProjectileAimbot:CreateToggle({
 		Name = 'Other Projectiles',
+		Tooltip = 'Also handles projectiles other than the main one',
 		Default = true
 	})
 end)
@@ -3161,14 +3211,17 @@ run(function()
 	})
 	Targets = ProjectileAura:CreateTargets({
 		Players = true,
-		Walls = true
+		Walls = true,
+		Tooltip = 'Which entities this module is allowed to target'
 	})
 	List = ProjectileAura:CreateTextList({
 		Name = 'Projectiles',
+		Tooltip = 'Which projectiles this applies to',
 		Default = {'arrow', 'snowball'}
 	})
 	Range = ProjectileAura:CreateSlider({
 		Name = 'Range',
+		Tooltip = 'How far this reaches, in studs',
 		Min = 1,
 		Max = 50,
 		Default = 50,
@@ -3232,6 +3285,7 @@ run(function()
 	})
 	Value = Speed:CreateSlider({
 		Name = 'Speed',
+		Tooltip = 'How fast this runs',
 		Min = 1,
 		Max = 23,
 		Default = 23,
@@ -3241,16 +3295,19 @@ run(function()
 	})
 	WallCheck = Speed:CreateToggle({
 		Name = 'Wall Check',
+		Tooltip = 'Ignores targets behind walls',
 		Default = true
 	})
 	AutoJump = Speed:CreateToggle({
 		Name = 'AutoJump',
+		Tooltip = 'Jumps automatically',
 		Function = function(callback)
 			AlwaysJump.Object.Visible = callback
 		end
 	})
 	AlwaysJump = Speed:CreateToggle({
 		Name = 'Always Jump',
+		Tooltip = 'Keeps jumping even when not needed',
 		Visible = false,
 		Darker = true
 	})
@@ -3425,6 +3482,7 @@ run(function()
 	})
 	Background = KitESP:CreateToggle({
 		Name = 'Background',
+		Tooltip = 'Draws a background behind the text',
 		Function = function(callback)
 			if Color.Object then Color.Object.Visible = callback end
 			for _, v in Reference do
@@ -3436,6 +3494,7 @@ run(function()
 	})
 	Color = KitESP:CreateColorSlider({
 		Name = 'Background Color',
+		Tooltip = 'Color of the background',
 		DefaultValue = 0,
 		DefaultOpacity = 0.5,
 		Function = function(hue, sat, val, opacity)
@@ -3758,10 +3817,12 @@ run(function()
 				NameTags:Toggle()
 				NameTags:Toggle()
 			end
-		end
+		end,
+		Tooltip = 'Which entities this module is allowed to target'
 	})
 	FontOption = NameTags:CreateFont({
 		Name = 'Font',
+		Tooltip = 'Font used for the text',
 		Blacklist = 'Arial',
 		Function = function()
 			if NameTags.Enabled then
@@ -3772,6 +3833,7 @@ run(function()
 	})
 	Color = NameTags:CreateColorSlider({
 		Name = 'Player Color',
+		Tooltip = 'Color of the name text',
 		Function = function(hue, sat, val)
 			if NameTags.Enabled and ColorFunc[methodused] then
 				ColorFunc[methodused](hue, sat, val)
@@ -3780,6 +3842,7 @@ run(function()
 	})
 	Scale = NameTags:CreateSlider({
 		Name = 'Scale',
+		Tooltip = 'Size of the nametag',
 		Function = function()
 			if NameTags.Enabled then
 				NameTags:Toggle()
@@ -3793,6 +3856,7 @@ run(function()
 	})
 	Background = NameTags:CreateSlider({
 		Name = 'Transparency',
+		Tooltip = 'How see-through the nametag is',
 		Function = function()
 			if NameTags.Enabled then
 				NameTags:Toggle()
@@ -3806,6 +3870,7 @@ run(function()
 	})
 	Health = NameTags:CreateToggle({
 		Name = 'Health',
+		Tooltip = 'Shows the target health',
 		Function = function()
 			if NameTags.Enabled then
 				NameTags:Toggle()
@@ -3815,6 +3880,7 @@ run(function()
 	})
 	Distance = NameTags:CreateToggle({
 		Name = 'Distance',
+		Tooltip = 'Shows how far away the player is',
 		Function = function()
 			if NameTags.Enabled then
 				NameTags:Toggle()
@@ -3824,6 +3890,7 @@ run(function()
 	})
 	Equipment = NameTags:CreateToggle({
 		Name = 'Equipment',
+		Tooltip = 'Shows what the player is holding and wearing',
 		Function = function()
 			if NameTags.Enabled then
 				NameTags:Toggle()
@@ -3833,6 +3900,7 @@ run(function()
 	})
 	DisplayName = NameTags:CreateToggle({
 		Name = 'Use Displayname',
+		Tooltip = 'Shows display names instead of usernames',
 		Function = function()
 			if NameTags.Enabled then
 				NameTags:Toggle()
@@ -3843,6 +3911,7 @@ run(function()
 	})
 	Teammates = NameTags:CreateToggle({
 		Name = 'Priority Only',
+		Tooltip = 'Hides teammates and non targetable entities',
 		Function = function()
 			if NameTags.Enabled then
 				NameTags:Toggle()
@@ -3853,6 +3922,7 @@ run(function()
 	})
 	DrawingToggle = NameTags:CreateToggle({
 		Name = 'Drawing',
+		Tooltip = 'Renders with the Drawing API instead of Roblox instances',
 		Function = function()
 			if NameTags.Enabled then
 				NameTags:Toggle()
@@ -3862,12 +3932,14 @@ run(function()
 	})
 	DistanceCheck = NameTags:CreateToggle({
 		Name = 'Distance Check',
+		Tooltip = 'Only shows players within a set distance',
 		Function = function(callback)
 			DistanceLimit.Object.Visible = callback
 		end
 	})
 	DistanceLimit = NameTags:CreateTwoSlider({
 		Name = 'Player Distance',
+		Tooltip = 'Distance range a player must be within',
 		Min = 0,
 		Max = 256,
 		DefaultMin = 0,
@@ -3985,6 +4057,7 @@ run(function()
 	})
 	List = StorageESP:CreateTextList({
 		Name = 'Item',
+		Tooltip = 'Which items this applies to',
 		Function = function()
 			for _, v in Reference do
 				task.spawn(refreshAdornee, v)
@@ -3993,6 +4066,7 @@ run(function()
 	})
 	Background = StorageESP:CreateToggle({
 		Name = 'Background',
+		Tooltip = 'Draws a background behind the text',
 		Function = function(callback)
 			if Color.Object then Color.Object.Visible = callback end
 			for _, v in Reference do
@@ -4004,6 +4078,7 @@ run(function()
 	})
 	Color = StorageESP:CreateColorSlider({
 		Name = 'Background Color',
+		Tooltip = 'Color of the background',
 		DefaultValue = 0,
 		DefaultOpacity = 0.5,
 		Function = function(hue, sat, val, opacity)
@@ -4415,7 +4490,7 @@ run(function()
 		end,
 		Tooltip = 'Automatically uses kit abilities.'
 	})
-	Legit = AutoKit:CreateToggle({Name = 'Legit Range'})
+	Legit = AutoKit:CreateToggle({Name = 'Legit Range', Tooltip = 'Keeps the range within limits that look legitimate'})
 	local sortTable = {}
 	for i in AutoKitFunctions do
 		table.insert(sortTable, i)
@@ -4655,6 +4730,7 @@ run(function()
 	})
 	GG = AutoToxic:CreateToggle({
 		Name = 'AutoGG',
+		Tooltip = 'Sends a message at the end of the match',
 		Default = true
 	})
 	for _, v in {'Kill', 'Death', 'Bed', 'BedDestroyed', 'Win'} do
@@ -4818,6 +4894,7 @@ run(function()
 	})
 	Range = PickupRange:CreateSlider({
 		Name = 'Range',
+		Tooltip = 'How far this reaches, in studs',
 		Min = 1,
 		Max = 10,
 		Default = 10,
@@ -4827,9 +4904,10 @@ run(function()
 	})
 	Network = PickupRange:CreateToggle({
 		Name = 'Network TP',
+		Tooltip = 'Teleports using network ownership instead of moving normally',
 		Default = true
 	})
-	Lower = PickupRange:CreateToggle({Name = 'Feet Check'})
+	Lower = PickupRange:CreateToggle({Name = 'Feet Check', Tooltip = 'Also checks the block under your feet'})
 end)
 
 run(function()
@@ -5007,25 +5085,30 @@ run(function()
 	})
 	Expand = Scaffold:CreateSlider({
 		Name = 'Expand',
+		Tooltip = 'How much larger to make the hitbox',
 		Min = 1,
 		Max = 6
 	})
 	Tower = Scaffold:CreateToggle({
 		Name = 'Tower',
+		Tooltip = 'Builds straight upwards',
 		Default = true
 	})
 	Downwards = Scaffold:CreateToggle({
 		Name = 'Downwards',
+		Tooltip = 'Builds downwards',
 		Default = true
 	})
 	Diagonal = Scaffold:CreateToggle({
 		Name = 'Diagonal',
+		Tooltip = 'Builds diagonally',
 		Default = true
 	})
-	LimitItem = Scaffold:CreateToggle({Name = 'Limit to items'})
-	Mouse = Scaffold:CreateToggle({Name = 'Require mouse down'})
+	LimitItem = Scaffold:CreateToggle({Name = 'Limit to items', Tooltip = 'Only acts while holding a matching item'})
+	Mouse = Scaffold:CreateToggle({Name = 'Require mouse down', Tooltip = 'Only acts while you hold left click'})
 	Count = Scaffold:CreateToggle({
 		Name = 'Block Count',
+		Tooltip = 'Shows how many blocks you have left',
 		Function = function(callback)
 			if callback then
 				label = Instance.new('TextLabel')
@@ -5219,6 +5302,7 @@ run(function()
 	})
 	Mode = StaffDetector:CreateDropdown({
 		Name = 'Mode',
+		Tooltip = 'Which method this module uses',
 		List = {'Uninject', 'Profile', 'Requeue', 'AutoConfig', 'Notify'},
 		Function = function(val)
 			if Profile.Object then
@@ -5228,19 +5312,23 @@ run(function()
 	})
 	Clans = StaffDetector:CreateToggle({
 		Name = 'Blacklist clans',
+		Tooltip = 'Also flags players wearing known clan tags',
 		Default = true
 	})
 	Party = StaffDetector:CreateToggle({
-		Name = 'Leave party'
+		Name = 'Leave party',
+		Tooltip = 'Leaves the party as well'
 	})
 	Profile = StaffDetector:CreateTextBox({
 		Name = 'Profile',
+		Tooltip = 'Profile name to use',
 		Default = 'default',
 		Darker = true,
 		Visible = false
 	})
 	Users = StaffDetector:CreateTextList({
 		Name = 'Users',
+		Tooltip = 'Usernames this applies to',
 		Placeholder = 'player (userid)'
 	})
 	
@@ -5341,6 +5429,7 @@ run(function()
 	})
 	Range = AutoSuffocate:CreateSlider({
 		Name = 'Range',
+		Tooltip = 'How far this reaches, in studs',
 		Min = 1,
 		Max = 20,
 		Default = 20,
@@ -5350,6 +5439,7 @@ run(function()
 	})
 	LimitItem = AutoSuffocate:CreateToggle({
 		Name = 'Limit to Items',
+		Tooltip = 'Only acts while holding a matching item',
 		Default = true
 	})
 end)
@@ -5525,6 +5615,7 @@ run(function()
 	})
 	Range = ChestSteal:CreateSlider({
 		Name = 'Range',
+		Tooltip = 'How far this reaches, in studs',
 		Min = 0,
 		Max = 18,
 		Default = 18,
@@ -5532,9 +5623,10 @@ run(function()
 			return val == 1 and 'stud' or 'studs'
 		end
 	})
-	Open = ChestSteal:CreateToggle({Name = 'GUI Check'})
+	Open = ChestSteal:CreateToggle({Name = 'GUI Check', Tooltip = 'Stops acting while a game menu is open'})
 	Skywars = ChestSteal:CreateToggle({
 		Name = 'Only Skywars',
+		Tooltip = 'Only runs while in a skywars queue',
 		Function = function()
 			if ChestSteal.Enabled then
 				ChestSteal:Toggle()
@@ -5748,6 +5840,7 @@ run(function()
 	})
 	File = Schematica:CreateTextBox({
 		Name = 'File',
+		Tooltip = 'File to load',
 		Function = function()
 			loadMaterials()
 			point1, point2 = nil, nil
@@ -5755,10 +5848,12 @@ run(function()
 	})
 	Mode = Schematica:CreateDropdown({
 		Name = 'Mode',
+		Tooltip = 'Which method this module uses',
 		List = {'Load', 'Save'}
 	})
 	Transparency = Schematica:CreateSlider({
 		Name = 'Transparency',
+		Tooltip = 'How see-through this is',
 		Min = 0,
 		Max = 1,
 		Default = 0.7,
@@ -5820,14 +5915,17 @@ run(function()
 	})
 	Mode = ArmorSwitch:CreateDropdown({
 		Name = 'Mode',
+		Tooltip = 'Which method this module uses',
 		List = {'Toggle', 'On Key'}
 	})
 	Targets = ArmorSwitch:CreateTargets({
 		Players = true,
-		NPCs = true
+		NPCs = true,
+		Tooltip = 'Which entities this module is allowed to target'
 	})
 	Range = ArmorSwitch:CreateSlider({
 		Name = 'Range',
+		Tooltip = 'How far this reaches, in studs',
 		Min = 1,
 		Max = 30,
 		Default = 30,
@@ -5956,6 +6054,7 @@ run(function()
 	})
 	UIToggle = AutoBank:CreateToggle({
 		Name = 'UI',
+		Tooltip = 'Shows the on screen interface',
 		Function = function(callback)
 			if AutoBank.Enabled then
 				UI.Visible = callback
@@ -6167,6 +6266,7 @@ run(function()
 	})
 	Sword = AutoBuy:CreateToggle({
 		Name = 'Buy Sword',
+		Tooltip = 'Automatically buys a sword upgrade',
 		Function = function(callback)
 			npctick = tick()
 			Functions[2] = callback and function(currencytable, shop)
@@ -6194,6 +6294,7 @@ run(function()
 	})
 	Armor = AutoBuy:CreateToggle({
 		Name = 'Buy Armor',
+		Tooltip = 'Automatically buys armor',
 		Function = function(callback)
 			npctick = tick()
 			Functions[1] = callback and function(currencytable, shop)
@@ -6207,6 +6308,7 @@ run(function()
 	})
 	AutoBuy:CreateToggle({
 		Name = 'Buy Axe',
+		Tooltip = 'Automatically buys an axe',
 		Function = function(callback)
 			npctick = tick()
 			Functions[3] = callback and function(currencytable, shop)
@@ -6217,6 +6319,7 @@ run(function()
 	})
 	AutoBuy:CreateToggle({
 		Name = 'Buy Pickaxe',
+		Tooltip = 'Automatically buys a pickaxe',
 		Function = function(callback)
 			npctick = tick()
 			Functions[4] = callback and function(currencytable, shop)
@@ -6227,6 +6330,7 @@ run(function()
 	})
 	Upgrades = AutoBuy:CreateToggle({
 		Name = 'Buy Upgrades',
+		Tooltip = 'Automatically buys team upgrades',
 		Function = function(callback)
 			for _, v in UpgradeToggles do
 				v.Object.Visible = callback
@@ -6252,9 +6356,10 @@ run(function()
 		}))
 		count += 1
 	end
-	TierCheck = AutoBuy:CreateToggle({Name = 'Tier Check'})
+	TierCheck = AutoBuy:CreateToggle({Name = 'Tier Check', Tooltip = 'Only buys when the next tier is actually affordable'})
 	BedwarsCheck = AutoBuy:CreateToggle({
 		Name = 'Only Bedwars',
+		Tooltip = 'Only runs while in a bedwars queue',
 		Function = function()
 			if AutoBuy.Enabled then
 				AutoBuy:Toggle()
@@ -6263,7 +6368,7 @@ run(function()
 		end,
 		Default = true
 	})
-	GUI = AutoBuy:CreateToggle({Name = 'GUI check'})
+	GUI = AutoBuy:CreateToggle({Name = 'GUI check', Tooltip = 'Stops acting while a game menu is open'})
 	SmartCheck = AutoBuy:CreateToggle({
 		Name = 'Smart check',
 		Default = true,
@@ -6271,6 +6376,7 @@ run(function()
 	})
 	AutoBuy:CreateTextList({
 		Name = 'Item',
+		Tooltip = 'Which items this applies to',
 		Placeholder = 'priority/item/amount/after',
 		Function = function(list)
 			table.clear(Custom)
@@ -6363,6 +6469,7 @@ run(function()
 	})
 	Health = AutoConsume:CreateSlider({
 		Name = 'Health Percent',
+		Tooltip = 'Triggers once your health drops below this percentage',
 		Min = 1,
 		Max = 99,
 		Default = 70,
@@ -6370,14 +6477,17 @@ run(function()
 	})
 	SpeedPotion = AutoConsume:CreateToggle({
 		Name = 'Speed Potions',
+		Tooltip = 'Uses speed potions',
 		Default = true
 	})
 	Apple = AutoConsume:CreateToggle({
 		Name = 'Apple',
+		Tooltip = 'Eats apples',
 		Default = true
 	})
 	ShieldPotion = AutoConsume:CreateToggle({
 		Name = 'Shield Potions',
+		Tooltip = 'Uses shield potions',
 		Default = true
 	})
 end)
@@ -6951,6 +7061,7 @@ run(function()
 	})
 	Mode = AutoHotbar:CreateDropdown({
 		Name = 'Activation',
+		Tooltip = 'What triggers this module',
 		List = {'Toggle', 'On Key'},
 		Function = function()
 			if AutoHotbar.Enabled then
@@ -6959,7 +7070,7 @@ run(function()
 			end
 		end
 	})
-	Clear = AutoHotbar:CreateToggle({Name = 'Clear Hotbar'})
+	Clear = AutoHotbar:CreateToggle({Name = 'Clear Hotbar', Tooltip = 'Empties the hotbar before sorting it'})
 	List = AutoHotbar:CreateHotbarList({})
 end)
 
@@ -7030,6 +7141,7 @@ run(function()
 	})
 	Value = FastConsume:CreateSlider({
 		Name = 'Multiplier',
+		Tooltip = 'Multiplies the effect strength',
 		Min = 0,
 		Max = 100
 	})
@@ -7168,6 +7280,7 @@ run(function()
 	})
 	Background = BedPlates:CreateToggle({
 		Name = 'Background',
+		Tooltip = 'Draws a background behind the text',
 		Function = function(callback)
 			if Color.Object then 
 				Color.Object.Visible = callback 
@@ -7181,6 +7294,7 @@ run(function()
 	})
 	Color = BedPlates:CreateColorSlider({
 		Name = 'Background Color',
+		Tooltip = 'Color of the background',
 		DefaultValue = 0,
 		DefaultOpacity = 0.5,
 		Function = function(hue, sat, val, opacity)
@@ -7400,6 +7514,7 @@ run(function()
 	})
 	Range = Breaker:CreateSlider({
 		Name = 'Break range',
+		Tooltip = 'How far you can break blocks from, in studs',
 		Min = 1,
 		Max = 30,
 		Default = 30,
@@ -7409,6 +7524,7 @@ run(function()
 	})
 	BreakSpeed = Breaker:CreateSlider({
 		Name = 'Break speed',
+		Tooltip = 'How fast blocks are broken',
 		Min = 0,
 		Max = 0.3,
 		Default = 0.25,
@@ -7417,6 +7533,7 @@ run(function()
 	})
 	UpdateRate = Breaker:CreateSlider({
 		Name = 'Update rate',
+		Tooltip = 'How many times per second blocks are re-checked\nLower costs less performance',
 		Min = 1,
 		Max = 120,
 		Default = 60,
@@ -7424,6 +7541,7 @@ run(function()
 	})
 	Custom = Breaker:CreateTextList({
 		Name = 'Custom',
+		Tooltip = 'Extra block names to break',
 		Function = function()
 			if not customlist then return end
 			table.clear(customlist)
@@ -7436,18 +7554,22 @@ run(function()
 	})
 	Bed = Breaker:CreateToggle({
 		Name = 'Break Bed',
+		Tooltip = 'Breaks beds',
 		Default = true
 	})
 	LuckyBlock = Breaker:CreateToggle({
 		Name = 'Break Lucky Block',
+		Tooltip = 'Breaks lucky blocks',
 		Default = true
 	})
 	IronOre = Breaker:CreateToggle({
 		Name = 'Break Iron Ore',
+		Tooltip = 'Breaks iron ore',
 		Default = true
 	})
 	Effect = Breaker:CreateToggle({
 		Name = 'Show Healthbar & Effects',
+		Tooltip = 'Shows break progress and particles',
 		Function = function(callback)
 			if CustomHealth.Object then
 				CustomHealth.Object.Visible = callback
@@ -7457,12 +7579,13 @@ run(function()
 	})
 	CustomHealth = Breaker:CreateToggle({
 		Name = 'Custom Healthbar',
+		Tooltip = 'Uses the Vain healthbar instead of the game one',
 		Default = true,
 		Darker = true
 	})
-	Animation = Breaker:CreateToggle({Name = 'Animation'})
-	SelfBreak = Breaker:CreateToggle({Name = 'Self Break'})
-	InstantBreak = Breaker:CreateToggle({Name = 'Instant Break'})
+	Animation = Breaker:CreateToggle({Name = 'Animation', Tooltip = 'Plays the break animation'})
+	SelfBreak = Breaker:CreateToggle({Name = 'Self Break', Tooltip = 'Also breaks blocks placed by your own team'})
+	InstantBreak = Breaker:CreateToggle({Name = 'Instant Break', Tooltip = 'Breaks blocks in a single hit'})
 	LimitItem = Breaker:CreateToggle({
 		Name = 'Limit to items',
 		Tooltip = 'Only breaks when tools are held'
@@ -7500,6 +7623,7 @@ run(function()
 	table.sort(BreakEffectName)
 	List = BedBreakEffect:CreateDropdown({
 		Name = 'Effect',
+		Tooltip = 'Which effect to play',
 		List = BreakEffectName
 	})
 end)
@@ -7546,6 +7670,7 @@ run(function()
 	})
 	Image = Crosshair:CreateTextBox({
 		Name = 'Image',
+		Tooltip = 'Image asset id to use',
 		Placeholder = 'image id (roblox)',
 		Function = function(enter)
 			if enter and Crosshair.Enabled then
@@ -7602,6 +7727,7 @@ run(function()
 	end
 	FontOption = DamageIndicator:CreateDropdown({
 		Name = 'Font',
+		Tooltip = 'Font used for the text',
 		List = fontitems,
 		Function = function(val)
 			if DamageIndicator.Enabled then
@@ -7611,6 +7737,7 @@ run(function()
 	})
 	Color = DamageIndicator:CreateColorSlider({
 		Name = 'Color',
+		Tooltip = 'Color used for this feature',
 		DefaultHue = 0,
 		Function = function(hue, sat, val)
 			if DamageIndicator.Enabled then
@@ -7620,6 +7747,7 @@ run(function()
 	})
 	Size = DamageIndicator:CreateSlider({
 		Name = 'Size',
+		Tooltip = 'Size of the effect',
 		Min = 1,
 		Max = 32,
 		Default = 32,
@@ -7632,6 +7760,7 @@ run(function()
 	})
 	Anchor = DamageIndicator:CreateSlider({
 		Name = 'Anchor',
+		Tooltip = 'Where the element is anchored on screen',
 		Min = 0,
 		Max = 1,
 		Decimal = 10,
@@ -7643,6 +7772,7 @@ run(function()
 	})
 	Stroke = DamageIndicator:CreateToggle({
 		Name = 'Stroke',
+		Tooltip = 'Draws an outline around the text',
 		Function = function(callback)
 			if DamageIndicator.Enabled then
 				debug.setconstant(bedwars.DamageIndicator, 119, callback and 'Thickness' or 'Enabled')
@@ -7680,6 +7810,7 @@ run(function()
 	})
 	Value = FOV:CreateSlider({
 		Name = 'FOV',
+		Tooltip = 'Field of view, in degrees',
 		Min = 30,
 		Max = 120
 	})
@@ -7743,6 +7874,7 @@ run(function()
 	})
 	Kill = FPSBoost:CreateToggle({
 		Name = 'Kill Effects',
+		Tooltip = 'Plays your equipped kill effect',
 		Function = function()
 			if FPSBoost.Enabled then
 				FPSBoost:Toggle()
@@ -7753,6 +7885,7 @@ run(function()
 	})
 	Visualizer = FPSBoost:CreateToggle({
 		Name = 'Visualizer',
+		Tooltip = 'Shows a visualizer for the audio',
 		Function = function()
 			if FPSBoost.Enabled then
 				FPSBoost:Toggle()
@@ -7797,6 +7930,7 @@ run(function()
 	})
 	Color = HitColor:CreateColorSlider({
 		Name = 'Color',
+		Tooltip = 'Color used for this feature',
 		DefaultOpacity = 0.4
 	})
 end)
@@ -7871,6 +8005,7 @@ run(function()
 	end
 	Interface:CreateDropdown({
 		Name = 'Health Font',
+		Tooltip = 'Font used for the health text',
 		List = fontitems,
 		Function = function(val)
 			modifyconstant(HotbarHealthbar.render, 77, val)
@@ -7878,6 +8013,7 @@ run(function()
 	})
 	Interface:CreateColorSlider({
 		Name = 'Health Color',
+		Tooltip = 'Color of the health text',
 		Function = function(hue, sat, val)
 			modifyconstant(HotbarHealthbar.render, 16, tonumber(Color3.fromHSV(hue, sat, val):ToHex(), 16))
 			if Interface.Enabled then
@@ -7891,6 +8027,7 @@ run(function()
 	})
 	Interface:CreateColorSlider({
 		Name = 'Hotbar Color',
+		Tooltip = 'Color of the hotbar',
 		DefaultOpacity = 0.8,
 		Function = function(hue, sat, val, opacity)
 			local func = oldinvrender or HotbarOpenInventory.render
@@ -8045,6 +8182,7 @@ run(function()
 	end
 	Mode = KillEffect:CreateDropdown({
 		Name = 'Mode',
+		Tooltip = 'Which method this module uses',
 		List = modes,
 		Function = function(val)
 			List.Object.Visible = val == 'Bedwars'
@@ -8061,6 +8199,7 @@ run(function()
 	table.sort(KillEffectName)
 	List = KillEffect:CreateDropdown({
 		Name = 'Bedwars',
+		Tooltip = 'Which bedwars queue this applies to',
 		List = KillEffectName,
 		Function = function(val)
 			if KillEffect.Enabled then
@@ -8077,6 +8216,7 @@ run(function()
 	
 	ReachDisplay = vain.Legit:CreateModule({
 		Name = 'Reach Display',
+		Tooltip = 'Shows your current reach on screen',
 		Function = function(callback)
 			if callback then
 				repeat
@@ -8089,6 +8229,7 @@ run(function()
 	})
 	ReachDisplay:CreateFont({
 		Name = 'Font',
+		Tooltip = 'Font used for the text',
 		Blacklist = 'Gotham',
 		Function = function(val)
 			label.FontFace = val
@@ -8096,6 +8237,7 @@ run(function()
 	})
 	ReachDisplay:CreateColorSlider({
 		Name = 'Color',
+		Tooltip = 'Color used for this feature',
 		DefaultValue = 0,
 		DefaultOpacity = 0.5,
 		Function = function(hue, sat, val, opacity)
@@ -8199,10 +8341,12 @@ run(function()
 	})
 	List = SongBeats:CreateTextList({
 		Name = 'Songs',
+		Tooltip = 'Songs to play',
 		Placeholder = 'filepath/bpm/start'
 	})
 	FOV = SongBeats:CreateToggle({
 		Name = 'Beat FOV',
+		Tooltip = 'Pulses your field of view in time with the beat',
 		Function = function(callback)
 			if FOVValue.Object then
 				FOVValue.Object.Visible = callback
@@ -8216,6 +8360,7 @@ run(function()
 	})
 	FOVValue = SongBeats:CreateSlider({
 		Name = 'Adjustment',
+		Tooltip = 'Fine tunes the timing offset',
 		Min = 1,
 		Max = 30,
 		Default = 5,
@@ -8223,6 +8368,7 @@ run(function()
 	})
 	Volume = SongBeats:CreateSlider({
 		Name = 'Volume',
+		Tooltip = 'Playback volume',
 		Function = function(val)
 			if songobj then 
 				songobj.Volume = val / 100 
@@ -8262,6 +8408,7 @@ run(function()
 	})
 	List = SoundChanger:CreateTextList({
 		Name = 'Sounds',
+		Tooltip = 'Sounds to use',
 		Placeholder = '(DAMAGE_1/ben.mp3)',
 		Function = function()
 			table.clear(soundlist)
@@ -8362,6 +8509,7 @@ run(function()
 	})
 	UICleanup:CreateToggle({
 		Name = 'Resize Health',
+		Tooltip = 'Resizes the health bar',
 		Function = function(callback)
 			modifyconstant(HotbarApp, 60, callback and 1 or nil)
 			modifyconstant(debug.getupvalue(HotbarApp, 15).render, 30, callback and 1 or nil)
@@ -8371,6 +8519,7 @@ run(function()
 	})
 	UICleanup:CreateToggle({
 		Name = 'No Hotbar Numbers',
+		Tooltip = 'Hides the hotbar slot numbers',
 		Function = function(callback)
 			local func = oldinvrender or HotbarOpenInventory.render
 			modifyconstant(debug.getupvalue(HotbarApp, 23).render, 90, callback and 0 or nil)
@@ -8380,6 +8529,7 @@ run(function()
 	})
 	OpenInv = UICleanup:CreateToggle({
 		Name = 'No Inventory Button',
+		Tooltip = 'Hides the inventory button',
 		Function = function(callback)
 			modifyconstant(HotbarApp, 78, callback and 0 or nil)
 			if UICleanup.Enabled then
@@ -8398,6 +8548,7 @@ run(function()
 	})
 	KillFeed = UICleanup:CreateToggle({
 		Name = 'No Kill Feed',
+		Tooltip = 'Hides the kill feed',
 		Function = function(callback)
 			if UICleanup.Enabled then
 				if callback then
@@ -8413,6 +8564,7 @@ run(function()
 	})
 	OldTabList = UICleanup:CreateToggle({
 		Name = 'Old Player List',
+		Tooltip = 'Restores the older player list style',
 		Function = function(callback)
 			if UICleanup.Enabled then
 				starterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, callback)
@@ -8422,6 +8574,7 @@ run(function()
 	})
 	UICleanup:CreateToggle({
 		Name = 'Fix Queue Card',
+		Tooltip = 'Fixes the queue card layout',
 		Function = function(callback)
 			modifyconstant(bedwars.QueueCard.render, 15, callback and 0.1 or nil)
 		end,
@@ -8476,6 +8629,7 @@ run(function()
 	})
 	Depth = Viewmodel:CreateSlider({
 		Name = 'Depth',
+		Tooltip = 'How deep the viewmodel sits on screen',
 		Min = 0,
 		Max = 2,
 		Default = 0.8,
@@ -8488,6 +8642,7 @@ run(function()
 	})
 	Horizontal = Viewmodel:CreateSlider({
 		Name = 'Horizontal',
+		Tooltip = 'Horizontal offset',
 		Min = 0,
 		Max = 2,
 		Default = 0.8,
@@ -8500,6 +8655,7 @@ run(function()
 	})
 	Vertical = Viewmodel:CreateSlider({
 		Name = 'Vertical',
+		Tooltip = 'Vertical offset',
 		Min = -0.2,
 		Max = 2,
 		Default = -0.2,
@@ -8524,6 +8680,7 @@ run(function()
 	end
 	NoBob = Viewmodel:CreateToggle({
 		Name = 'No Bobbing',
+		Tooltip = 'Stops the viewmodel from bobbing as you move',
 		Default = true,
 		Function = function()
 			if Viewmodel.Enabled then
@@ -8565,6 +8722,7 @@ run(function()
 	table.sort(WinEffectName)
 	List = WinEffect:CreateDropdown({
 		Name = 'Effects',
+		Tooltip = 'Which effect set to use',
 		List = WinEffectName
 	})
 end)
