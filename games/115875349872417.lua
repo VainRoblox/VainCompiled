@@ -157,7 +157,7 @@ local function warningRoutine(hash)
 		box.Size = UDim2.fromScale(1, 1)
 		box.BackgroundColor3 = Color3.new()
 		box.BackgroundTransparency = 0.5
-		box.Text = '⚠️WARNING⚠️\nThe game\'s update hash is not the same as the current script hash, this ⚠️MAY⚠️ mean the game developer has added detections.\nBy clicking OK, you agree to all risks of using this product.\n\n- 7GrandDad'
+		box.Text = '⚠️WARNING⚠️\nThe game\'s update hash is not the same as the current script hash, this ⚠️MAY⚠️ mean the game developer has added detections.\nBy clicking OK, you agree to all risks of using this product.\n\n- Vain'
 		box.TextColor3 = Color3.new(1, 1, 1)
 		box.TextScaled = true
 		box.Font = Enum.Font.Arial
