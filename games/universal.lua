@@ -6641,22 +6641,34 @@ run(function()
 		instances destroyed mid-scan, executors without elevated identity). Without the
 		isolation a single failure would kill the whole coroutine and silently take every
 		later optimization down with it.
+	
+		Nothing is destroyed - everything is disabled/detached with its original value kept,
+		so toggling the module off restores the world instead of leaving it wrecked until
+		the player rejoins.
 	]]
 	
 	local FPSBoost
-	local LowGraphics, DisableShadows, DisablePostFX, RemoveParticles, RemoveTrails
-	local RemoveDecals, SimplifyTerrain, SimplifyMaterials, LowMeshDetail, UncapFPS
+	local LowGraphics, DisableShadows, DisableLights, DisablePostFX, SimplifyLighting
+	local RemoveParticles, RemoveTrails, RemoveTextures, LowMeshDetail, SimplifyTerrain
+	local SimplifyMaterials, HideAccessories, MuteSounds, UncapFPS, DisableRendering
+	local instancetoggles
 	
 	local originalQuality
 	local originalShadows
 	local originalTerrain = {}
+	local originalLighting = {}
+	local rendering3d
 	-- Instance-level originals, kept per type since each needs a different undo. Keyed by
 	-- instance so re-scanning can never double-store and clobber a real original value.
-	local disabledInstances = {} -- [PostEffect/ParticleEmitter/Trail/Beam] = true
+	local disabledInstances = {} -- anything with an .Enabled bool
 	local hiddenDecals = {} -- [Decal/Texture] = original Transparency
+	local detachedInstances = {} -- [SurfaceAppearance/Atmosphere] = original Parent
+	local clearedTextures = {} -- [MeshPart] = original TextureID
 	local loweredMeshes = {} -- [MeshPart] = original RenderFidelity
 	local unshadowedParts = {} -- [BasePart] = true (had CastShadow on)
 	local flattenedParts = {} -- [BasePart] = original Material
+	local hiddenAccessories = {} -- [BasePart] = original Transparency
+	local mutedSounds = {} -- [Sound] = original Volume
 	
 	local function refresh()
 		if FPSBoost.Enabled then
@@ -6665,64 +6677,125 @@ run(function()
 		end
 	end
 	
-	-- Sets the render quality and returns whatever it was before, so the caller can put it
-	-- back exactly rather than guessing a default. settings() is not reachable from a normal
-	-- script thread - it needs elevated identity, which is what ThreadFix/setthreadidentity
-	-- provides. Always called through pcall since not every executor allows this at all.
-	local function applyQuality(level)
+	-- settings() and Set3dRenderingEnabled are not reachable from a normal script thread -
+	-- they need elevated identity, which is what ThreadFix/setthreadidentity provides.
+	-- Always called through pcall since not every executor allows this at all.
+	local function elevate()
 		if vain.ThreadFix then
 			setthreadidentity(8)
 		end
+	end
+	
+	-- Sets the render quality and returns whatever it was before, so the caller can put it
+	-- back exactly rather than guessing a default.
+	local function applyQuality(level)
+		elevate()
 		local rendering = settings().Rendering
 		local previous = rendering.QualityLevel
 		rendering.QualityLevel = level
 		return previous
 	end
 	
-	-- Applies whichever optimizations are enabled to a single instance. Independent ifs,
-	-- not elseif: one MeshPart can legitimately need render fidelity, shadow and material
-	-- treatment all at once.
+	local function apply3dRendering(enabled)
+		elevate()
+		runService:Set3dRenderingEnabled(enabled)
+	end
+	
+	local function disableInstance(v)
+		if v.Enabled then
+			disabledInstances[v] = true
+			v.Enabled = false
+		end
+	end
+	
+	local function detachInstance(v)
+		if v.Parent and detachedInstances[v] == nil then
+			detachedInstances[v] = v.Parent
+			v.Parent = nil
+		end
+	end
+	
+	-- Applies whichever optimizations are enabled to a single instance. Independent ifs for
+	-- the BasePart section, not elseif: one MeshPart can legitimately need render fidelity,
+	-- shadow, texture and material treatment all at once.
 	local function applyInstance(v)
+		-- Never touch our own character. Beyond looking broken for no framerate gain, this
+		-- is what keeps FPS Boost from fighting other modules that attach things to the
+		-- local character - Fullbright's PointLight would otherwise get switched straight
+		-- back off by the DisableLights pass.
+		if lplr.Character and v:IsDescendantOf(lplr.Character) then return end
+	
 		if DisablePostFX.Enabled and v:IsA('PostEffect') then
-			if v.Enabled then
-				disabledInstances[v] = true
-				v.Enabled = false
-			end
-			return
+			return disableInstance(v)
 		end
 	
-		if RemoveParticles.Enabled and v:IsA('ParticleEmitter') then
-			if v.Enabled then
-				disabledInstances[v] = true
-				v.Enabled = false
-			end
-			return
+		if DisableLights.Enabled and v:IsA('Light') then
+			return disableInstance(v)
+		end
+	
+		-- Fire/Smoke/Sparkles are the legacy effect classes - not ParticleEmitters, so they
+		-- survive a naive particle pass entirely.
+		if RemoveParticles.Enabled and (v:IsA('ParticleEmitter') or v:IsA('Fire') or v:IsA('Smoke') or v:IsA('Sparkles')) then
+			return disableInstance(v)
 		end
 	
 		if RemoveTrails.Enabled and (v:IsA('Trail') or v:IsA('Beam')) then
-			if v.Enabled then
-				disabledInstances[v] = true
-				v.Enabled = false
-			end
-			return
+			return disableInstance(v)
 		end
 	
-		if RemoveDecals.Enabled and (v:IsA('Decal') or v:IsA('Texture')) then
-			if v.Transparency < 1 and hiddenDecals[v] == nil then
-				hiddenDecals[v] = v.Transparency
-				v.Transparency = 1
+		if SimplifyLighting.Enabled and v:IsA('Clouds') then
+			return disableInstance(v)
+		end
+	
+		-- Atmosphere has no Enabled property, so it gets detached and put back later.
+		if SimplifyLighting.Enabled and v:IsA('Atmosphere') then
+			return detachInstance(v)
+		end
+	
+		if RemoveTextures.Enabled then
+			if v:IsA('Decal') or v:IsA('Texture') then
+				if v.Transparency < 1 and hiddenDecals[v] == nil then
+					hiddenDecals[v] = v.Transparency
+					v.Transparency = 1
+				end
+				return
+			end
+			-- SurfaceAppearance is PBR (roughness/metalness/normal maps) and is one of the
+			-- most expensive things a part can carry. It can't be disabled, only detached.
+			if v:IsA('SurfaceAppearance') then
+				return detachInstance(v)
+			end
+		end
+	
+		-- Layered clothing is deformation work every frame, per character wearing it.
+		-- WrapLayer only - WrapTarget has no Enabled property to switch off.
+		if HideAccessories.Enabled and v:IsA('WrapLayer') then
+			return disableInstance(v)
+		end
+	
+		if MuteSounds.Enabled and v:IsA('Sound') then
+			if v.Volume > 0 and mutedSounds[v] == nil then
+				mutedSounds[v] = v.Volume
+				v.Volume = 0
 			end
 			return
 		end
 	
 		if not v:IsA('BasePart') then return end
-		-- Never touch the local character - flattening its materials or dropping its mesh
-		-- detail makes your own player look broken for zero framerate gain.
-		if lplr.Character and v:IsDescendantOf(lplr.Character) then return end
+	
+		if HideAccessories.Enabled and v.Parent and v.Parent:IsA('Accessory') and hiddenAccessories[v] == nil then
+			hiddenAccessories[v] = v.Transparency
+			v.Transparency = 1
+		end
 	
 		if LowMeshDetail.Enabled and v:IsA('MeshPart') and loweredMeshes[v] == nil then
 			loweredMeshes[v] = v.RenderFidelity
 			v.RenderFidelity = Enum.RenderFidelity.Performance
+		end
+	
+		if RemoveTextures.Enabled and v:IsA('MeshPart') and v.TextureID ~= '' and clearedTextures[v] == nil then
+			clearedTextures[v] = v.TextureID
+			v.TextureID = ''
 		end
 	
 		if DisableShadows.Enabled and v.CastShadow then
@@ -6751,6 +6824,13 @@ run(function()
 		end
 	end
 	
+	local function needsScan()
+		for _, v in instancetoggles do
+			if v.Enabled then return true end
+		end
+		return false
+	end
+	
 	FPSBoost = vain.Categories.Utility:CreateModule({
 		Name = 'FPS Boost',
 		Function = function(callback)
@@ -6766,6 +6846,15 @@ run(function()
 					pcall(function()
 						originalShadows = lightingService.GlobalShadows
 						lightingService.GlobalShadows = false
+					end)
+				end
+	
+				if SimplifyLighting.Enabled then
+					pcall(function()
+						originalLighting.EnvironmentDiffuseScale = lightingService.EnvironmentDiffuseScale
+						originalLighting.EnvironmentSpecularScale = lightingService.EnvironmentSpecularScale
+						lightingService.EnvironmentDiffuseScale = 0
+						lightingService.EnvironmentSpecularScale = 0
 					end)
 				end
 	
@@ -6787,13 +6876,15 @@ run(function()
 					pcall(setfpscap, 9999)
 				end
 	
+				if DisableRendering.Enabled then
+					if pcall(apply3dRendering, false) then
+						rendering3d = true
+					end
+				end
+	
 				-- Only hook/scan when something actually operates on instances, so leaving
 				-- just the engine-level options on costs nothing per-instance.
-				if
-					DisablePostFX.Enabled or RemoveParticles.Enabled or RemoveTrails.Enabled
-					or RemoveDecals.Enabled or LowMeshDetail.Enabled or DisableShadows.Enabled
-					or SimplifyMaterials.Enabled
-				then
+				if needsScan() then
 					FPSBoost:Clean(workspace.DescendantAdded:Connect(function(v)
 						pcall(applyInstance, v)
 					end))
@@ -6809,12 +6900,24 @@ run(function()
 					originalQuality = nil
 				end
 	
+				if rendering3d then
+					pcall(apply3dRendering, true)
+					rendering3d = nil
+				end
+	
 				if originalShadows ~= nil then
 					pcall(function()
 						lightingService.GlobalShadows = originalShadows
 					end)
 					originalShadows = nil
 				end
+	
+				for prop, val in originalLighting do
+					pcall(function()
+						lightingService[prop] = val
+					end)
+				end
+				table.clear(originalLighting)
 	
 				for prop, val in originalTerrain do
 					pcall(function()
@@ -6834,12 +6937,26 @@ run(function()
 				end
 				table.clear(disabledInstances)
 	
+				for v, parent in detachedInstances do
+					pcall(function()
+						v.Parent = parent
+					end)
+				end
+				table.clear(detachedInstances)
+	
 				for v, transparency in hiddenDecals do
 					pcall(function()
 						v.Transparency = transparency
 					end)
 				end
 				table.clear(hiddenDecals)
+	
+				for v, textureid in clearedTextures do
+					pcall(function()
+						v.TextureID = textureid
+					end)
+				end
+				table.clear(clearedTextures)
 	
 				for v, fidelity in loweredMeshes do
 					pcall(function()
@@ -6861,6 +6978,20 @@ run(function()
 					end)
 				end
 				table.clear(flattenedParts)
+	
+				for v, transparency in hiddenAccessories do
+					pcall(function()
+						v.Transparency = transparency
+					end)
+				end
+				table.clear(hiddenAccessories)
+	
+				for v, volume in mutedSounds do
+					pcall(function()
+						v.Volume = volume
+					end)
+				end
+				table.clear(mutedSounds)
 			end
 		end,
 		Tooltip = 'Strips out expensive rendering work to boost your framerate.\nToggle individual optimizations below.'
@@ -6877,17 +7008,29 @@ run(function()
 		Default = true,
 		Tooltip = 'Turns off global shadows and stops every part in the world from casting one'
 	})
+	DisableLights = FPSBoost:CreateToggle({
+		Name = 'Disable Dynamic Lights',
+		Function = refresh,
+		Default = true,
+		Tooltip = 'Disables point, spot and surface lights.\nOne of the largest gains on lamp-heavy or indoor maps.'
+	})
 	DisablePostFX = FPSBoost:CreateToggle({
 		Name = 'Disable Post-Processing',
 		Function = refresh,
 		Default = true,
 		Tooltip = 'Disables blur, bloom, color correction, sun rays and depth of field'
 	})
+	SimplifyLighting = FPSBoost:CreateToggle({
+		Name = 'Simplify Lighting',
+		Function = refresh,
+		Default = true,
+		Tooltip = 'Removes atmosphere and clouds, and drops ambient environment lighting'
+	})
 	RemoveParticles = FPSBoost:CreateToggle({
 		Name = 'Remove Particles',
 		Function = refresh,
 		Default = true,
-		Tooltip = 'Disables particle emitters - explosions, weather, ability effects'
+		Tooltip = 'Disables particle emitters plus fire, smoke and sparkles'
 	})
 	RemoveTrails = FPSBoost:CreateToggle({
 		Name = 'Remove Trails & Beams',
@@ -6895,11 +7038,11 @@ run(function()
 		Default = true,
 		Tooltip = 'Disables trail and beam effects, e.g. weapon swing trails'
 	})
-	RemoveDecals = FPSBoost:CreateToggle({
-		Name = 'Remove Decals & Textures',
+	RemoveTextures = FPSBoost:CreateToggle({
+		Name = 'Remove Textures',
 		Function = refresh,
 		Default = true,
-		Tooltip = 'Hides decals and textures layered onto parts in the world'
+		Tooltip = 'Strips decals, textures, mesh textures and PBR surface appearances.\nPBR removal is a big gain on modern, detailed maps.'
 	})
 	LowMeshDetail = FPSBoost:CreateToggle({
 		Name = 'Low Mesh Detail',
@@ -6918,11 +7061,31 @@ run(function()
 		Function = refresh,
 		Tooltip = 'Replaces every material with SmoothPlastic.\nBig gain on material-heavy maps, but makes the world look plain.'
 	})
+	HideAccessories = FPSBoost:CreateToggle({
+		Name = 'Hide Accessories',
+		Function = refresh,
+		Tooltip = 'Hides other players\' hats and disables layered clothing deformation.\nLarge gain in crowded servers, but changes how players look.'
+	})
+	MuteSounds = FPSBoost:CreateToggle({
+		Name = 'Mute Game Sounds',
+		Function = refresh,
+		Tooltip = 'Silences game audio to free up CPU. Minor gain compared to the render options.'
+	})
 	UncapFPS = FPSBoost:CreateToggle({
 		Name = 'Uncap Framerate',
 		Function = refresh,
 		Tooltip = 'Removes the framerate cap while enabled, and sets it back to 60 when disabled.\nRequires executor support.'
 	})
+	DisableRendering = FPSBoost:CreateToggle({
+		Name = 'Disable 3D Rendering',
+		Function = refresh,
+		Tooltip = 'AFK ONLY - stops the world from being drawn at all.\nYour screen goes blank while the game keeps running. Pair with Anti-AFK for idle farming.'
+	})
+	instancetoggles = {
+		DisableShadows, DisableLights, DisablePostFX, SimplifyLighting, RemoveParticles,
+		RemoveTrails, RemoveTextures, LowMeshDetail, SimplifyMaterials, HideAccessories,
+		MuteSounds
+	}
 	
 end)
 
