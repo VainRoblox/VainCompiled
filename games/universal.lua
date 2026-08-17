@@ -151,9 +151,17 @@ if vain.Categories.Watchlist then
 		end
 	end
 
-	for _, plr in playersService:GetPlayers() do
-		notifyWatchlist(plr, false)
-	end
+	-- Deferred, not immediate: base.lua runs before finishLoading() calls vain:Load()
+	-- (see main.lua), which is what actually populates Watchlist.ListEnabled from the
+	-- save file - scanning right here would always see it empty, so nobody already in
+	-- the server would ever match. A couple seconds is comfortably more than Load()
+	-- (a local file read + a few property sets) ever takes.
+	task.spawn(function()
+		task.wait(2)
+		for _, plr in playersService:GetPlayers() do
+			notifyWatchlist(plr, false)
+		end
+	end)
 	vain:Clean(playersService.PlayerAdded:Connect(function(plr)
 		notifyWatchlist(plr, true)
 	end))
