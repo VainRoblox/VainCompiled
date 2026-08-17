@@ -4690,10 +4690,16 @@ run(function()
 					inst.Range = 1000
 					Fullbright:Clean(inst)
 	
-					repeat
+					-- while, not repeat...until: toggling the module off destroys `inst`
+					-- synchronously (via the Clean() above), but this loop may still be asleep
+					-- in task.wait. A repeat...until only checks Enabled AFTER trying to
+					-- reparent, so it would always attempt one more reparent on an
+					-- already-destroyed instance before noticing it should stop. Checking first
+					-- avoids that.
+					while Fullbright.Enabled do
 						inst.Parent = entitylib.isAlive and entitylib.character.RootPart or nil
 						task.wait(0.1)
-					until not Fullbright.Enabled
+					end
 				end
 			else
 				flag = false
