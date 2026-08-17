@@ -791,6 +791,15 @@ components = {
 			self.Opacity = o or self.Opacity
 			preview.ImageColor3 = Color3.fromHSV(self.Hue, self.Sat, self.Value)
 			preview.ImageTransparency = 1 - self.Opacity
+			if self.Rainbow then
+				-- Continuous per-frame update (called every tick by the RainbowTable loop in
+				-- gui.lua) - each bar offset a quarter turn around the hue wheel so the icon
+				-- itself visibly cycles instead of only the target element it controls.
+				rainbow1.ImageColor3 = Color3.fromHSV(self.Hue, 1, 1)
+				rainbow2.ImageColor3 = Color3.fromHSV((self.Hue + 0.25) % 1, 1, 1)
+				rainbow3.ImageColor3 = Color3.fromHSV((self.Hue + 0.5) % 1, 1, 1)
+				rainbow4.ImageColor3 = Color3.fromHSV((self.Hue + 0.75) % 1, 1, 1)
+			end
 			satSlider.Slider.UIGradient.Color = ColorSequence.new({
 				ColorSequenceKeypoint.new(0, Color3.fromHSV(0, 0, self.Value)),
 				ColorSequenceKeypoint.new(1, Color3.fromHSV(self.Hue, 1, self.Value))
@@ -835,6 +844,8 @@ components = {
 			self.Rainbow = not self.Rainbow
 			if self.Rainbow then
 				table.insert(mainapi.RainbowTable, self)
+				-- Instant flash on toggle-on - the continuous cycling in SetValue (driven by
+				-- the RainbowTable loop) takes over from here every frame.
 				rainbow1.ImageColor3 = Color3.fromRGB(5, 127, 100)
 				task.delay(0.1, function()
 					if not self.Rainbow then return end
@@ -849,6 +860,9 @@ components = {
 				if ind then
 					table.remove(mainapi.RainbowTable, ind)
 				end
+				-- Reset all 4 bars back to the idle color, including bar 4 - previously left
+				-- untouched here, so it stayed stuck on a rainbow hue after toggling off.
+				rainbow4.ImageColor3 = color.Light(uipallet.Main, 0.37)
 				rainbow3.ImageColor3 = color.Light(uipallet.Main, 0.37)
 				task.delay(0.1, function()
 					if self.Rainbow then return end
