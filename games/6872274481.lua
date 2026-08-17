@@ -1336,6 +1336,7 @@ run(function()
 	local Falloff
 	local Humanize
 	local UseProjectile
+	local ProjectileSpeed
 	
 	-- Reused for the projectile trajectory solve, same as ProjectileAimbot does: only the
 	-- map blocks the shot, players are not obstacles to aim around.
@@ -1346,6 +1347,12 @@ run(function()
 	-- Remembered between frames so 'Lock on Target' can keep aiming at the same entity
 	-- instead of re-picking the closest one every heartbeat.
 	local locked
+	
+	-- Humanize state. The drift is a slow wander toward a re-rolled target offset, not a
+	-- fresh random value per frame: per-frame randomness is white noise, which reads on
+	-- screen as a harsh flicker rather than as a human hand. Holding an offset and easing
+	-- toward a new one keeps the motion continuous.
+	local humanizeoffset, humanizetarget, humanizenext = Vector2.zero, Vector2.zero, 0
 	
 	local function heldItemMeta()
 		local hand = store.hand
@@ -1499,7 +1506,13 @@ run(function()
 	
 						targetinfo.Targets[ent] = tick() + 1
 	
-						local speed = AimSpeed.Value + (StrafeIncrease.Enabled and (inputService:IsKeyDown(Enum.KeyCode.A) or inputService:IsKeyDown(Enum.KeyCode.D)) and 10 or 0)
+						-- Projectiles get their own, much higher speed. A bow shot is a single
+						-- instant with no second chance, so the camera has to be on target
+						-- before it leaves your hand - unlike melee, where a slow drift still
+						-- lands hits because you keep swinging. At 60+ the per-frame alpha
+						-- reaches 1 and it snaps outright.
+						local basespeed = (not issword) and ProjectileSpeed.Value or AimSpeed.Value
+						local speed = basespeed + (StrafeIncrease.Enabled and (inputService:IsKeyDown(Enum.KeyCode.A) or inputService:IsKeyDown(Enum.KeyCode.D)) and 10 or 0)
 						local alpha
 						if AimMode.Value == 'Constant' then
 							-- Turn at a fixed angular rate: work out what fraction of the
@@ -1509,7 +1522,11 @@ run(function()
 							alpha = err > 0 and (step / err) or 0
 						else
 							alpha = speed * dt
-							if AimMode.Value == 'Smooth' then
+							-- Smooth easing is deliberately skipped for projectiles. Easing off
+							-- near the target is what makes melee tracking look human, but it is
+							-- precisely the last degree that decides whether a shot lands, and
+							-- damping it there is what made shooting feel slow.
+							if AimMode.Value == 'Smooth' and issword then
 								-- Ease out: the closer the crosshair already is, the gentler the
 								-- correction, so it settles instead of snapping the last degree.
 								-- Higher Smoothness widens the window over which it eases.
@@ -1527,9 +1544,17 @@ run(function()
 						local newcframe = gameCamera.CFrame:Lerp(CFrame.lookAt(gameCamera.CFrame.Position, aimpos), math.clamp(alpha, 0, 1))
 	
 						if Humanize.Value > 0 then
-							-- Small random wobble so the path is not perfectly mechanical.
-							local jitter = math.rad(Humanize.Value / 20)
-							newcframe = newcframe * CFrame.Angles((math.random() - 0.5) * jitter, (math.random() - 0.5) * jitter, 0)
+							local amplitude = math.rad(Humanize.Value / 40)
+							-- Re-roll where the drift is heading every third of a second or so.
+							-- The random interval stops it settling into a visible rhythm.
+							if tick() >= humanizenext then
+								humanizenext = tick() + 0.25 + math.random() * 0.35
+								humanizetarget = Vector2.new((math.random() - 0.5) * 2, (math.random() - 0.5) * 2) * amplitude
+							end
+							-- Ease toward that target rather than jumping to it, so every frame
+							-- is a small continuation of the last instead of an independent jolt.
+							humanizeoffset = humanizeoffset:Lerp(humanizetarget, math.clamp(dt * 4, 0, 1))
+							newcframe = newcframe * CFrame.Angles(humanizeoffset.Y, humanizeoffset.X, 0)
 						end
 	
 						gameCamera.CFrame = newcframe
@@ -1537,6 +1562,7 @@ run(function()
 				end))
 			else
 				locked = nil
+				humanizeoffset, humanizetarget, humanizenext = Vector2.zero, Vector2.zero, 0
 			end
 		end,
 		Tooltip = 'Smoothly aims at a valid target while holding a sword, or any projectile with Use Projectile on'
@@ -1599,6 +1625,13 @@ run(function()
 		Max = 20,
 		Default = 6
 	})
+	ProjectileSpeed = AimAssist:CreateSlider({
+		Name = 'Projectile Aim Speed',
+		Tooltip = 'Aim speed used while holding a projectile, replacing Aim Speed.\nMuch higher because a shot only gets one chance to be on target.\n60 and above snaps instantly.',
+		Min = 1,
+		Max = 100,
+		Default = 45
+	})
 	Distance = AimAssist:CreateSlider({
 		Name = 'Distance',
 		Tooltip = 'Furthest a target can be, in studs',
@@ -1618,7 +1651,7 @@ run(function()
 	})
 	Humanize = AimAssist:CreateSlider({
 		Name = 'Humanize',
-		Tooltip = 'Adds a small random wobble so the aim path is not perfectly mechanical.\n0 disables it.',
+		Tooltip = 'Adds a slow, continuous drift to the aim so it is not perfectly mechanical.\nDrifts rather than shakes, so it will not flicker.\n0 disables it.',
 		Min = 0,
 		Max = 100,
 		Default = 0,
