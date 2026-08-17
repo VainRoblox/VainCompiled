@@ -207,6 +207,44 @@ local function getWool()
 	end
 end
 
+-- Finds the index of the upvalue holding `value` in `func`, instead of hardcoding one.
+-- Upvalue positions shift whenever the game adds or removes a local in the enclosing
+-- scope, which silently turns a hooking module into one that corrupts an unrelated
+-- upvalue - e.g. writing over the game's Players reference instead of KnitClient.
+-- Returns nil when it isn't there, so callers can skip rather than clobber.
+local function findUpvalue(func, value)
+	if type(func) ~= 'function' then return nil end
+	for i = 1, 40 do
+		local suc, up = pcall(debug.getupvalue, func, i)
+		if not suc then break end
+		if up == value then return i end
+	end
+	return nil
+end
+
+-- Same idea for constants.
+local function findConstant(func, value)
+	if type(func) ~= 'function' then return nil end
+	local suc, constants = pcall(debug.getconstants, func)
+	if not suc or not constants then return nil end
+	for i, v in constants do
+		if v == value then return i end
+	end
+	return nil
+end
+
+-- Swaps a constant by value rather than by position. Modules use this to neuter a
+-- specific check inside a game function (e.g. renaming the key it looks up so the
+-- lookup misses) and to put it back afterwards. Returns false when the value isn't
+-- there, which is the signal that the game changed and the hook should be skipped
+-- instead of writing over whatever happens to sit at a hardcoded index.
+local function swapConstant(func, from, to)
+	local ind = findConstant(func, from)
+	if not ind then return false end
+	local suc = pcall(debug.setconstant, func, ind, to)
+	return suc
+end
+
 local function getStrength(plr)
 	if not plr.Player then
 		return 0
@@ -2060,7 +2098,9 @@ run(function()
 	vain.Categories.Blatant:CreateModule({
 		Name = 'KeepSprint',
 		Function = function(callback)
-			debug.setconstant(bedwars.SprintController.startSprinting, 5, callback and 'blockSprinting' or 'blockSprint')
+			-- Renames the key the sprint check looks up so it misses, instead of writing a
+			-- hardcoded constant slot that moves whenever the game's own code shifts.
+			swapConstant(bedwars.SprintController.startSprinting, callback and 'blockSprint' or 'blockSprinting', callback and 'blockSprinting' or 'blockSprint')
 			bedwars.SprintController:stopSprinting()
 		end,
 		Tooltip = 'Lets you sprint with a speed potion.'
@@ -2069,6 +2109,11 @@ end)
 
 local Attacking
 run(function()
+	-- Resolved at hook time rather than hardcoded: these hold the index of the KnitClient
+	-- upvalue inside the game's own functions, which moves whenever the game shifts a
+	-- local around. Looking it up by value means a shift can't make us overwrite an
+	-- unrelated upvalue, and remembering the index keeps the restore path symmetric.
+	local swingknitindex, scytheknitindex
 	local Killaura
 	local Targets
 	local Sort
@@ -2150,8 +2195,15 @@ run(function()
 							}
 						}
 					}
-					debug.setupvalue(oldSwing or bedwars.SwordController.playSwordEffect, 6, fake)
-					debug.setupvalue(bedwars.ScytheController.playLocalAnimation, 3, fake)
+					local swingfunc = oldSwing or bedwars.SwordController.playSwordEffect
+					swingknitindex = findUpvalue(swingfunc, bedwars.Knit)
+					if swingknitindex then
+						debug.setupvalue(swingfunc, swingknitindex, fake)
+					end
+					scytheknitindex = findUpvalue(bedwars.ScytheController.playLocalAnimation, bedwars.Knit)
+					if scytheknitindex then
+						debug.setupvalue(bedwars.ScytheController.playLocalAnimation, scytheknitindex, fake)
+					end
 
 					task.spawn(function()
 						local started = false
@@ -2300,8 +2352,14 @@ run(function()
 						lplr.PlayerGui.MobileUI['2'].Visible = true
 					end)
 				end
-				debug.setupvalue(oldSwing or bedwars.SwordController.playSwordEffect, 6, bedwars.Knit)
-				debug.setupvalue(bedwars.ScytheController.playLocalAnimation, 3, bedwars.Knit)
+				if swingknitindex then
+					debug.setupvalue(oldSwing or bedwars.SwordController.playSwordEffect, swingknitindex, bedwars.Knit)
+					swingknitindex = nil
+				end
+				if scytheknitindex then
+					debug.setupvalue(bedwars.ScytheController.playLocalAnimation, scytheknitindex, bedwars.Knit)
+					scytheknitindex = nil
+				end
 				Attacking = false
 				if armC0 then
 					AnimTween = tweenService:Create(gameCamera.Viewmodel.RightHand.RightWrist, TweenInfo.new(AnimationTween.Enabled and 0.001 or 0.3, Enum.EasingStyle.Exponential), {
@@ -3135,7 +3193,7 @@ run(function()
 			frictionTable.Speed = callback or nil
 			updateVelocity()
 			pcall(function()
-				debug.setconstant(bedwars.WindWalkerController.updateSpeed, 7, callback and 'constantSpeedMultiplier' or 'moveSpeedMultiplier')
+				swapConstant(bedwars.WindWalkerController.updateSpeed, callback and 'moveSpeedMultiplier' or 'constantSpeedMultiplier', callback and 'constantSpeedMultiplier' or 'moveSpeedMultiplier')
 			end)
 	
 			if callback then
@@ -7747,7 +7805,9 @@ run(function()
 	vain.Legit:CreateModule({
 		Name = 'HitFix',
 		Function = function(callback)
-			debug.setconstant(bedwars.SwordController.swingSwordAtMouse, 23, callback and 'raycast' or 'Raycast')
+			-- Lowercasing the method name makes the engine-side lookup miss, which is the
+			-- whole trick here. Found by value so it survives the game shifting constants.
+			swapConstant(bedwars.SwordController.swingSwordAtMouse, callback and 'Raycast' or 'raycast', callback and 'raycast' or 'Raycast')
 			debug.setupvalue(bedwars.SwordController.swingSwordAtMouse, 4, callback and bedwars.QueryUtil or workspace)
 		end,
 		Tooltip = 'Changes the raycast function to the correct one'
