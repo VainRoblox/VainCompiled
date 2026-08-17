@@ -1699,6 +1699,7 @@ run(function()
 	local BurstLength
 	local BurstPause
 	local Thread
+	local heldbutton
 	local burstcount = 0
 	
 	-- task.cancel throws on a thread that has already finished, and Thread stays non-nil
@@ -1710,6 +1711,7 @@ run(function()
 			pcall(task.cancel, Thread)
 			Thread = nil
 		end
+		heldbutton = nil
 	end
 	
 	-- A real mouse click, the same way TriggerBot and SilentAim do it. This is what lets
@@ -1784,6 +1786,7 @@ run(function()
 		stopThread()
 		burstcount = 0
 		button = button or 1
+		heldbutton = button
 	
 		Thread = task.delay(StartDelay.Value / 1000, function()
 			repeat
@@ -1834,11 +1837,11 @@ run(function()
 		Name = 'AutoClicker',
 		Function = function(callback)
 			if callback then
-				-- gameProcessed is honoured in Game mode so clicking the Vain menu, the chat
-				-- box or any game UI does not start the clicker. Raw mode deliberately ignores
-				-- it, since clicking through interfaces is the whole point of that mode.
-				AutoClicker:Clean(inputService.InputBegan:Connect(function(input, gameProcessed)
-					if gameProcessed and Mode.Value == 'Game' then return end
+				-- Deliberately NOT gated on gameProcessed. Bedwars covers the screen with an
+				-- active HUD, so the engine reports practically every click as processed and
+				-- gating on it stopped the clicker from ever starting. Menus are handled by
+				-- the GUI check inside doClick instead, which tests the game's own UI layer.
+				AutoClicker:Clean(inputService.InputBegan:Connect(function(input)
 					if input.UserInputType == Enum.UserInputType.MouseButton1 then
 						AutoClick(1)
 					elseif RightClick.Enabled and input.UserInputType == Enum.UserInputType.MouseButton2 then
@@ -1846,8 +1849,11 @@ run(function()
 					end
 				end))
 	
+				-- Only the button that started the loop stops it, so tapping the other one
+				-- mid-hold cannot cancel a click you are still holding.
 				AutoClicker:Clean(inputService.InputEnded:Connect(function(input)
-					if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.MouseButton2 then
+					if (heldbutton == 1 and input.UserInputType == Enum.UserInputType.MouseButton1)
+						or (heldbutton == 2 and input.UserInputType == Enum.UserInputType.MouseButton2) then
 						stopThread()
 					end
 				end))
