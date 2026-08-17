@@ -2444,11 +2444,16 @@ mainapi.Components = setmetatable(components, {
 task.spawn(function()
 	repeat
 		local hue = tick() * (0.2 * mainapi.RainbowSpeed.Value) % 1
+		-- pcall per entry: this loop drives every rainbow-enabled element on the
+		-- client, and task.spawn does not recover from an uncaught error - one stale
+		-- entry (e.g. a slider whose instance got torn down while still registered)
+		-- throwing here would otherwise permanently kill rainbow animation for
+		-- everything, not just that one entry, for the rest of the session.
 		for _, v in mainapi.RainbowTable do
 			if v.Type == 'GUISlider' then
-				v:SetValue(mainapi:Color(hue))
+				pcall(v.SetValue, v, mainapi:Color(hue))
 			else
-				v:SetValue(hue)
+				pcall(v.SetValue, v, hue)
 			end
 		end
 		task.wait(1 / mainapi.RainbowUpdateSpeed.Value)
@@ -7024,7 +7029,7 @@ mainapi:Clean(notifications.ChildRemoved:Connect(function()
 	for i, v in notifications:GetChildren() do
 		if tween.Tween then
 			tween:Tween(v, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {
-				Position = UDim2.new(1, 0, 1, -(29 + (78 * i)))
+				Position = UDim2.new(1, 0, 1, -(29 + (61 * i)))
 			})
 		end
 	end
