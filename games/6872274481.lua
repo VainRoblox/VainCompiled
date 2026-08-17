@@ -495,11 +495,11 @@ local sortmethodtips = {
 	Damage = 'Whoever damaged you most recently',
 	Angle = 'Whoever is nearest the direction you are already facing',
 	Cursor = 'Whoever is nearest your crosshair on screen',
-	Armor = 'Whoever is wearing the weakest armor, so dies fastest',
+	Armor = 'Whoever is wearing the weakest armor',
 	Health = 'Whoever has the lowest health',
 	Threat = 'Whoever is holding the strongest sword',
 	Kit = 'Whoever is playing the most dangerous kit',
-	['Final Kill'] = 'Players whose bed is already broken, so the kill is permanent'
+	['Final Kill'] = 'Players whose bed is already broken'
 }
 
 local sortmethods = {
@@ -1596,7 +1596,7 @@ run(function()
 		Tooltip = 'Which part of the target to aim at',
 		List = {'RootPart', 'Head', 'Nearest'},
 		Tooltips = {
-			RootPart = 'Aims at the body - the largest and most forgiving target',
+			RootPart = 'Aims at the body',
 			Head = 'Aims at the head',
 			Nearest = 'Aims at whichever of the two needs the smaller camera movement'
 		}
@@ -1607,13 +1607,13 @@ run(function()
 		List = {'Linear', 'Smooth', 'Constant'},
 		Tooltips = {
 			Linear = 'Moves a fixed fraction of the way each frame - fast at first, slower as it closes in',
-			Smooth = 'Eases off as the crosshair approaches, so it settles instead of snapping',
+			Smooth = 'Eases off as the crosshair approaches',
 			Constant = 'Turns at a steady speed no matter how far off the target is'
 		}
 	})
 	Smoothness = AimAssist:CreateSlider({
 		Name = 'Smoothness',
-		Tooltip = 'Only used by Smooth mode.\nHigher values start easing off from further away, giving a softer finish.',
+		Tooltip = 'Only used by Smooth mode.\nHigher values start easing off from further away.',
 		Min = 1,
 		Max = 30,
 		Default = 10
@@ -1627,7 +1627,7 @@ run(function()
 	})
 	ProjectileSpeed = AimAssist:CreateSlider({
 		Name = 'Projectile Aim Speed',
-		Tooltip = 'Aim speed used while holding a projectile, replacing Aim Speed.\nMuch higher because a shot only gets one chance to be on target.\n60 and above snaps instantly.',
+		Tooltip = 'Aim speed used while holding a projectile, replacing Aim Speed.\n60 and above snaps instantly.',
 		Min = 1,
 		Max = 100,
 		Default = 45
@@ -1651,7 +1651,7 @@ run(function()
 	})
 	Humanize = AimAssist:CreateSlider({
 		Name = 'Humanize',
-		Tooltip = 'Adds a slow, continuous drift to the aim so it is not perfectly mechanical.\nDrifts rather than shakes, so it will not flicker.\n0 disables it.',
+		Tooltip = 'Adds a slow, continuous drift to the aim.\n0 disables it.',
 		Min = 0,
 		Max = 100,
 		Default = 0,
@@ -1666,11 +1666,11 @@ run(function()
 	})
 	LockTarget = AimAssist:CreateToggle({
 		Name = 'Lock on Target',
-		Tooltip = 'Sticks to one target until it dies or leaves range, instead of switching to whoever is closest each frame'
+		Tooltip = 'Sticks to one target until it dies or leaves range'
 	})
 	UseProjectile = AimAssist:CreateToggle({
 		Name = 'Use Projectile',
-		Tooltip = 'Also aims while holding a projectile weapon, and leads the shot so the arrow lands on the target instead of pointing straight at them'
+		Tooltip = 'Also aims while holding a projectile weapon, and leads the shot to where the target is moving'
 	})
 	Falloff = AimAssist:CreateToggle({
 		Name = 'Falloff',

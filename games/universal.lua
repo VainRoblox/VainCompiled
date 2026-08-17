@@ -6997,13 +6997,13 @@ run(function()
 				table.clear(mutedSounds)
 			end
 		end,
-		Tooltip = 'Strips out expensive rendering work to boost your framerate.\nToggle individual optimizations below.'
+		Tooltip = 'Applies the optimizations selected below to boost your framerate'
 	})
 	LowGraphics = FPSBoost:CreateToggle({
 		Name = 'Low Graphics Quality',
 		Function = refresh,
 		Default = true,
-		Tooltip = "Forces Roblox's lowest graphics quality level.\nRequires an executor that allows elevated thread identity."
+		Tooltip = "Forces Roblox's lowest graphics quality level"
 	})
 	DisableShadows = FPSBoost:CreateToggle({
 		Name = 'Disable Shadows',
@@ -7015,7 +7015,7 @@ run(function()
 		Name = 'Disable Dynamic Lights',
 		Function = refresh,
 		Default = true,
-		Tooltip = 'Disables point, spot and surface lights.\nOne of the largest gains on lamp-heavy or indoor maps.'
+		Tooltip = 'Disables point, spot and surface lights'
 	})
 	DisablePostFX = FPSBoost:CreateToggle({
 		Name = 'Disable Post-Processing',
@@ -7045,7 +7045,7 @@ run(function()
 		Name = 'Remove Textures',
 		Function = refresh,
 		Default = true,
-		Tooltip = 'Strips decals, textures, mesh textures and PBR surface appearances.\nPBR removal is a big gain on modern, detailed maps.'
+		Tooltip = 'Strips decals, textures, mesh textures and PBR surface appearances'
 	})
 	LowMeshDetail = FPSBoost:CreateToggle({
 		Name = 'Low Mesh Detail',
@@ -7062,27 +7062,27 @@ run(function()
 	SimplifyMaterials = FPSBoost:CreateToggle({
 		Name = 'Flatten Materials',
 		Function = refresh,
-		Tooltip = 'Replaces every material with SmoothPlastic.\nBig gain on material-heavy maps, but makes the world look plain.'
+		Tooltip = 'Replaces every material with SmoothPlastic'
 	})
 	HideAccessories = FPSBoost:CreateToggle({
 		Name = 'Hide Accessories',
 		Function = refresh,
-		Tooltip = 'Hides other players\' hats and disables layered clothing deformation.\nLarge gain in crowded servers, but changes how players look.'
+		Tooltip = 'Hides other players\' hats and disables layered clothing deformation'
 	})
 	MuteSounds = FPSBoost:CreateToggle({
 		Name = 'Mute Game Sounds',
 		Function = refresh,
-		Tooltip = 'Silences game audio to free up CPU. Minor gain compared to the render options.'
+		Tooltip = 'Silences game audio'
 	})
 	UncapFPS = FPSBoost:CreateToggle({
 		Name = 'Uncap Framerate',
 		Function = refresh,
-		Tooltip = 'Removes the framerate cap while enabled, and sets it back to 60 when disabled.\nRequires executor support.'
+		Tooltip = 'Removes the framerate cap while enabled, and sets it back to 60 when disabled'
 	})
 	DisableRendering = FPSBoost:CreateToggle({
 		Name = 'Disable 3D Rendering',
 		Function = refresh,
-		Tooltip = 'AFK ONLY - stops the world from being drawn at all.\nYour screen goes blank while the game keeps running. Pair with Anti-AFK for idle farming.'
+		Tooltip = 'Stops the world from being drawn at all.\nYour screen goes blank while the game keeps running.'
 	})
 	instancetoggles = {
 		DisableShadows, DisableLights, DisablePostFX, SimplifyLighting, RemoveParticles,
