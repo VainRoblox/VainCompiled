@@ -2464,12 +2464,15 @@ task.spawn(function()
 		-- entry (e.g. a slider whose instance got torn down while still registered)
 		-- throwing here would otherwise permanently kill rainbow animation for
 		-- everything, not just that one entry, for the rest of the session.
+		-- Every entry gets the same raw hue (sat/value untouched, so they cycle just
+		-- like the bars). GUISlider entries used to get run through mainapi:Color()
+		-- here, forcing self.Sat/self.Value to a theme-specific curve every tick - but
+		-- UpdateGUI already applies that same curve independently when it paints theme
+		-- elements (buttons, category text, etc.), so this was double-curving on top of
+		-- that and made the slider's own preview swatch/knob show muted, inconsistent
+		-- colors instead of a clean rainbow.
 		for _, v in mainapi.RainbowTable do
-			if v.Type == 'GUISlider' then
-				pcall(v.SetValue, v, mainapi:Color(hue))
-			else
-				pcall(v.SetValue, v, hue)
-			end
+			pcall(v.SetValue, v, hue)
 		end
 		task.wait(1 / mainapi.RainbowUpdateSpeed.Value)
 	until mainapi.Loaded == nil
@@ -3360,7 +3363,6 @@ function mainapi:CreateGUI()
 			ColorSequenceKeypoint.new(1, Color3.fromHSV(optionapi.Hue, optionapi.Sat, 1))
 		}))
 		local normalknob = getcustomasset('vain/assets/new/guislider.png')
-		local rainbowknob = getcustomasset('vain/assets/new/guisliderrain.png')
 		local rainbowthread
 
 		function optionapi:Save(tab)
@@ -3423,8 +3425,11 @@ function mainapi:CreateGUI()
 			})
 
 			if self.Rainbow or self.CustomColor then
-				knob.Image = rainbowknob
-				knob.ImageColor3 = Color3.new(1, 1, 1)
+				-- Same knob image as the normal case, just tinted to the live color -
+				-- previously swapped to a separate "rainbowknob" asset here, which is
+				-- what produced the broken-looking ring outline.
+				knob.Image = normalknob
+				knob.ImageColor3 = Color3.fromHSV(self.Hue, self.Sat, self.Value)
 				tween:Tween(knob, uipallet.Tween, {
 					Position = UDim2.fromOffset(slidercolorpos[4] - 3, -5)
 				})
@@ -3473,7 +3478,7 @@ function mainapi:CreateGUI()
 			end
 
 			if self.Rainbow then
-				knob.Image = rainbowknob
+				knob.Image = normalknob
 				table.insert(mainapi.RainbowTable, self)
 
 				-- Instant flash on toggle-on - the continuous cycling in SetValue (driven
