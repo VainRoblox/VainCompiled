@@ -145,9 +145,9 @@ end
 -- joins later. Guarded by vain.Categories.Watchlist existing since only the "new"
 -- GUI theme creates that category right now.
 if vain.Categories.Watchlist then
-	local function notifyWatchlist(plr, joined)
+	local function notifyWatchlist(plr)
 		if table.find(vain.Categories.Watchlist.ListEnabled, plr.Name) then
-			notif('Vain', plr.Name..(joined and ' has joined the server.' or ' is already in this server.'), 10, 'alert')
+			notif('Vain', plr.DisplayName..' (@'..plr.Name..') is in the server!', 10, 'alert')
 		end
 	end
 
@@ -159,12 +159,10 @@ if vain.Categories.Watchlist then
 	task.spawn(function()
 		task.wait(2)
 		for _, plr in playersService:GetPlayers() do
-			notifyWatchlist(plr, false)
+			notifyWatchlist(plr)
 		end
 	end)
-	vain:Clean(playersService.PlayerAdded:Connect(function(plr)
-		notifyWatchlist(plr, true)
-	end))
+	vain:Clean(playersService.PlayerAdded:Connect(notifyWatchlist))
 end
 
 local function removeTags(str)
