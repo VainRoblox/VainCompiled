@@ -1,8 +1,17 @@
+-- Index into CreateGUISlider's slidercolors/slidercolorpos presets that counts as "the
+-- default theme color" - used by the initial value, the RESET button, the rainbow-off
+-- path and mainapi:Load. Every one of those used to hardcode 4 (green) separately, so
+-- changing the default in one place did nothing; they all read this now.
+local DEFAULTNOTCH = 5
+-- The notch the old code hardcoded everywhere (green). Only used to recognize profiles
+-- that predate DEFAULTNOTCH so they can be migrated once - see optionapi:Load.
+local LEGACYNOTCH = 4
+
 local mainapi = {
 	Categories = {},
-	-- Matches slidercolors[5] (the blue preset notch) in CreateGUISlider, below - kept
-	-- in sync so this early placeholder (read before that slider exists) and the real
-	-- widget's own default always show the same blue.
+	-- Matches slidercolors[DEFAULTNOTCH] (the blue preset) in CreateGUISlider - this is
+	-- only an early placeholder, read before that slider exists; the real widget derives
+	-- its own values from the preset directly.
 	GUIColor = {
 		Hue = 0.598,
 		Sat = 0.7948,
@@ -3110,19 +3119,6 @@ function mainapi:CreateGUI()
 	end
 
 	function categoryapi:CreateGUISlider(optionsettings)
-		-- Notch 5 is the blue preset (slidercolors[5], RGB(47,122,229)) - Hue/Sat/Value
-		-- match its HSV conversion exactly so the raw values and the notch-selected
-		-- color agree, instead of a notch default that pointed at a different (green)
-		-- preset than the raw Hue/Sat/Value implied.
-		local optionapi = {
-			Type = 'GUISlider',
-			Notch = 5,
-			Hue = 0.598,
-			Sat = 0.7948,
-			Value = 0.898,
-			Rainbow = false,
-			CustomColor = false
-		}
 		local slidercolors = {
 			Color3.fromRGB(250, 50, 56),
 			Color3.fromRGB(242, 99, 33),
@@ -3140,6 +3136,18 @@ function mainapi:CreateGUI()
 			119,
 			148,
 			177
+		}
+		-- Derived from the preset itself rather than hardcoded, so the raw HSV and the
+		-- notch-selected color can never drift apart again.
+		local defaulthue, defaultsat, defaultvalue = slidercolors[DEFAULTNOTCH]:ToHSV()
+		local optionapi = {
+			Type = 'GUISlider',
+			Notch = DEFAULTNOTCH,
+			Hue = defaulthue,
+			Sat = defaultsat,
+			Value = defaultvalue,
+			Rainbow = false,
+			CustomColor = false
 		}
 
 		local function createSlider(name, gradientColor)
@@ -3206,7 +3214,7 @@ function mainapi:CreateGUI()
 				reset.FontFace = uipallet.Font
 				reset.Parent = slider
 				reset.MouseButton1Click:Connect(function()
-					optionapi:SetValue(nil, nil, nil, 4)
+					optionapi:SetValue(nil, nil, nil, DEFAULTNOTCH)
 				end)
 			end
 
@@ -3350,10 +3358,10 @@ function mainapi:CreateGUI()
 		local knob = Instance.new('ImageLabel')
 		knob.Name = 'Knob'
 		knob.Size = UDim2.fromOffset(26, 12)
-		knob.Position = UDim2.fromOffset(slidercolorpos[4] - 3, -5)
+		knob.Position = UDim2.fromOffset(slidercolorpos[DEFAULTNOTCH] - 3, -5)
 		knob.BackgroundTransparency = 1
 		knob.Image = getcustomasset('vain/assets/new/guislider.png')
-		knob.ImageColor3 = slidercolors[4]
+		knob.ImageColor3 = slidercolors[DEFAULTNOTCH]
 		knob.Parent = holder
 		optionsettings.Function = optionsettings.Function or function() end
 		local rainbowTable = {}
@@ -3379,11 +3387,23 @@ function mainapi:CreateGUI()
 				Value = self.Value,
 				Notch = self.Notch,
 				CustomColor = self.CustomColor,
-				Rainbow = self.Rainbow
+				Rainbow = self.Rainbow,
+				-- Records which notch was the default when this profile was written, so
+				-- Load can tell "user deliberately picked this color" apart from "this is
+				-- just whatever the default happened to be back then".
+				Default = DEFAULTNOTCH
 			}
 		end
 
 		function optionapi:Load(tab)
+			-- Profiles written before the theme default moved have no Default field, and
+			-- the old code force-reset the theme to LEGACYNOTCH on every single load - so
+			-- a saved LEGACYNOTCH there means "never actually chosen", not a preference.
+			-- Adopt the current default in that case, otherwise the old hardcoded color
+			-- would keep winning forever on any install that had already been run once.
+			if not tab.Default and tab.Notch == LEGACYNOTCH and not tab.CustomColor and not tab.Rainbow then
+				tab = {Notch = DEFAULTNOTCH}
+			end
 			if tab.Rainbow then
 				self:Toggle()
 			end
@@ -3447,14 +3467,14 @@ function mainapi:CreateGUI()
 					knob.Position = UDim2.fromOffset(4 + self.Hue * (177 - 4) - 3, -5)
 				else
 					tween:Tween(knob, uipallet.Tween, {
-						Position = UDim2.fromOffset(slidercolorpos[4] - 3, -5)
+						Position = UDim2.fromOffset(slidercolorpos[DEFAULTNOTCH] - 3, -5)
 					})
 				end
 			else
 				knob.Image = normalknob
 				knob.ImageColor3 = Color3.fromHSV(self.Hue, self.Sat, self.Value)
 				tween:Tween(knob, uipallet.Tween, {
-					Position = UDim2.fromOffset(slidercolorpos[n or 4] - 3, -5)
+					Position = UDim2.fromOffset(slidercolorpos[n or DEFAULTNOTCH] - 3, -5)
 				})
 			end
 
@@ -3509,7 +3529,7 @@ function mainapi:CreateGUI()
 					end)
 				end)
 			else
-				self:SetValue(nil, nil, nil, 4)
+				self:SetValue(nil, nil, nil, DEFAULTNOTCH)
 				knob.Image = normalknob
 				local ind = table.find(mainapi.RainbowTable, self)
 				if ind then
@@ -5389,7 +5409,7 @@ end
 
 function mainapi:Load(skipgui, profile)
 	if not skipgui then
-		self.GUIColor:SetValue(nil, nil, nil, 4)
+		self.GUIColor:SetValue(nil, nil, nil, DEFAULTNOTCH)
 	end
 	local guidata = {}
 	local savecheck = true
