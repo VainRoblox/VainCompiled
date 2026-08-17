@@ -1,9 +1,12 @@
 local mainapi = {
 	Categories = {},
+	-- Matches slidercolors[5] (the blue preset notch) in CreateGUISlider, below - kept
+	-- in sync so this early placeholder (read before that slider exists) and the real
+	-- widget's own default always show the same blue.
 	GUIColor = {
-		Hue = 0.58,
-		Sat = 0.96,
-		Value = 0.52
+		Hue = 0.598,
+		Sat = 0.7948,
+		Value = 0.898
 	},
 	HeldKeybinds = {},
 	Keybind = {'RightShift'},
@@ -3107,12 +3110,16 @@ function mainapi:CreateGUI()
 	end
 
 	function categoryapi:CreateGUISlider(optionsettings)
+		-- Notch 5 is the blue preset (slidercolors[5], RGB(47,122,229)) - Hue/Sat/Value
+		-- match its HSV conversion exactly so the raw values and the notch-selected
+		-- color agree, instead of a notch default that pointed at a different (green)
+		-- preset than the raw Hue/Sat/Value implied.
 		local optionapi = {
 			Type = 'GUISlider',
-			Notch = 4,
-			Hue = 0.58,
-			Sat = 0.96,
-			Value = 0.52,
+			Notch = 5,
+			Hue = 0.598,
+			Sat = 0.7948,
+			Value = 0.898,
 			Rainbow = false,
 			CustomColor = false
 		}
