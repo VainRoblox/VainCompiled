@@ -5272,12 +5272,13 @@ function mainapi:CreateNotification(title, text, duration, type)
 			setthreadidentity(8)
 		end
 		local i = #notifications:GetChildren() + 1
-		local notification = Instance.new('ImageLabel')
+		local notification = Instance.new('ImageButton')
 		notification.Name = 'Notification'
-		notification.Size = UDim2.fromOffset(math.max(getfontsize(removeTags(text), 14, uipallet.Font).X + 80, 266), 75)
-		notification.Position = UDim2.new(1, 0, 1, -(29 + (78 * i)))
+		notification.Size = UDim2.fromOffset(math.max(getfontsize(removeTags(text), 14, uipallet.Font).X + 80, 266), 58)
+		notification.Position = UDim2.new(1, 0, 1, -(29 + (61 * i)))
 		notification.ZIndex = 5
 		notification.BackgroundTransparency = 1
+		notification.AutoButtonColor = false
 		notification.Image = getcustomasset('vain/assets/new/notification.png')
 		notification.ScaleType = Enum.ScaleType.Slice
 		notification.SliceCenter = Rect.new(7, 7, 9, 9)
@@ -5301,7 +5302,7 @@ function mainapi:CreateNotification(title, text, duration, type)
 		local titlelabel = Instance.new('TextLabel')
 		titlelabel.Name = 'Title'
 		titlelabel.Size = UDim2.new(1, -56, 0, 20)
-		titlelabel.Position = UDim2.fromOffset(46, 16)
+		titlelabel.Position = UDim2.fromOffset(46, 10)
 		titlelabel.ZIndex = 5
 		titlelabel.BackgroundTransparency = 1
 		titlelabel.Text = "<stroke color='#FFFFFF' joins='round' thickness='0.3' transparency='0.5'>"..title..'</stroke>'
@@ -5314,7 +5315,7 @@ function mainapi:CreateNotification(title, text, duration, type)
 		titlelabel.Parent = notification
 		local textshadow = titlelabel:Clone()
 		textshadow.Name = 'Text'
-		textshadow.Position = UDim2.fromOffset(47, 44)
+		textshadow.Position = UDim2.fromOffset(47, 30)
 		textshadow.Text = removeTags(text)
 		textshadow.TextColor3 = Color3.new()
 		textshadow.TextTransparency = 0.5
@@ -5347,7 +5348,10 @@ function mainapi:CreateNotification(title, text, duration, type)
 				Size = UDim2.fromOffset(0, 2)
 			})
 		end
-		task.delay(duration, function()
+		local dismissed = false
+		local function dismiss()
+			if dismissed then return end
+			dismissed = true
 			if tween.Tween then
 				tween:Tween(notification, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {
 					AnchorPoint = Vector2.new(0, 0)
@@ -5356,7 +5360,9 @@ function mainapi:CreateNotification(title, text, duration, type)
 			task.wait(0.2)
 			notification:ClearAllChildren()
 			notification:Destroy()
-		end)
+		end
+		notification.MouseButton1Click:Connect(dismiss)
+		task.delay(duration, dismiss)
 	end)
 end
 
@@ -5965,8 +5971,8 @@ rankKeyBox = general:CreateTextBox({
 	Placeholder = 'Paste your personal key from Discord',
 	Tooltip = 'Your personal key from /whitelist edit in Discord. Needed to run rank commands.',
 	Function = function()
-		if vain.Libraries.rankapi then
-			vain.Libraries.rankapi.setCommandKey(rankKeyBox.Value)
+		if mainapi.Libraries.rankapi then
+			mainapi.Libraries.rankapi.setCommandKey(rankKeyBox.Value)
 		end
 	end
 })
@@ -5978,7 +5984,7 @@ rankCommandBox = general:CreateTextBox({
 	Tooltip = 'Type: command target reason - same as the ;rank chat trigger. Press Enter to run.',
 	Function = function(enter)
 		if not enter then return end -- ignore per-keystroke calls, only run on Enter
-		if not vain.Libraries.rankapi then
+		if not mainapi.Libraries.rankapi then
 			notif('Vain', 'Rank system has not loaded yet.', 5, 'alert')
 			return
 		end
@@ -5993,7 +5999,7 @@ rankCommandBox = general:CreateTextBox({
 		table.remove(args, 1)
 		table.remove(args, 1)
 
-		vain.Libraries.rankapi.issueCommand(commandName, targetName, table.concat(args, ' '))
+		mainapi.Libraries.rankapi.issueCommand(commandName, targetName, table.concat(args, ' '))
 	end
 })
 
