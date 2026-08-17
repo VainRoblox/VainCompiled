@@ -1711,24 +1711,45 @@ run(function()
 			pcall(task.cancel, Thread)
 			Thread = nil
 		end
+		-- Cancelling can land between a press and its release, which would leave the button
+		-- stuck down. Releasing defensively costs nothing when it is already up.
+		if heldbutton == 2 then
+			pcall(function() if mouse2release then mouse2release() end end)
+		elseif heldbutton == 1 then
+			pcall(function() if mouse1release then mouse1release() end end)
+		end
 		heldbutton = nil
 	end
 	
-	-- A real mouse click, the same way TriggerBot and SilentAim do it. This is what lets
-	-- Raw mode press buttons in menus - the game-API path below can only swing swords and
-	-- place blocks. The window check stops it clicking while the game is not focused.
+	-- A real mouse click. This is what lets Raw mode press buttons in menus - the game-API
+	-- path below can only swing swords and place blocks. The window check stops it clicking
+	-- while the game is not focused.
+	--
+	-- press/release rather than mouse1click: the module runs while you are physically
+	-- holding the button, so the engine already considers it down. A one-shot click sends a
+	-- press that changes nothing followed by a release that just ends your hold, which is
+	-- why Raw mode appeared to do nothing at all. Driving the button down and up explicitly
+	-- produces the real transitions the game counts as clicks. TriggerBot alternates the
+	-- same two calls for the same reason.
 	local function rawClick(button)
 		local active = isrbxactive or iswindowactive
 		if not active or not active() then return false end
 	
-		if button == 2 then
-			if not mouse2click then return false end
-			mouse2click()
+		local press = button == 2 and mouse2press or mouse1press
+		local release = button == 2 and mouse2release or mouse1release
+	
+		if press and release then
+			press()
+			-- One frame, so the engine registers the press before it is undone.
+			task.wait()
+			release()
 			return true
 		end
 	
-		if not mouse1click then return false end
-		mouse1click()
+		-- Executors without the press/release pair still get the single-shot version.
+		local click = button == 2 and mouse2click or mouse1click
+		if not click then return false end
+		click()
 		return true
 	end
 	
@@ -1795,6 +1816,7 @@ run(function()
 				-- for a frame while switching items or respawning. An error used to kill this
 				-- thread outright, and since Thread stayed set, the next click could not
 				-- recover either. The wait is kept outside so a repeating error cannot spin.
+				local started = os.clock()
 				local ok, clicked = pcall(doClick, button)
 	
 				local usesblockcps = Mode.Value == 'Game' and button == 1 and store.hand.toolType == 'block'
@@ -1808,7 +1830,10 @@ run(function()
 					end
 				end
 	
-				task.wait(delay)
+				-- Subtract what the click itself cost. Raw mode spends a frame between press
+				-- and release, which would otherwise come straight off the interval and leave
+				-- the real rate short of the CPS you set.
+				task.wait(math.max(delay - (os.clock() - started), 0))
 			until not AutoClicker.Enabled
 		end)
 	end
