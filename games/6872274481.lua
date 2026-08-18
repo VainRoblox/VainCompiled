@@ -2718,7 +2718,6 @@ run(function()
 	local Sort
 	local SwingRange
 	local AttackRange
-	local ChargeTime
 	local UpdateRate
 	local AngleSlider
 	local MaxTargets
@@ -2739,19 +2738,24 @@ run(function()
 	local Limit
 	local LegitAura
 	local Particles, Boxes = {}, {}
-	local anims, AnimDelay, AnimTween, armC0 = vain.Libraries.auraanims, tick()
-	local AttackRemote = {FireServer = function() end}
-	task.spawn(function()
-		-- Falls back to the no-op stub declared above if the remote cannot be resolved,
-		-- so a failure here degrades Killaura to "does nothing" instead of throwing on
-		-- every attack.
+	local anims, AnimDelay, AnimTween, armC0, armWrist = vain.Libraries.auraanims, tick()
+	local AttackStub = {FireServer = function() end}
+	local AttackRemote = AttackStub
+	-- Falls back to the no-op stub if the remote cannot be resolved, so a failure here
+	-- degrades Killaura to "does nothing" instead of throwing on every attack. Resolving
+	-- only once at load meant a single early failure - injecting before the remotes are
+	-- registered - left every later attack silently going nowhere for the rest of the
+	-- session, so this runs again on enable while the stub is still in place.
+	local function resolveAttackRemote()
+		if AttackRemote ~= AttackStub then return end
 		local ok, remote = pcall(function()
 			return bedwars.Client:Get(remotes.AttackEntity).instance
 		end)
 		if ok and remote then
 			AttackRemote = remote
 		end
-	end)
+	end
+	task.spawn(resolveAttackRemote)
 
 	local function getAttackData()
 		if Mouse.Enabled then
@@ -2765,9 +2769,15 @@ run(function()
 		local sword = Limit.Enabled and store.hand or store.tools.sword
 		if not sword or not sword.tool then return false end
 
-		local meta = bedwars.ItemMeta[sword.tool.Name]
+		-- store.hand carries no itemType, so the tool instance name is the fallback key.
+		-- An item the metadata does not know about leaves meta nil, and the attack path
+		-- reads meta.sword.attackSpeed and meta.displayName straight off it - that threw,
+		-- and because it throws on every pass Killaura sat enabled doing nothing at all.
+		local meta = bedwars.ItemMeta[sword.itemType or sword.tool.Name]
+		if not meta or not meta.sword then return false end
+
 		if Limit.Enabled then
-			if store.hand.toolType ~= 'sword' or bedwars.DaoController.chargingMaid then return false end
+			if store.hand.toolType ~= 'sword' or (bedwars.DaoController and bedwars.DaoController.chargingMaid) then return false end
 		end
 
 		if LegitAura.Enabled then
@@ -2781,6 +2791,8 @@ run(function()
 		Name = 'Killaura',
 		Function = function(callback)
 			if callback then
+				task.spawn(resolveAttackRemote)
+
 				if inputService.TouchEnabled then
 					pcall(function()
 						lplr.PlayerGui.MobileUI['2'].Visible = Limit.Enabled
@@ -2820,8 +2832,13 @@ run(function()
 							-- animation thread for the rest of the session.
 							local ok = pcall(function()
 								if Attacking then
-									if not armC0 then
-										armC0 = gameCamera.Viewmodel.RightHand.RightWrist.C0
+									-- The viewmodel is rebuilt whenever you switch items, so the wrist the
+									-- resting C0 was taken from can be a destroyed instance by now. Caching it
+									-- once left the animation offsetting from a stale base, and the restore
+									-- below putting the arm back to the wrong place.
+									local wrist = gameCamera.Viewmodel.RightHand.RightWrist
+									if armWrist ~= wrist then
+										armWrist, armC0 = wrist, wrist.C0
 									end
 									local first = not started
 									started = true
@@ -2831,7 +2848,7 @@ run(function()
 									end
 
 									for _, v in anims[AnimationMode.Value] do
-										AnimTween = tweenService:Create(gameCamera.Viewmodel.RightHand.RightWrist, TweenInfo.new(first and (AnimationTween.Enabled and 0.001 or 0.1) or v.Time / AnimationSpeed.Value, Enum.EasingStyle.Linear), {
+										AnimTween = tweenService:Create(wrist, TweenInfo.new(first and (AnimationTween.Enabled and 0.001 or 0.1) or v.Time / AnimationSpeed.Value, Enum.EasingStyle.Linear), {
 											C0 = armC0 * v.CFrame
 										})
 										AnimTween:Play()
@@ -2841,7 +2858,7 @@ run(function()
 									end
 								elseif started then
 									started = false
-									AnimTween = tweenService:Create(gameCamera.Viewmodel.RightHand.RightWrist, TweenInfo.new(AnimationTween.Enabled and 0.001 or 0.3, Enum.EasingStyle.Exponential), {
+									AnimTween = tweenService:Create(armWrist, TweenInfo.new(AnimationTween.Enabled and 0.001 or 0.3, Enum.EasingStyle.Exponential), {
 										C0 = armC0
 									})
 									AnimTween:Play()
@@ -2916,7 +2933,7 @@ run(function()
 										if not Swing.Enabled and AnimDelay < tick() and not LegitAura.Enabled then
 											AnimDelay = tick() + (meta.sword.respectAttackSpeedForEffects and meta.sword.attackSpeed or 0.11)
 											bedwars.SwordController:playSwordEffect(meta, false)
-											if meta.displayName:find(' Scythe') then
+											if meta.displayName and meta.displayName:find(' Scythe') then
 												bedwars.ScytheController:playLocalAnimation()
 											end
 
@@ -3016,11 +3033,11 @@ run(function()
 					scytheknitindex = nil
 				end
 				Attacking = false
-				if armC0 then
+				if armC0 and armWrist then
 					-- The viewmodel is gone while dead or respawning, which is exactly when
 					-- someone is likely to toggle this off.
 					pcall(function()
-						AnimTween = tweenService:Create(gameCamera.Viewmodel.RightHand.RightWrist, TweenInfo.new(AnimationTween.Enabled and 0.001 or 0.3, Enum.EasingStyle.Exponential), {
+						AnimTween = tweenService:Create(armWrist, TweenInfo.new(AnimationTween.Enabled and 0.001 or 0.3, Enum.EasingStyle.Exponential), {
 							C0 = armC0
 						})
 						AnimTween:Play()
@@ -3033,8 +3050,8 @@ run(function()
 	Targets = Killaura:CreateTargets({
 		Players = true,
 		NPCs = true,
-	Tooltip = 'Which entities this module is allowed to target'
-})
+		Tooltip = 'Which entities this module is allowed to target'
+	})
 	-- Damage/Distance stay pinned to the front (Damage is the default), the rest are
 	-- sorted so the dropdown order stays stable - iterating sortmethods directly is
 	-- hash order, which reshuffles the list between injections.
@@ -3070,7 +3087,7 @@ run(function()
 	})
 	AngleSlider = Killaura:CreateSlider({
 		Name = 'Max angle',
-		Tooltip = 'Widest angle from your view a target may be at',
+		Tooltip = 'Widest angle from the way your character faces a target may be at',
 		Min = 1,
 		Max = 360,
 		Default = 360
