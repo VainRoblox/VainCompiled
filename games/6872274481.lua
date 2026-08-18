@@ -2019,6 +2019,7 @@ run(function()
 	local SwingHeld
 	local FakeSwing
 	local SwingAngle
+	local FakeSwingRange
 	local rayParams = RaycastParams.new()
 	
 	local function allowedEntity(ent)
@@ -2050,10 +2051,11 @@ run(function()
 		return true
 	end
 	
-	-- True when any allowed entity is inside reach and within the swing arc in front of you.
-	-- Looser than the attack check below, which needs the crosshair to actually land on the
-	-- entity - that gap is what the fake swing fills.
-	local function targetInAngle(localPos, reach)
+	-- True when any allowed entity is inside the fake swing distance and within the swing arc
+	-- in front of you. Looser than the attack check below, which needs the crosshair to
+	-- actually land on the entity - that gap is what the fake swing fills.
+	local function targetInAngle(localPos)
+		local reach = FakeSwingRange.Value
 		local facing = gameCamera.CFrame.LookVector * Vector3.new(1, 0, 1)
 		-- Looking straight up or down flattens to a zero vector, whose .Unit is NaN.
 		if facing.Magnitude <= 0 then return false end
@@ -2078,8 +2080,10 @@ run(function()
 	end
 	
 	local function refreshVisibility()
-		if SwingAngle and SwingAngle.Object then
-			SwingAngle.Object.Visible = FakeSwing and FakeSwing.Enabled or false
+		for _, option in {SwingAngle, FakeSwingRange} do
+			if option and option.Object then
+				option.Object.Visible = FakeSwing and FakeSwing.Enabled or false
+			end
 		end
 	end
 	
@@ -2133,7 +2137,7 @@ run(function()
 						if doAttack then
 							bedwars.SwordController:swingSwordAtMouse()
 							acted = true
-						elseif FakeSwing.Enabled and targetInAngle(localPos, reach) then
+						elseif FakeSwing.Enabled and targetInAngle(localPos) then
 							-- Animation only. playSwordEffect draws the swing without sending an
 							-- attack, so a near miss still looks like you are swinging rather
 							-- than standing still.
@@ -2185,7 +2189,7 @@ run(function()
 	})
 	FakeSwing = TriggerBot:CreateToggle({
 		Name = 'Fake Swing',
-		Tooltip = 'Plays the swing animation when a target is in reach and angle, without attacking',
+		Tooltip = 'Plays the swing animation when a target is in distance and angle, without attacking',
 		Function = refreshVisibility
 	})
 	SwingAngle = TriggerBot:CreateSlider({
@@ -2196,6 +2200,18 @@ run(function()
 		Default = 90,
 		Darker = true,
 		Visible = false
+	})
+	FakeSwingRange = TriggerBot:CreateSlider({
+		Name = 'Fake Swing Distance',
+		Tooltip = 'How far a target can be for the fake swing to play, in studs',
+		Min = 1,
+		Max = 30,
+		Default = 14,
+		Darker = true,
+		Visible = false,
+		Suffix = function(val)
+			return val == 1 and 'stud' or 'studs'
+		end
 	})
 	refreshVisibility()
 	
