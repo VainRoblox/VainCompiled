@@ -1686,10 +1686,8 @@ end)
 
 run(function()
 	local AutoClicker
-	local Mode
 	local GUICheck
 	local HeldItem
-	local RightClick
 	local StartDelay
 	local OnlyTargeting
 	local CPS
@@ -1699,7 +1697,6 @@ run(function()
 	local BurstLength
 	local BurstPause
 	local Thread
-	local heldbutton
 	local burstcount = 0
 	
 	-- task.cancel throws on a thread that has already finished, and Thread stays non-nil
@@ -1711,46 +1708,6 @@ run(function()
 			pcall(task.cancel, Thread)
 			Thread = nil
 		end
-		-- Cancelling can land between a press and its release, which would leave the button
-		-- stuck down. Releasing defensively costs nothing when it is already up.
-		if heldbutton == 2 then
-			pcall(function() if mouse2release then mouse2release() end end)
-		elseif heldbutton == 1 then
-			pcall(function() if mouse1release then mouse1release() end end)
-		end
-		heldbutton = nil
-	end
-	
-	-- A real mouse click. This is what lets Raw mode press buttons in menus - the game-API
-	-- path below can only swing swords and place blocks. The window check stops it clicking
-	-- while the game is not focused.
-	--
-	-- press/release rather than mouse1click: the module runs while you are physically
-	-- holding the button, so the engine already considers it down. A one-shot click sends a
-	-- press that changes nothing followed by a release that just ends your hold, which is
-	-- why Raw mode appeared to do nothing at all. Driving the button down and up explicitly
-	-- produces the real transitions the game counts as clicks. TriggerBot alternates the
-	-- same two calls for the same reason.
-	local function rawClick(button)
-		local active = isrbxactive or iswindowactive
-		if not active or not active() then return false end
-	
-		local press = button == 2 and mouse2press or mouse1press
-		local release = button == 2 and mouse2release or mouse1release
-	
-		if press and release then
-			press()
-			-- One frame, so the engine registers the press before it is undone.
-			task.wait()
-			release()
-			return true
-		end
-	
-		-- Executors without the press/release pair still get the single-shot version.
-		local click = button == 2 and mouse2click or mouse1click
-		if not click then return false end
-		click()
-		return true
 	end
 	
 	-- Whether something is actually within sword reach, using the same region check
@@ -1767,10 +1724,7 @@ run(function()
 	
 	-- Returns true when a click actually happened, which is what the burst counter counts -
 	-- a pass that was skipped (menu open, nothing in reach) must not consume a burst.
-	local function doClick(button)
-		if button == 2 then return rawClick(2) end
-		if Mode.Value == 'Raw' then return rawClick(1) end
-	
+	local function doClick()
 		if GUICheck.Enabled and bedwars.AppController:isLayerOpen(bedwars.UILayers.MAIN) then return false end
 	
 		local toolType = store.hand.toolType
@@ -1797,17 +1751,12 @@ run(function()
 			return true
 		end
 	
-		-- Anything that is neither a sword nor a block has no game-side action, so fall back
-		-- to a real click when the filter allows it.
-		if HeldItem.Value == 'Any' then return rawClick(1) end
 		return false
 	end
 	
-	local function AutoClick(button)
+	local function AutoClick()
 		stopThread()
 		burstcount = 0
-		button = button or 1
-		heldbutton = button
 	
 		Thread = task.delay(StartDelay.Value / 1000, function()
 			repeat
@@ -1817,10 +1766,9 @@ run(function()
 				-- thread outright, and since Thread stayed set, the next click could not
 				-- recover either. The wait is kept outside so a repeating error cannot spin.
 				local started = os.clock()
-				local ok, clicked = pcall(doClick, button)
+				local ok, clicked = pcall(doClick)
 	
-				local usesblockcps = Mode.Value == 'Game' and button == 1 and store.hand.toolType == 'block'
-				local delay = 1 / (usesblockcps and BlockCPS or CPS).GetRandomValue()
+				local delay = 1 / (store.hand.toolType == 'block' and BlockCPS or CPS).GetRandomValue()
 	
 				if BurstMode.Enabled and ok and clicked then
 					burstcount += 1
@@ -1830,26 +1778,15 @@ run(function()
 					end
 				end
 	
-				-- Subtract what the click itself cost. Raw mode spends a frame between press
-				-- and release, which would otherwise come straight off the interval and leave
-				-- the real rate short of the CPS you set.
+				-- Subtract what the click itself cost so the real rate matches the CPS set.
 				task.wait(math.max(delay - (os.clock() - started), 0))
 			until not AutoClicker.Enabled
 		end)
 	end
 	
-	-- Game mode drives the game's own sword/block calls, so the options that shape that
-	-- behaviour are meaningless in Raw mode and get hidden rather than sitting there doing
-	-- nothing.
 	local function refreshVisibility()
-		local gamemode = Mode and Mode.Value == 'Game'
-		for _, option in {GUICheck, HeldItem, OnlyTargeting, PlaceBlocks} do
-			if option and option.Object then
-				option.Object.Visible = gamemode
-			end
-		end
 		if BlockCPS and BlockCPS.Object then
-			BlockCPS.Object.Visible = gamemode and PlaceBlocks and PlaceBlocks.Enabled or false
+			BlockCPS.Object.Visible = PlaceBlocks and PlaceBlocks.Enabled or false
 		end
 		for _, option in {BurstLength, BurstPause} do
 			if option and option.Object then
@@ -1868,26 +1805,19 @@ run(function()
 				-- the GUI check inside doClick instead, which tests the game's own UI layer.
 				AutoClicker:Clean(inputService.InputBegan:Connect(function(input)
 					if input.UserInputType == Enum.UserInputType.MouseButton1 then
-						AutoClick(1)
-					elseif RightClick.Enabled and input.UserInputType == Enum.UserInputType.MouseButton2 then
-						AutoClick(2)
+						AutoClick()
 					end
 				end))
 	
-				-- Only the button that started the loop stops it, so tapping the other one
-				-- mid-hold cannot cancel a click you are still holding.
 				AutoClicker:Clean(inputService.InputEnded:Connect(function(input)
-					if (heldbutton == 1 and input.UserInputType == Enum.UserInputType.MouseButton1)
-						or (heldbutton == 2 and input.UserInputType == Enum.UserInputType.MouseButton2) then
+					if input.UserInputType == Enum.UserInputType.MouseButton1 then
 						stopThread()
 					end
 				end))
 	
 				if inputService.TouchEnabled then
 					pcall(function()
-						AutoClicker:Clean(lplr.PlayerGui.MobileUI['2'].MouseButton1Down:Connect(function()
-							AutoClick(1)
-						end))
+						AutoClicker:Clean(lplr.PlayerGui.MobileUI['2'].MouseButton1Down:Connect(AutoClick))
 						AutoClicker:Clean(lplr.PlayerGui.MobileUI['2'].MouseButton1Up:Connect(stopThread))
 					end)
 				end
@@ -1896,16 +1826,6 @@ run(function()
 			end
 		end,
 		Tooltip = 'Hold attack button to automatically click'
-	})
-	Mode = AutoClicker:CreateDropdown({
-		Name = 'Mode',
-		Tooltip = 'How the clicks are sent',
-		List = {'Game', 'Raw'},
-		Tooltips = {
-			Game = 'Calls the game directly to swing swords and place blocks',
-			Raw = 'Sends real mouse clicks, so it also works on menus, GUIs and any item'
-		},
-		Function = refreshVisibility
 	})
 	CPS = AutoClicker:CreateTwoSlider({
 		Name = 'CPS',
@@ -1928,11 +1848,10 @@ run(function()
 	HeldItem = AutoClicker:CreateDropdown({
 		Name = 'Acts On',
 		Tooltip = 'Which held items the clicker acts on',
-		List = {'Sword & Blocks', 'Sword', 'Any'},
+		List = {'Sword & Blocks', 'Sword'},
 		Tooltips = {
 			['Sword & Blocks'] = 'Swings with swords and places with blocks',
-			Sword = 'Only swings with swords',
-			Any = 'Also sends a real click while holding anything else'
+			Sword = 'Only swings with swords'
 		}
 	})
 	GUICheck = AutoClicker:CreateToggle({
@@ -1943,10 +1862,6 @@ run(function()
 	OnlyTargeting = AutoClicker:CreateToggle({
 		Name = 'Only While Targeting',
 		Tooltip = 'Only swings when something is within sword reach'
-	})
-	RightClick = AutoClicker:CreateToggle({
-		Name = 'Right Click',
-		Tooltip = 'Also auto clicks when you hold the right mouse button'
 	})
 	PlaceBlocks = AutoClicker:CreateToggle({
 		Name = 'Place Blocks',
