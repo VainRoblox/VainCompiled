@@ -3832,18 +3832,22 @@ run(function()
 		return closest
 	end
 	
-	-- Pushes the aim point off the target when the roll fails. The offset is worked out as
-	-- an angle rather than a fixed distance, so the same miss lands beside the head from
-	-- close up and a long way wide from across the map, which is how a real miss behaves.
+	-- How wide a failed shot lands, in studs. MINMISS has to clear the hitbox rather than
+	-- just the model, or a near miss still registers as a hit. CLOSEDIST is the range
+	-- MINMISS is measured at.
+	local MINMISS, MAXMISS, CLOSEDIST = 5, 12, 20
+	
+	-- Pushes the aim point off the target when the roll fails. It grows with the square root
+	-- of the distance and stops at MAXMISS: a plain angle grew in a straight line, which was
+	-- right up close but put a long shot tens of studs wide - far enough that it reads as a
+	-- shot that was never aimed at anything rather than one that missed.
 	local function applySpread(aimpos, origin)
 		local delta = aimpos - origin
 		local dist = delta.Magnitude
 		if dist <= 0 then return aimpos end
 	
-		-- The floor is what decides a close range miss, and it has to clear the hitbox
-		-- rather than just the model, which is why it is well wider than a character.
-		local spread = math.rad(math.random(100, 350) / 100)
-		local miss = math.max(5, dist * math.tan(spread))
+		local miss = MINMISS * math.sqrt(dist / CLOSEDIST) * (0.8 + math.random() * 0.4)
+		miss = math.clamp(miss, MINMISS, MAXMISS)
 		local look = delta.Unit
 		local right = look:Cross(Vector3.yAxis)
 		right = right.Magnitude > 0 and right.Unit or Vector3.xAxis
