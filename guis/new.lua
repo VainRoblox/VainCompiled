@@ -5674,22 +5674,29 @@ function mainapi:SaveOptions(object, savedoptions)
 	return savedoptions
 end
 
+-- Every toggle here is guarded. mainapi:Remove runs loopClean over a module table,
+-- which strips every field including Toggle, so a stale reference to a removed module
+-- is a plain table that cannot be toggled - bedwars removes the universal TriggerBot,
+-- SilentAim and friends this way before defining its own. Uninject is the panic path,
+-- so one bad entry must not stop it: failing here would leave the GUI destroyed with
+-- modules still running and connections still live.
+local function safeToggle(obj)
+	if type(obj) ~= 'table' or not obj.Enabled or type(obj.Toggle) ~= 'function' then return end
+	pcall(obj.Toggle, obj)
+end
+
 function mainapi:Uninject()
 	mainapi:Save()
 	mainapi.Loaded = nil
 	for _, v in self.Modules do
-		if v.Enabled then
-			v:Toggle()
-		end
+		safeToggle(v)
 	end
 	for _, v in self.Legit.Modules do
-		if v.Enabled then
-			v:Toggle()
-		end
+		safeToggle(v)
 	end
 	for _, v in self.Categories do
-		if v.Type == 'Overlay' and v.Button.Enabled then
-			v.Button:Toggle()
+		if v.Type == 'Overlay' then
+			safeToggle(v.Button)
 		end
 	end
 	for _, v in mainapi.Connections do

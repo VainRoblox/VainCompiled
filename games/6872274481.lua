@@ -5837,10 +5837,15 @@ run(function()
 			vain.Save = function() end
 			for i, v in vain.Modules do
 				if not (table.find(safe, i) or v.Category == 'Render') then
-					if v.Enabled then
-						v:Toggle()
+					-- Guarded for the same reason as Uninject: vain:Remove strips a module
+					-- table down to nothing, so a stale entry has neither Toggle nor SetBind
+					-- and would stop this loop before the remaining modules were disabled.
+					if v.Enabled and type(v.Toggle) == 'function' then
+						pcall(v.Toggle, v)
 					end
-					v:SetBind('')
+					if type(v.SetBind) == 'function' then
+						pcall(v.SetBind, v, '')
+					end
 				end
 			end
 		end
