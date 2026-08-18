@@ -4654,6 +4654,8 @@ run(function()
 	local Teammates
 	local DistanceCheck
 	local DistanceLimit
+	local Rank
+	local Device
 	local Strings, Sizes, Reference = {}, {}, {}
 	local Folder = Instance.new('Folder')
 	Folder.Parent = vain.gui
@@ -4667,6 +4669,19 @@ run(function()
 	
 			local nametag = Instance.new('TextLabel')
 			Strings[ent] = ent.Player and whitelist:tag(ent.Player, true, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
+	
+			if Rank.Enabled and ent.Player then
+				local rankTag = whitelist:tag(ent.Player, true, false)
+				if rankTag ~= '' then
+					Strings[ent] = Strings[ent]..' <font color="rgb(200, 200, 200)">'..rankTag..'</font>'
+				end
+			end
+	
+			if Device.Enabled and ent.Player then
+				local executor = (identifyexecutor and identifyexecutor() or {'Unknown'})[1] or 'Unknown'
+				local deviceIcon = executor:find('Mobile') and '📱' or '💻'
+				Strings[ent] = Strings[ent]..' '..deviceIcon
+			end
 	
 			if Health.Enabled then
 				local healthColor = Color3.fromHSV(math.clamp(ent.Health / ent.MaxHealth, 0, 1) / 2.5, 0.89, 0.75)
@@ -4722,6 +4737,19 @@ run(function()
 			nametag.Text.ZIndex = 2
 			Strings[ent] = ent.Player and whitelist:tag(ent.Player, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
 	
+			if Rank.Enabled and ent.Player then
+				local rankTag = whitelist:tag(ent.Player, true, false)
+				if rankTag ~= '' then
+					Strings[ent] = Strings[ent]..' '..rankTag
+				end
+			end
+	
+			if Device.Enabled and ent.Player then
+				local executor = (identifyexecutor and identifyexecutor() or {'Unknown'})[1] or 'Unknown'
+				local deviceIcon = executor:find('Mobile') and '📱' or '💻'
+				Strings[ent] = Strings[ent]..' '..deviceIcon
+			end
+	
 			if Health.Enabled then
 				Strings[ent] = Strings[ent]..' '..math.round(ent.Health)
 			end
@@ -4770,6 +4798,19 @@ run(function()
 				Sizes[ent] = nil
 				Strings[ent] = ent.Player and whitelist:tag(ent.Player, true, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
 	
+				if Rank.Enabled and ent.Player then
+					local rankTag = whitelist:tag(ent.Player, true, false)
+					if rankTag ~= '' then
+						Strings[ent] = Strings[ent]..' <font color="rgb(200, 200, 200)">'..rankTag..'</font>'
+					end
+				end
+	
+				if Device.Enabled and ent.Player then
+					local executor = (identifyexecutor and identifyexecutor() or {'Unknown'})[1] or 'Unknown'
+					local deviceIcon = executor:find('Mobile') and '📱' or '💻'
+					Strings[ent] = Strings[ent]..' '..deviceIcon
+				end
+	
 				if Health.Enabled then
 					local healthColor = Color3.fromHSV(math.clamp(ent.Health / ent.MaxHealth, 0, 1) / 2.5, 0.89, 0.75)
 					Strings[ent] = Strings[ent]..' <font color="rgb('..tostring(math.floor(healthColor.R * 255))..','..tostring(math.floor(healthColor.G * 255))..','..tostring(math.floor(healthColor.B * 255))..')">'..math.round(ent.Health)..'</font>'
@@ -4802,6 +4843,19 @@ run(function()
 				end
 				Sizes[ent] = nil
 				Strings[ent] = ent.Player and whitelist:tag(ent.Player, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
+	
+				if Rank.Enabled and ent.Player then
+					local rankTag = whitelist:tag(ent.Player, true, false)
+					if rankTag ~= '' then
+						Strings[ent] = Strings[ent]..' '..rankTag
+					end
+				end
+	
+				if Device.Enabled and ent.Player then
+					local executor = (identifyexecutor and identifyexecutor() or {'Unknown'})[1] or 'Unknown'
+					local deviceIcon = executor:find('Mobile') and '📱' or '💻'
+					Strings[ent] = Strings[ent]..' '..deviceIcon
+				end
 	
 				if Health.Enabled then
 					Strings[ent] = Strings[ent]..' '..math.round(ent.Health)
@@ -5078,6 +5132,26 @@ run(function()
 		DefaultMax = 64,
 		Darker = true,
 		Visible = false
+	})
+	Rank = NameTags:CreateToggle({
+		Name = 'Rank',
+		Tooltip = 'Shows the player rank from the whitelist',
+		Function = function()
+			if NameTags.Enabled then
+				NameTags:Toggle()
+				NameTags:Toggle()
+			end
+		end
+	})
+	Device = NameTags:CreateToggle({
+		Name = 'Device',
+		Tooltip = 'Shows executor type with an icon',
+		Function = function()
+			if NameTags.Enabled then
+				NameTags:Toggle()
+				NameTags:Toggle()
+			end
+		end
 	})
 end)
 
