@@ -766,6 +766,8 @@ run(function()
 
 	bedwars = setmetatable({
 		AbilityController = Flamework.resolveDependency('@easy-games/game-core:client/controllers/ability/ability-controller@AbilityController'),
+		AudioCategory = require(replicatedStorage['rbxts_include']['node_modules']['@easy-games']['game-core'].out).AudioCategory,
+		AudioManager = require(replicatedStorage['rbxts_include']['node_modules']['@easy-games']['game-core'].out).AudioManager,
 		AnimationType = require(replicatedStorage.TS.animation['animation-type']).AnimationType,
 		AnimationUtil = require(replicatedStorage['rbxts_include']['node_modules']['@easy-games']['game-core'].out['shared'].util['animation-util']).AnimationUtil,
 		AppController = require(replicatedStorage['rbxts_include']['node_modules']['@easy-games']['game-core'].out.client.controllers['app-controller']).AppController,
@@ -834,6 +836,26 @@ run(function()
 			return rawget(self, ind)
 		end
 	})
+
+	-- The game dropped SoundManager for AudioManager:playAudio(sound, config), so
+	-- bedwars.SoundManager resolved to nil and every module that plays a sound threw on
+	-- it. Shimming the old method keeps all of those call sites working instead of
+	-- spreading the rename across each one, and it stays quiet rather than throwing if
+	-- the audio side moves again.
+	if not rawget(bedwars, 'SoundManager') then
+		rawset(bedwars, 'SoundManager', {
+			playSound = function(_, sound, config)
+				local manager = bedwars.AudioManager
+				if not manager then return end
+
+				local settings = {category = bedwars.AudioCategory and bedwars.AudioCategory.GAMEPLAY}
+				for index, value in (config or {}) do
+					settings[index] = value
+				end
+				return manager:playAudio(sound, settings)
+			end
+		})
+	end
 
 	local remoteNames = {
 		AfkStatus = debug.getproto(Knit.Controllers.AfkController.KnitStart, 1),
@@ -3750,6 +3772,7 @@ run(function()
 	local Range
 	local HitChance
 	local OtherProjectiles
+	local Camera
 	local InstantCharge
 	local ChargeSpeed
 	local SilentBeam
@@ -3778,6 +3801,18 @@ run(function()
 			return gameCamera.ViewportSize / 2
 		end
 		return inputService:GetMouseLocation()
+	end
+	
+	-- First person puts the camera inside your own head, so the gap between the camera and
+	-- the head is what separates the two views. Shiftlock still counts as third person here,
+	-- which matches what you see on screen.
+	local function cameraAllowed()
+		if Camera.Value == 'Both' then return true end
+		local head = entitylib.character and entitylib.character.Head
+		if not head then return true end
+	
+		local firstperson = (gameCamera.CFrame.Position - head.Position).Magnitude <= 1
+		return firstperson == (Camera.Value == 'First Person')
 	end
 	
 	-- Whichever of the two is closer to your cursor right now.
@@ -3849,6 +3884,7 @@ run(function()
 		-- projectile that actually leaves. Handing the arc straight back leaves it pointing
 		-- wherever your crosshair points, so only the shot itself is corrected.
 		if SilentBeam.Enabled and worldmeta then return nil end
+		if not cameraAllowed() then return nil end
 	
 		if (not OtherProjectiles.Enabled) and not projmeta.projectile:find('arrow') then
 			return nil
@@ -3996,6 +4032,16 @@ run(function()
 		table.insert(methods, v)
 	end
 	
+	Camera = ProjectileAimbot:CreateDropdown({
+		Name = 'Camera',
+		Tooltip = 'Which camera view this aims in',
+		List = {'Both', 'First Person', 'Third Person'},
+		Tooltips = {
+			Both = 'Aims in either view',
+			['First Person'] = 'Only aims while the camera is in your head',
+			['Third Person'] = 'Only aims while the camera is behind you'
+		}
+	})
 	Sort = ProjectileAimbot:CreateDropdown({
 		Name = 'Target Mode',
 		Tooltip = 'How targets are ranked when several are in your FOV at once',
@@ -9478,16 +9524,21 @@ run(function()
 		Name = 'SoundChanger',
 		Function = function(callback)
 			if callback then
-				old = bedwars.SoundManager.playSound
-				bedwars.SoundManager.playSound = function(self, id, ...)
+				-- Hooks AudioManager rather than SoundManager. SoundManager no longer exists
+				-- in the game, so reading .playSound off it threw the moment this was
+				-- switched on - and even shimmed it would only have caught sounds this
+				-- script plays, never the game's own, which is the entire point here.
+				if not bedwars.AudioManager then return end
+				old = bedwars.AudioManager.playAudio
+				bedwars.AudioManager.playAudio = function(self, id, ...)
 					if soundlist[id] then
 						id = soundlist[id]
 					end
 	
 					return old(self, id, ...)
 				end
-			else
-				bedwars.SoundManager.playSound = old
+			elseif old then
+				bedwars.AudioManager.playAudio = old
 				old = nil
 			end
 		end,
