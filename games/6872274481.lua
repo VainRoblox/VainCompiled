@@ -3752,6 +3752,7 @@ run(function()
 	local OtherProjectiles
 	local InstantCharge
 	local ChargeSpeed
+	local SilentBeam
 	local CircleColor
 	local CircleTransparency
 	local CircleFilled
@@ -3804,8 +3805,10 @@ run(function()
 		local dist = delta.Magnitude
 		if dist <= 0 then return aimpos end
 	
-		local spread = math.rad(math.random(60, 200) / 100)
-		local miss = math.max(2.5, dist * math.tan(spread))
+		-- The floor is what decides a close range miss, and it has to clear the hitbox
+		-- rather than just the model, which is why it is well wider than a character.
+		local spread = math.rad(math.random(100, 350) / 100)
+		local miss = math.max(5, dist * math.tan(spread))
 		local look = delta.Unit
 		local right = look:Cross(Vector3.yAxis)
 		right = right.Magnitude > 0 and right.Unit or Vector3.xAxis
@@ -3841,6 +3844,11 @@ run(function()
 		if not projmeta then return nil end
 	
 		applyCharge(projmeta)
+	
+		-- worldmeta is true for the aim arc the game paints on your screen and false for the
+		-- projectile that actually leaves. Handing the arc straight back leaves it pointing
+		-- wherever your crosshair points, so only the shot itself is corrected.
+		if SilentBeam.Enabled and worldmeta then return nil end
 	
 		if (not OtherProjectiles.Enabled) and not projmeta.projectile:find('arrow') then
 			return nil
@@ -4049,6 +4057,10 @@ run(function()
 		Suffix = function()
 			return '%'
 		end
+	})
+	SilentBeam = ProjectileAimbot:CreateToggle({
+		Name = 'Silent Beam',
+		Tooltip = 'Leaves the aim arc on your crosshair and only adjusts the fired projectile'
 	})
 	ProjectileAimbot:CreateToggle({
 		Name = 'Show FOV',
