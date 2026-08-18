@@ -3745,6 +3745,7 @@ run(function()
 	local ProjectileAimbot
 	local TargetPart
 	local Targets
+	local Sort
 	local FOV
 	local Range
 	local HitChance
@@ -3849,6 +3850,7 @@ run(function()
 		local plr = entitylib.EntityMouse({
 			Part = selectpart,
 			Range = FOV.Value,
+			Sort = sortmethods[Sort.Value],
 			Players = Targets.Players.Enabled,
 			NPCs = Targets.NPCs.Enabled,
 			Preference = Targets.Preference.Value,
@@ -3969,6 +3971,28 @@ run(function()
 			Head = 'Aims at the head',
 			Nearest = 'Aims at whichever part is closer to your cursor'
 		}
+	})
+	-- Cursor is pinned to the front because it is the default and matches how targets were
+	-- picked before there was a choice. The rest are sorted so the dropdown order stays
+	-- stable - iterating sortmethods directly is hash order, which reshuffles the list
+	-- between injections. Distance is left out: this picks targets off the screen, so the
+	-- plain magnitude ordering it stands for is the same thing as Cursor here.
+	local methods, extramethods = {'Cursor'}, {}
+	for i in sortmethods do
+		if not table.find(methods, i) then
+			table.insert(extramethods, i)
+		end
+	end
+	table.sort(extramethods)
+	for _, v in extramethods do
+		table.insert(methods, v)
+	end
+	
+	Sort = ProjectileAimbot:CreateDropdown({
+		Name = 'Target Mode',
+		Tooltip = 'How targets are ranked when several are in your FOV at once',
+		List = methods,
+		Tooltips = sortmethodtips
 	})
 	FOV = ProjectileAimbot:CreateSlider({
 		Name = 'FOV',
