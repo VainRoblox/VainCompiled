@@ -3116,6 +3116,13 @@ run(function()
 	local modified, fflag = {}
 	local teleported
 	
+	-- Roblox retires fast flags without warning and setfflag throws outright once the name
+	-- is gone, so every call goes through this. A missing flag becomes a no-op instead of an
+	-- error raised on the same line every frame.
+	local function trySetFFlag(flag, value)
+		return setfflag ~= nil and (pcall(setfflag, flag, value))
+	end
+	
 	local function grabClosestNormal(ray)
 		local partCF, mag, closest = ray.Instance.CFrame, 0, Enum.NormalId.Top
 	
@@ -3187,8 +3194,9 @@ run(function()
 		end,
 		FFlag = function()
 			if teleported then return end
-			setfflag('AssemblyExtentsExpansionStudHundredth', '-10000')
-			fflag = true
+			-- Only remember it if the flag was actually accepted, so the restore path does
+			-- not claim to be putting back something that was never set.
+			fflag = trySetFFlag('AssemblyExtentsExpansionStudHundredth', '-10000') or nil
 		end
 	}
 	Functions.Motor = Functions.CFrame
@@ -3206,12 +3214,12 @@ run(function()
 				if Mode.Value == 'FFlag' then
 					Phase:Clean(lplr.OnTeleport:Connect(function()
 						teleported = true
-						setfflag('AssemblyExtentsExpansionStudHundredth', '30')
+						trySetFFlag('AssemblyExtentsExpansionStudHundredth', '30')
 					end))
 				end
 			else
 				if fflag then
-					setfflag('AssemblyExtentsExpansionStudHundredth', '30')
+					trySetFFlag('AssemblyExtentsExpansionStudHundredth', '30')
 				end
 				for part in modified do
 					part.CanCollide = true
@@ -3228,7 +3236,7 @@ run(function()
 		Function = function(val)
 			StudLimit.Object.Visible = val == 'CFrame' or val == 'Motor'
 			if fflag then
-				setfflag('AssemblyExtentsExpansionStudHundredth', '30')
+				trySetFFlag('AssemblyExtentsExpansionStudHundredth', '30')
 			end
 			for part in modified do
 				part.CanCollide = true
@@ -3757,12 +3765,19 @@ run(function()
 	local Timer
 	local Value
 	
+	-- Roblox retires fast flags without warning and setfflag throws outright once the name
+	-- is gone, so every call goes through this. A missing flag becomes a no-op instead of an
+	-- error raised on the same line every frame.
+	local function trySetFFlag(flag, value)
+		return setfflag ~= nil and (pcall(setfflag, flag, value))
+	end
+	
 	Timer = vain.Categories.Blatant:CreateModule({
 		Name = 'Timer',
 		Function = function(callback)
 			if callback then
-				setfflag('SimEnableStepPhysics', 'True')
-				setfflag('SimEnableStepPhysicsSelective', 'True')
+				trySetFFlag('SimEnableStepPhysics', 'True')
+				trySetFFlag('SimEnableStepPhysicsSelective', 'True')
 	
 				Timer:Clean(runService.RenderStepped:Connect(function(dt)
 					if Value.Value > 1 then
@@ -6448,14 +6463,21 @@ run(function()
 	local AutoSendLength
 	local oldphys, oldsend
 	
+	-- Roblox retires fast flags without warning and setfflag throws outright once the name
+	-- is gone, so every call goes through this. A missing flag becomes a no-op instead of an
+	-- error raised on the same line every frame.
+	local function trySetFFlag(flag, value)
+		return setfflag ~= nil and (pcall(setfflag, flag, value))
+	end
+	
 	Blink = vain.Categories.Utility:CreateModule({
 		Name = 'Blink',
 		Function = function(callback)
 			if callback then
 				local teleported
 				Blink:Clean(lplr.OnTeleport:Connect(function()
-					setfflag('PhysicsSenderMaxBandwidthBps', '38760')
-					setfflag('DataSenderRate', '60')
+					trySetFFlag('PhysicsSenderMaxBandwidthBps', '38760')
+					trySetFFlag('DataSenderRate', '60')
 					teleported = true
 				end))
 	
@@ -6466,8 +6488,8 @@ run(function()
 					end
 	
 					if physicsrate ~= oldphys or senderrate ~= oldsend then
-						setfflag('PhysicsSenderMaxBandwidthBps', physicsrate)
-						setfflag('DataSenderRate', senderrate)
+						trySetFFlag('PhysicsSenderMaxBandwidthBps', physicsrate)
+						trySetFFlag('DataSenderRate', senderrate)
 						oldphys, oldsend = physicsrate, senderrate
 					end
 	
@@ -6475,8 +6497,8 @@ run(function()
 				until (not Blink.Enabled and not teleported)
 			else
 				if setfflag then
-					setfflag('PhysicsSenderMaxBandwidthBps', '38760')
-					setfflag('DataSenderRate', '60')
+					trySetFFlag('PhysicsSenderMaxBandwidthBps', '38760')
+					trySetFFlag('DataSenderRate', '60')
 				end
 				oldphys, oldsend = nil, nil
 			end

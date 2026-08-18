@@ -3748,8 +3748,100 @@ run(function()
 	local OtherProjectiles
 	local rayCheck = RaycastParams.new()
 	rayCheck.FilterType = Enum.RaycastFilterType.Include
-	rayCheck.FilterDescendantsInstances = {workspace:FindFirstChild('Map')}
+	local mapfolder
 	local old
+	
+	-- Resolved on use rather than once at load. The map does not exist yet if you inject
+	-- while the round is still loading, and an Include filter holding nothing hits nothing -
+	-- which silently switched off the landing prediction below for the whole session.
+	local function refreshMapFilter()
+		local map = workspace:FindFirstChild('Map')
+		if map ~= mapfolder then
+			mapfolder = map
+			rayCheck.FilterDescendantsInstances = map and {map} or {}
+		end
+	end
+	
+	-- Returns the launch values to use, or nil to let the game work it out itself.
+	local function solve(self, projmeta, worldmeta, origin, shootpos)
+		-- The game returns nil for a missing projmeta before touching it, so match that
+		-- rather than indexing it and throwing back into the game's own call stack.
+		if not projmeta then return nil end
+	
+		local plr = entitylib.EntityMouse({
+			Part = 'RootPart',
+			Range = FOV.Value,
+			Players = Targets.Players.Enabled,
+			NPCs = Targets.NPCs.Enabled,
+			Preference = Targets.Preference.Value,
+			Wallcheck = Targets.Walls.Enabled,
+			Origin = entitylib.isAlive and (shootpos or entitylib.character.RootPart.Position) or Vector3.zero
+		})
+		if not plr then return nil end
+	
+		local pos = shootpos or self:getLaunchPosition(origin)
+		if not pos then return nil end
+	
+		if (not OtherProjectiles.Enabled) and not projmeta.projectile:find('arrow') then
+			return nil
+		end
+	
+		local target = plr[TargetPart.Value]
+		local character = plr.Character
+		if not target or not character then return nil end
+	
+		local meta = projmeta:getProjectileMeta()
+		-- Kits can hand back overrides for the speed and lifetime of their own projectiles.
+		-- Solving with the base numbers instead aimed for a shot the game was never going
+		-- to fire.
+		local overrides = meta.getProjectileOverridesFunction and meta.getProjectileOverridesFunction(projmeta.player) or nil
+		local lifetime = (worldmeta
+			and ((overrides and overrides.predictionLifetimeOverride) or meta.predictionLifetimeSec)
+			or ((overrides and overrides.lifetimeOverride) or meta.lifetimeSec)) or 3
+		local gravity = (meta.gravitationalAcceleration or 196.2) * projmeta.gravityMultiplier
+		-- velocityMultiplier is how far the bow is drawn. It was being left out while its
+		-- sibling gravityMultiplier was applied, so every partly charged shot was solved at
+		-- full power and fell short.
+		local projSpeed = ((overrides and overrides.launchVelocityOverride) or meta.launchVelocity or 100) * projmeta.velocityMultiplier
+		local offsetpos = pos + (projmeta.projectile == 'owl_projectile' and Vector3.zero or projmeta.fromPositionOffset)
+		local balloons = character:GetAttribute('InflatedBalloons')
+		local playerGravity = workspace.Gravity
+	
+		if balloons and balloons > 0 then
+			playerGravity = (workspace.Gravity * (1 - ((balloons >= 4 and 1.2 or balloons >= 3 and 1 or 0.975))))
+		end
+	
+		local primary = character.PrimaryPart
+		if primary and primary:FindFirstChild('rbxassetid://8200754399') then
+			playerGravity = 6
+		end
+	
+		-- NPCs have no Player, and this used to index it regardless. Since this whole
+		-- function replaces one the game calls itself, that error did not just lose the
+		-- shot, it broke the game's projectile code for the rest of the round.
+		if plr.Player and plr.Player:GetAttribute('IsOwlTarget') then
+			for _, owl in collectionService:GetTagged('Owl') do
+				if owl:GetAttribute('Target') == plr.Player.UserId and owl:GetAttribute('Status') == 2 then
+					playerGravity = 0
+				end
+			end
+		end
+	
+		refreshMapFilter()
+	
+		local newlook = CFrame.new(offsetpos, target.Position) * CFrame.new(projmeta.projectile == 'owl_projectile' and Vector3.zero or Vector3.new(bedwars.BowConstantsTable.RelX, bedwars.BowConstantsTable.RelY, bedwars.BowConstantsTable.RelZ))
+		local calc = prediction.SolveTrajectory(newlook.p, projSpeed, gravity, target.Position, projmeta.projectile == 'telepearl' and Vector3.zero or target.Velocity, playerGravity, plr.HipHeight, plr.Jumping and 42.6 or nil, rayCheck)
+		if not calc then return nil end
+	
+		targetinfo.Targets[plr] = tick() + 1
+		return {
+			initialVelocity = CFrame.new(newlook.Position, calc).LookVector * projSpeed,
+			positionFrom = offsetpos,
+			deltaT = lifetime,
+			gravitationalAcceleration = gravity,
+			drawDurationSeconds = 5
+		}
+	end
 	
 	local ProjectileAimbot = vain.Categories.Blatant:CreateModule({
 		Name = 'ProjectileAimbot',
@@ -3757,65 +3849,14 @@ run(function()
 			if callback then
 				old = bedwars.ProjectileController.calculateImportantLaunchValues
 				bedwars.ProjectileController.calculateImportantLaunchValues = function(...)
-					local self, projmeta, worldmeta, origin, shootpos = ...
-					local plr = entitylib.EntityMouse({
-						Part = 'RootPart',
-						Range = FOV.Value,
-						Players = Targets.Players.Enabled,
-						NPCs = Targets.NPCs.Enabled,
-						Preference = Targets.Preference.Value,
-						Wallcheck = Targets.Walls.Enabled,
-						Origin = entitylib.isAlive and (shootpos or entitylib.character.RootPart.Position) or Vector3.zero
-					})
-	
-					if plr then
-						local pos = shootpos or self:getLaunchPosition(origin)
-						if not pos then
-							return old(...)
-						end
-	
-						if (not OtherProjectiles.Enabled) and not projmeta.projectile:find('arrow') then
-							return old(...)
-						end
-	
-						local meta = projmeta:getProjectileMeta()
-						local lifetime = (worldmeta and meta.predictionLifetimeSec or meta.lifetimeSec or 3)
-						local gravity = (meta.gravitationalAcceleration or 196.2) * projmeta.gravityMultiplier
-						local projSpeed = (meta.launchVelocity or 100)
-						local offsetpos = pos + (projmeta.projectile == 'owl_projectile' and Vector3.zero or projmeta.fromPositionOffset)
-						local balloons = plr.Character:GetAttribute('InflatedBalloons')
-						local playerGravity = workspace.Gravity
-	
-						if balloons and balloons > 0 then
-							playerGravity = (workspace.Gravity * (1 - ((balloons >= 4 and 1.2 or balloons >= 3 and 1 or 0.975))))
-						end
-	
-						if plr.Character.PrimaryPart:FindFirstChild('rbxassetid://8200754399') then
-							playerGravity = 6
-						end
-	
-						if plr.Player:GetAttribute('IsOwlTarget') then
-							for _, owl in collectionService:GetTagged('Owl') do
-								if owl:GetAttribute('Target') == plr.Player.UserId and owl:GetAttribute('Status') == 2 then
-									playerGravity = 0
-								end
-							end
-						end
-	
-						local newlook = CFrame.new(offsetpos, plr[TargetPart.Value].Position) * CFrame.new(projmeta.projectile == 'owl_projectile' and Vector3.zero or Vector3.new(bedwars.BowConstantsTable.RelX, bedwars.BowConstantsTable.RelY, bedwars.BowConstantsTable.RelZ))
-						local calc = prediction.SolveTrajectory(newlook.p, projSpeed, gravity, plr[TargetPart.Value].Position, projmeta.projectile == 'telepearl' and Vector3.zero or plr[TargetPart.Value].Velocity, playerGravity, plr.HipHeight, plr.Jumping and 42.6 or nil, rayCheck)
-						if calc then
-							targetinfo.Targets[plr] = tick() + 1
-							return {
-								initialVelocity = CFrame.new(newlook.Position, calc).LookVector * projSpeed,
-								positionFrom = offsetpos,
-								deltaT = lifetime,
-								gravitationalAcceleration = gravity,
-								drawDurationSeconds = 5
-							}
-						end
+					-- Guarded because the game calls this, not us. Anything that throws in
+					-- here used to surface inside the game's own bow logic and take the bow
+					-- with it; now a failure just hands the shot back untouched. old() stays
+					-- outside so its own errors still behave exactly as the game expects.
+					local ok, result = pcall(solve, ...)
+					if ok and result then
+						return result
 					end
-	
 					return old(...)
 				end
 			else
@@ -3832,20 +3873,25 @@ run(function()
 	TargetPart = ProjectileAimbot:CreateDropdown({
 		Name = 'Part',
 		Tooltip = 'Which body part to target',
-		List = {'RootPart', 'Head'}
+		List = {'RootPart', 'Head'},
+		Tooltips = {
+			RootPart = 'Aims at the middle of the body',
+			Head = 'Aims at the head'
+		}
 	})
 	FOV = ProjectileAimbot:CreateSlider({
 		Name = 'FOV',
-		Tooltip = 'Field of view, in degrees',
+		Tooltip = 'How far from your cursor a target may be on screen',
 		Min = 1,
 		Max = 1000,
 		Default = 1000
 	})
 	OtherProjectiles = ProjectileAimbot:CreateToggle({
 		Name = 'Other Projectiles',
-		Tooltip = 'Also handles projectiles other than the main one',
+		Tooltip = 'Also handles projectiles other than arrows',
 		Default = true
 	})
+	
 end)
 
 run(function()
@@ -3855,11 +3901,35 @@ run(function()
 	local List
 	local rayCheck = RaycastParams.new()
 	rayCheck.FilterType = Enum.RaycastFilterType.Include
-	local projectileRemote = {InvokeServer = function() end}
+	local mapfolder
 	local FireDelays = {}
-	task.spawn(function()
-		projectileRemote = bedwars.Client:Get(remotes.FireProjectile).instance
-	end)
+	local ProjectileStub = {InvokeServer = function() end}
+	local projectileRemote = ProjectileStub
+	
+	-- Resolving this once at load meant a single early failure - injecting before the
+	-- remotes are registered - left the stub in place for the whole session, so every shot
+	-- silently went nowhere. It runs again on enable while the stub is still there.
+	local function resolveProjectileRemote()
+		if projectileRemote ~= ProjectileStub then return end
+		local ok, remote = pcall(function()
+			return bedwars.Client:Get(remotes.FireProjectile).instance
+		end)
+		if ok and remote then
+			projectileRemote = remote
+		end
+	end
+	task.spawn(resolveProjectileRemote)
+	
+	-- The map is looked up rather than indexed. workspace.Map throws outright when it is
+	-- not there yet, which is the whole pre-match lobby - and this loop had no error
+	-- handling, so enabling the module before the round started killed it for good.
+	local function refreshMapFilter()
+		local map = workspace:FindFirstChild('Map')
+		if map ~= mapfolder then
+			mapfolder = map
+			rayCheck.FilterDescendantsInstances = map and {map} or {}
+		end
+	end
 	
 	local function getAmmo(check)
 		for _, item in store.inventory.inventory.items do
@@ -3872,7 +3942,10 @@ run(function()
 	local function getProjectiles()
 		local items = {}
 		for _, item in store.inventory.inventory.items do
-			local proj = bedwars.ItemMeta[item.itemType].projectileSource
+			-- An item the metadata does not know about used to throw here, and one unknown
+			-- item anywhere in your inventory was enough to take the whole module down.
+			local itemmeta = bedwars.ItemMeta[item.itemType]
+			local proj = itemmeta and itemmeta.projectileSource
 			local ammo = proj and getAmmo(proj)
 			if ammo and table.find(List.ListEnabled, ammo) then
 				table.insert(items, {
@@ -3890,56 +3963,66 @@ run(function()
 		Name = 'ProjectileAura',
 		Function = function(callback)
 			if callback then
+				task.spawn(resolveProjectileRemote)
 				repeat
-					if (workspace:GetServerTimeNow() - bedwars.SwordController.lastAttack) > 0.5 then
-						local ent = entitylib.EntityPosition({
-							Part = 'RootPart',
-							Range = Range.Value,
-							Players = Targets.Players.Enabled,
-							NPCs = Targets.NPCs.Enabled,
-							Preference = Targets.Preference.Value,
-							Wallcheck = Targets.Walls.Enabled
-						})
+					-- Guarded because this is a long-lived loop reaching into inventory and
+					-- projectile metadata that changes underneath it. An error used to kill the
+					-- coroutine outright, leaving the module switched on but permanently dead.
+					-- The wait stays outside so a repeating error cannot spin the CPU.
+					local ok = pcall(function()
+						if (workspace:GetServerTimeNow() - bedwars.SwordController.lastAttack) > 0.5 then
+							local ent = entitylib.EntityPosition({
+								Part = 'RootPart',
+								Range = Range.Value,
+								Players = Targets.Players.Enabled,
+								NPCs = Targets.NPCs.Enabled,
+								Preference = Targets.Preference.Value,
+								Wallcheck = Targets.Walls.Enabled
+							})
 	
-						if ent then
-							local pos = entitylib.character.RootPart.Position
-							for _, data in getProjectiles() do
-								local item, ammo, projectile, itemMeta = unpack(data)
-								if (FireDelays[item.itemType] or 0) < tick() then
-									rayCheck.FilterDescendantsInstances = {workspace.Map}
-									local meta = bedwars.ProjectileMeta[projectile]
-									local projSpeed, gravity = meta.launchVelocity, meta.gravitationalAcceleration or 196.2
-									local calc = prediction.SolveTrajectory(pos, projSpeed, gravity, ent.RootPart.Position, ent.RootPart.Velocity, workspace.Gravity, ent.HipHeight, ent.Jumping and 42.6 or nil, rayCheck)
-									if calc then
-										targetinfo.Targets[ent] = tick() + 1
-										local switched = switchItem(item.tool)
+							if ent then
+								local pos = entitylib.character.RootPart.Position
+								for _, data in getProjectiles() do
+									local item, ammo, projectile, itemMeta = unpack(data)
+									if (FireDelays[item.itemType] or 0) < tick() and item.tool then
+										refreshMapFilter()
+										local meta = bedwars.ProjectileMeta[projectile]
+										local projSpeed = meta and meta.launchVelocity
+										if not projSpeed then continue end
+										local gravity = meta.gravitationalAcceleration or 196.2
+										local calc = prediction.SolveTrajectory(pos, projSpeed, gravity, ent.RootPart.Position, ent.RootPart.Velocity, workspace.Gravity, ent.HipHeight, ent.Jumping and 42.6 or nil, rayCheck)
+										if calc then
+											targetinfo.Targets[ent] = tick() + 1
+											local switched = switchItem(item.tool)
 	
-										task.spawn(function()
-											local dir, id = CFrame.lookAt(pos, calc).LookVector, httpService:GenerateGUID(true)
-											local shootPosition = (CFrame.new(pos, calc) * CFrame.new(Vector3.new(-bedwars.BowConstantsTable.RelX, -bedwars.BowConstantsTable.RelY, -bedwars.BowConstantsTable.RelZ))).Position
-											bedwars.ProjectileController:createLocalProjectile(meta, ammo, projectile, shootPosition, id, dir * projSpeed, {drawDurationSeconds = 1})
-											local res = projectileRemote:InvokeServer(item.tool, ammo, projectile, shootPosition, pos, dir * projSpeed, id, {drawDurationSeconds = 1, shotId = httpService:GenerateGUID(false)}, workspace:GetServerTimeNow() - 0.045)
-											if not res then
-												FireDelays[item.itemType] = tick()
-											else
-												local shoot = itemMeta.launchSound
-												shoot = shoot and shoot[math.random(1, #shoot)] or nil
-												if shoot then
-													bedwars.SoundManager:playSound(shoot)
+											task.spawn(function()
+												local dir, id = CFrame.lookAt(pos, calc).LookVector, httpService:GenerateGUID(true)
+												local shootPosition = (CFrame.new(pos, calc) * CFrame.new(Vector3.new(-bedwars.BowConstantsTable.RelX, -bedwars.BowConstantsTable.RelY, -bedwars.BowConstantsTable.RelZ))).Position
+												bedwars.ProjectileController:createLocalProjectile(meta, ammo, projectile, shootPosition, id, dir * projSpeed, {drawDurationSeconds = 1})
+												local res = projectileRemote:InvokeServer(item.tool, ammo, projectile, shootPosition, pos, dir * projSpeed, id, {drawDurationSeconds = 1, shotId = httpService:GenerateGUID(false)}, workspace:GetServerTimeNow() - 0.045)
+												if not res then
+													FireDelays[item.itemType] = tick()
+												else
+													local shoot = itemMeta.launchSound
+													shoot = shoot and shoot[math.random(1, #shoot)] or nil
+													if shoot then
+														bedwars.SoundManager:playSound(shoot)
+													end
 												end
-											end
-										end)
+											end)
 	
-										FireDelays[item.itemType] = tick() + itemMeta.fireDelaySec
-										if switched then
-											task.wait(0.05)
+											FireDelays[item.itemType] = tick() + (itemMeta.fireDelaySec or 0.5)
+											if switched then
+												task.wait(0.05)
+											end
 										end
 									end
 								end
 							end
 						end
-					end
-					task.wait(0.1)
+					end)
+	
+					task.wait(ok and 0.1 or 0.25)
 				until not ProjectileAura.Enabled
 			end
 		end,
