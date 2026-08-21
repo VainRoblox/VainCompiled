@@ -5985,6 +5985,8 @@ run(function()
 	-- (FrostyHammerBalance.{ATTACK,SPEED,SHIELD}_LEVEL{1,2,3}_COST).
 	local COSTS = {2, 5, 12}
 	local CURRENCY = 'frost_crystal'
+	-- Both spellings appear in the game files for this kit.
+	local KIT_IDS = {'frosty_hammer', 'frost_hammer_kit'}
 	
 	-- The enum is not a Knit controller, so the bedwars table cannot reach it - that
 	-- metatable falls back to Knit.Controllers and would just hand back nil. Required
@@ -6070,7 +6072,11 @@ run(function()
 						enum = enum and enum.FrostyHammerUpgrade
 						if not enum then return end
 						if not entitylib.isAlive then return end
-						if store.equippedKit ~= '' and store.equippedKit ~= 'adetunde' then return end
+						-- The kit's internal id is 'frosty_hammer' (BedwarsKit.FROSTY_HAMMER),
+						-- not 'adetunde' - the display name matches nothing in the game files,
+						-- the same way Zephyr is 'wind_walker'. Guarding on 'adetunde' rejected
+						-- every pass while actually playing the kit, so nothing was ever bought.
+						if store.equippedKit ~= '' and not table.find(KIT_IDS, store.equippedKit) then return end
 	
 						local upgrade, level, cost = nextPurchase(enum)
 						if not upgrade or crystals() < cost then return end
