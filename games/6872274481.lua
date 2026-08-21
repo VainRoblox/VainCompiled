@@ -2303,6 +2303,18 @@ run(function()
 end)
 
 local AntiFallDirection
+-- No module named InfiniteFly is registered anywhere, so vain.Modules.InfiniteFly
+-- was nil and reading .Enabled off it threw - inside a PreSimulation connection,
+-- so once per frame for as long as the fall lasted. Looking each module up by name
+-- and tolerating a missing one keeps this working whether or not a given build
+-- ships that module.
+local function movementActive()
+	for _, name in {'Fly', 'InfiniteFly', 'LongJump'} do
+		local module = vain.Modules[name]
+		if module and module.Enabled then return true end
+	end
+	return false
+end
 run(function()
 	local AntiFall
 	local Mode
@@ -2351,7 +2363,7 @@ run(function()
 									local lastTeleport = lplr:GetAttribute('LastTeleported')
 									local connection
 									connection = runService.PreSimulation:Connect(function()
-										if vain.Modules.Fly.Enabled or vain.Modules.InfiniteFly.Enabled or vain.Modules.LongJump.Enabled then
+										if movementActive() then
 											connection:Disconnect()
 											AntiFallDirection = nil
 											return
@@ -2750,7 +2762,10 @@ run(function()
 	local AnimationTween
 	local Limit
 	local LegitAura
+	local HitDelay
 	local Particles, Boxes = {}, {}
+	-- entity -> tick() at which it may be attacked again
+	local AttackTimes = {}
 	local anims, AnimDelay, AnimTween, armC0, armWrist = vain.Libraries.auraanims, tick()
 	local AttackStub = {FireServer = function() end}
 	local AttackRemote = AttackStub
@@ -3061,6 +3076,16 @@ run(function()
 									if not inrange then continue end
 									if hits >= MaxTargets.Value then continue end
 
+									-- The loop used to fire on every pass, which with one target in
+									-- range meant an attack every 0.02s - fifty a second against a
+									-- sword that swings about once a second. Hits arriving faster
+									-- than the weapon allows are dropped server side, so the swing
+									-- and the target box played while nothing landed. Pace attacks
+									-- per target: the weapon's own attack speed by default, or the
+									-- Hit delay slider when it is set above zero.
+									if (AttackTimes[v] or 0) > tick() then continue end
+									AttackTimes[v] = tick() + (HitDelay.Value > 0 and HitDelay.Value or (meta.sword.attackSpeed or 0.5))
+
 									-- PrimaryPart is not guaranteed to be set on a character model.
 									-- Bailing out when it was nil skipped the attack entirely while
 									-- the box and swing above had already played, which is exactly
@@ -3142,6 +3167,7 @@ run(function()
 				until not Killaura.Enabled
 			else
 				store.KillauraTarget = nil
+				table.clear(AttackTimes)
 				for _, v in Boxes do
 					v.Adornee = nil
 				end
@@ -3430,6 +3456,17 @@ run(function()
 			end
 		end,
 		Tooltip = 'Only attacks when the sword is held'
+	})
+	HitDelay = Killaura:CreateSlider({
+		Name = 'Hit delay',
+		Tooltip = 'How long to wait between attacks on the same target\nThe server drops hits that arrive faster than the weapon allows, so very low values can stop damage entirely\n0 uses the weapon\'s own attack speed',
+		Min = 0,
+		Max = 2,
+		Default = 0,
+		Decimal = 100,
+		Suffix = function(val)
+			return val == 0 and '(weapon speed)' or 'seconds'
+		end
 	})
 	LegitAura = Killaura:CreateToggle({
 		Name = 'Swing only',
