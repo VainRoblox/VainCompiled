@@ -7085,7 +7085,7 @@ run(function()
 		Name = 'Multiplier',
 		Tooltip = 'How much to scale the speed bonus from orbs\n1 leaves it untouched',
 		Min = 1,
-		Max = 5,
+		Max = 15,
 		Default = 2,
 		Decimal = 10,
 		Suffix = 'x',
