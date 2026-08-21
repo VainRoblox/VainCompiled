@@ -2985,14 +2985,29 @@ run(function()
 									-- not consume one of the MaxTargets attack slots.
 									if not inrange then continue end
 									if hits >= MaxTargets.Value then continue end
-									hits += 1
 
-									local actualRoot = v.Character.PrimaryPart
+									-- PrimaryPart is not guaranteed to be set on a character model.
+									-- Bailing out when it was nil skipped the attack entirely while
+									-- the box and swing above had already played, which is exactly
+									-- what "swings but deals no damage" looked like. RootPart is the
+									-- part the target was selected by, so it is the right fallback.
+									local actualRoot = v.Character.PrimaryPart or v.RootPart
 									if actualRoot then
-										local dir = CFrame.lookAt(selfpos, actualRoot.Position).LookVector
-										local pos = selfpos + dir * math.max(delta.Magnitude - 14.399, 0)
+										-- Aim and reach maths must both come from actualRoot. dir used
+										-- to be measured to PrimaryPart while the offset below used
+										-- delta, which was measured to RootPart - whenever those were
+										-- different parts the spoofed camera position did not land the
+										-- claimed 14.399 studs from the target, so the server saw an
+										-- out-of-reach hit and dropped it.
+										local aim = actualRoot.Position - selfpos
+										local aimdist = aim.Magnitude
+										if aimdist <= 0 then continue end
+										hits += 1
+
+										local dir = aim.Unit
+										local pos = selfpos + dir * math.max(aimdist - 14.399, 0)
 										bedwars.SwordController.lastAttack = workspace:GetServerTimeNow()
-										store.attackReach = (delta.Magnitude * 100) // 1 / 100
+										store.attackReach = (aimdist * 100) // 1 / 100
 										store.attackReachUpdate = tick() + 1
 
 										AttackRemote:FireServer({
