@@ -1324,12 +1324,21 @@ run(function()
 			local old = getthreadidentity()
 			setthreadidentity(2)
 
-			bedwars.Shop = require(replicatedStorage.TS.games.bedwars.shop['bedwars-shop']).BedwarsShop
-			bedwars.ShopItems = debug.getupvalue(debug.getupvalue(bedwars.Shop.getShopItem, 1), 2)
-			bedwars.Shop.getShopItem('iron_sword', lplr)
+			-- The restore has to happen whether or not the shop loads. It used to sit at
+			-- the end of this block, so anything throwing above it - the require, or
+			-- getShopItem against a changed shop - left the thread at identity 2 for good.
+			-- Every module file loads after this point, and at identity 2 they cannot
+			-- parent an Instance, so module creation failed with "lacking capability
+			-- Plugin" and the failure looked like it came from whichever module happened
+			-- to be next.
+			local ok = pcall(function()
+				bedwars.Shop = require(replicatedStorage.TS.games.bedwars.shop['bedwars-shop']).BedwarsShop
+				bedwars.ShopItems = debug.getupvalue(debug.getupvalue(bedwars.Shop.getShopItem, 1), 2)
+				bedwars.Shop.getShopItem('iron_sword', lplr)
+			end)
 
 			setthreadidentity(old)
-			store.shopLoaded = true
+			store.shopLoaded = ok
 		else
 			task.spawn(function()
 				repeat
