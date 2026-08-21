@@ -41,9 +41,17 @@ for _, folder in {'vain', 'vain/games', 'vain/profiles', 'vain/assets', 'vain/li
 end
 
 if not shared.VainDeveloper then
-	wipeFolder('vain/games')
-	wipeFolder('vain/guis')
-	wipeFolder('vain/libraries')
+	local function clearFolder(path)
+		if not isfolder(path) then return end
+		for _, file in listfiles(path) do
+			if not file:find('loader') then
+				pcall(delfile, file)
+			end
+		end
+	end
+	clearFolder('vain/games')
+	clearFolder('vain/guis')
+	clearFolder('vain/libraries')
 end
 
 return loadstring(downloadFile('vain/main.lua'), 'main')()
