@@ -41,17 +41,30 @@ for _, folder in {'vain', 'vain/games', 'vain/profiles', 'vain/assets', 'vain/li
 end
 
 if not shared.VainDeveloper then
-	local function clearFolder(path)
-		if not isfolder(path) then return end
-		for _, file in listfiles(path) do
-			if not file:find('loader') then
-				pcall(delfile, file)
-			end
-		end
+	local ok, page = pcall(function()
+		return game:HttpGet('https://github.com/VainRoblox/VainCompiled')
+	end)
+
+	local commit
+	if ok and type(page) == 'string' then
+		local ind = page:find('currentOid')
+		commit = ind and page:sub(ind + 13, ind + 52) or nil
+		commit = commit and #commit == 40 and commit or nil
 	end
-	clearFolder('vain/games')
-	clearFolder('vain/guis')
-	clearFolder('vain/libraries')
+	commit = commit or 'main'
+
+	-- Every URL downloadFile builds is based on this file, so it has to be rewritten
+	-- on each run. Leaving it stale pins the entire client to whichever commit was
+	-- cached at the time and no amount of re-injecting will ever fetch an update.
+	writefile('vain/profiles/commit.txt', commit)
+
+	-- Drop the cached copies so the commit above is actually pulled. 'vain' itself
+	-- has to be included because main.lua lives there - clearing only the
+	-- subfolders left the old entry point in place. wipeFolder only removes files
+	-- carrying the download watermark, so saved profiles and downloaded assets stay.
+	for _, folder in {'vain', 'vain/games', 'vain/guis', 'vain/libraries'} do
+		wipeFolder(folder)
+	end
 end
 
 return loadstring(downloadFile('vain/main.lua'), 'main')()
