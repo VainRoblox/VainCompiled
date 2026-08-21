@@ -5754,28 +5754,32 @@ run(function()
 	-- Desyncs the position the server holds for you from the one you actually occupy,
 	-- while someone is close enough to melee you.
 	--
-	-- Why this shape and not the others: the server validates a hit's reach from the
-	-- attacker's own claimed selfPosition and targetPosition - which is exactly how Reach
-	-- works, by editing selfPosition on the way out - so your real position never enters
-	-- that check. Choking replication, whether on proximity or reactively when hit, cannot
-	-- influence it and those modes were dropped. What the server does check against its own
-	-- copy of you is whether the attacker's claimed targetPosition matches it, and that is
-	-- the check this breaks.
+	-- Why this shape: the server takes a hit's reach from the attacker's own claimed
+	-- selfPosition and targetPosition - which is exactly how Reach works, by editing
+	-- selfPosition on the way out - so your real position never enters that check, and
+	-- choking replication cannot influence it. What the server does check against its own
+	-- copy of you is whether the attacker's claimed targetPosition matches it. That is the
+	-- check this breaks.
 	--
 	-- The offset is applied on Heartbeat and removed at render priority 0, before the
 	-- camera runs at priority 200. Replication samples the root between those two points,
 	-- so the server sees the offset while your screen and camera only ever see the real
-	-- position - the earlier version alternated across whole frames, which is what made the
-	-- camera flicker.
+	-- position.
+	--
+	-- Hitting while not being hit works because the two are not symmetric: their swings
+	-- arrive whenever they choose, so they land on offset samples, while yours are known
+	-- about in advance. Attacking stands the offset down for as long as you are attacking
+	-- and a moment after, so your own hits are validated against an honest position.
 	local AntiMelee
 	local Targets
 	local Range
 	local Offset
-	local Grace
-	local Every
 	local realCF
 	local nearby = false
-	local frame = 0
+	
+	-- Long enough to cover the flight of a swing that has already been sent, short enough
+	-- that letting go leaves you covered again almost immediately.
+	local ATTACK_GRACE = 0.3
 	
 	local function restore()
 		if realCF and entitylib.isAlive then
@@ -5784,17 +5788,18 @@ run(function()
 		realCF = nil
 	end
 	
-	-- Your own attacks are validated against the server's copy of you as well, so being
-	-- offset while you swing gets your hit rejected the same way it rejects theirs.
-	local function swinging()
+	-- Held mouse covers manual swings before they are even sent; the controller timestamps
+	-- cover Killaura, which attacks without the mouse held.
+	local function attacking()
+		if inputService:IsMouseButtonPressed(0) and not inputService:GetFocusedTextBox() then
+			return true
+		end
+	
 		local controller = bedwars.SwordController
 		if not controller then return false end
 	
-		local since = math.min(
-			tick() - (controller.lastSwing or 0),
-			workspace:GetServerTimeNow() - (controller.lastAttack or 0)
-		)
-		return since < Grace.Value
+		if tick() - (controller.lastSwing or 0) < ATTACK_GRACE then return true end
+		return workspace:GetServerTimeNow() - (controller.lastAttack or 0) < ATTACK_GRACE
 	end
 	
 	AntiMelee = vain.Categories.Utility:CreateModule({
@@ -5803,7 +5808,6 @@ run(function()
 			if callback then
 				nearby = false
 				realCF = nil
-				frame = 0
 	
 				local bindKey = httpService:GenerateGUID(true)
 				runService:BindToRenderStep(bindKey, 0, restore)
@@ -5813,14 +5817,7 @@ run(function()
 				end)
 	
 				AntiMelee:Clean(runService.Heartbeat:Connect(function()
-					if not (nearby and entitylib.isAlive) or swinging() then return end
-	
-					-- Every frame by default. Skipping frames leaves the server a majority of
-					-- honest samples, which lags you back less but also blocks far fewer hits -
-					-- most swings simply land on one of the honest samples instead. Raise it
-					-- only if the lagback is worse than the hits.
-					frame += 1
-					if frame % Every.Value ~= 0 then return end
+					if not (nearby and entitylib.isAlive) or attacking() then return end
 	
 					local root = entitylib.character.RootPart
 					realCF = root.CFrame
@@ -5851,7 +5848,7 @@ run(function()
 		ExtraText = function()
 			return Offset.Value .. ''
 		end,
-		Tooltip = 'Offsets the position the server holds for you while someone is in melee range'
+		Tooltip = 'Makes the server hold a different position for you while someone is in melee range\nStands down while you attack so your own hits still land'
 	})
 	Offset = AntiMelee:CreateSlider({
 		Name = 'Offset',
@@ -5871,27 +5868,6 @@ run(function()
 		Default = 18,
 		Suffix = function(val)
 			return val == 1 and 'stud' or 'studs'
-		end
-	})
-	Grace = AntiMelee:CreateSlider({
-		Name = 'Attack grace',
-		Tooltip = 'How long to stay honest around your own swings, so your own hits are not rejected too',
-		Min = 0,
-		Max = 1,
-		Default = 0.3,
-		Decimal = 100,
-		Suffix = function(val)
-			return val == 1 and 'second' or 'seconds'
-		end
-	})
-	Every = AntiMelee:CreateSlider({
-		Name = 'Every',
-		Tooltip = 'Offset one frame in this many\n1 is strongest, higher lags you back less but blocks fewer hits',
-		Min = 1,
-		Max = 10,
-		Default = 1,
-		Suffix = function(val)
-			return val == 1 and 'frame' or 'frames'
 		end
 	})
 	Targets = AntiMelee:CreateTargets({
