@@ -5784,7 +5784,15 @@ run(function()
 	-- ran a blind 0.2s on / 0.4s off cycle to leave gaps for its own hits. Keying it to
 	-- actual swings instead means far more dodge uptime and the gap lands exactly when it
 	-- is needed.
-	local ATTACK_GRACE = 0.25
+	-- Every millisecond of this is a millisecond you are hittable, and with Killaura
+	-- swinging about once a second a quarter-second window left you exposed a quarter of
+	-- the fight. Kept to roughly one round trip - just enough for a swing that has already
+	-- been sent to be validated against an honest position.
+	local ATTACK_GRACE = 0.1
+	
+	-- How long to keep the root hidden after the last time anyone was in range.
+	local LINGER = 1
+	local lastNear = 0
 	
 	local function swinging()
 		local controller = bedwars.SwordController
@@ -5873,6 +5881,7 @@ run(function()
 		Function = function(callback)
 			if callback then
 				dodging = false
+				lastNear = 0
 	
 				-- Far enough under the lowest block that nothing can reach it. Recomputed on
 				-- enable rather than cached across rounds, since the map changes.
@@ -5957,7 +5966,16 @@ run(function()
 							Part = 'RootPart'
 						})
 	
-						if near and detach() then
+						if near then
+							lastNear = tick()
+						end
+	
+						-- Held for a moment after they leave, rather than reattaching the
+						-- instant nobody is in range. Someone weaving in and out otherwise gets
+						-- a free swing every time they step back over the boundary, and
+						-- reattaching is the expensive part - it is not worth doing repeatedly
+						-- for a target who has not actually gone anywhere.
+						if tick() - lastNear < LINGER and detach() then
 							dodging = not swinging()
 						else
 							reattach()
@@ -5980,10 +5998,10 @@ run(function()
 	})
 	Range = AntiMelee:CreateSlider({
 		Name = 'Range',
-		Tooltip = 'How close someone has to be before this engages',
+		Tooltip = 'How close someone has to be before this engages\nWell above sword reach on purpose, so the root is already hidden before they are close enough to swing',
 		Min = 1,
-		Max = 30,
-		Default = 20,
+		Max = 60,
+		Default = 32,
 		Suffix = function(val)
 			return val == 1 and 'stud' or 'studs'
 		end
