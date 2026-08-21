@@ -1086,7 +1086,11 @@ run(function()
 
 						if blockhealthbar.blockHealth <= 0 then
 							bedwars.BlockBreaker.breakEffect:playBreak(dblock.Name, dpos, lplr)
-							bedwars.BlockBreaker.healthbarMaid:DoCleaning()
+							-- healthbarMaid is gone from BlockBreaker in current builds, and
+							-- throwing here rejects the DamageBlock promise and aborts the break.
+							if bedwars.BlockBreaker.healthbarMaid then
+								bedwars.BlockBreaker.healthbarMaid:DoCleaning()
+							end
 							blockhealthbar.breakingBlockPosition = Vector3.zero
 						else
 							bedwars.BlockBreaker.breakEffect:playHit(dblock.Name, dpos, lplr)
@@ -8862,6 +8866,13 @@ run(function()
 	
 	local function customHealthbar(self, blockRef, health, maxHealth, changeHealth, block)
 		if block:GetAttribute('NoHealthbar') then return end
+	
+		-- The game no longer puts healthbarMaid / healthbarProgressRef on BlockBreaker.
+		-- This runs inside the DamageBlock promise, so indexing a nil one turned every
+		-- break into an unhandled rejection that aborted the whole sequence - which is
+		-- why only beds still broke: they carry NoHealthbar and return above, never
+		-- reaching this. Fall back to the game's own healthbar instead.
+		if not (self.healthbarMaid and self.healthbarProgressRef) then return end
 		if not self.healthbarPart or not self.healthbarBlockRef or self.healthbarBlockRef.blockPosition ~= blockRef.blockPosition then
 			self.healthbarMaid:DoCleaning()
 			self.healthbarBlockRef = blockRef
