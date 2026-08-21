@@ -41,19 +41,9 @@ for _, folder in {'vain', 'vain/games', 'vain/profiles', 'vain/assets', 'vain/li
 end
 
 if not shared.VainDeveloper then
-	local _, subbed = pcall(function()
-		return game:HttpGet('https://github.com/VainRoblox/VainCompiled')
-	end)
-	local commit = subbed:find('currentOid')
-	commit = commit and subbed:sub(commit + 13, commit + 52) or nil
-	commit = commit and #commit == 40 and commit or 'main'
-	if commit == 'main' or (isfile('vain/profiles/commit.txt') and readfile('vain/profiles/commit.txt') or '') ~= commit then
-		wipeFolder('vain')
-		wipeFolder('vain/games')
-		wipeFolder('vain/guis')
-		wipeFolder('vain/libraries')
-	end
-	writefile('vain/profiles/commit.txt', commit)
+	wipeFolder('vain/games')
+	wipeFolder('vain/guis')
+	wipeFolder('vain/libraries')
 end
 
 return loadstring(downloadFile('vain/main.lua'), 'main')()
