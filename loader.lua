@@ -42,7 +42,13 @@ end
 
 if not shared.VainDeveloper then
 	local ok, page = pcall(function()
-		return game:HttpGet('https://github.com/VainRoblox/VainCompiled')
+		-- The no-cache flag matters as much here as it does in downloadFile, which
+		-- passes it for the same reason: executors cache HTTP responses, and a cached
+		-- copy of this page hands back the previous commit hash, which re-pins every
+		-- download below to the old build. That looks exactly like re-injecting never
+		-- picking anything up. The query string is ignored by GitHub and defeats any
+		-- cache that keys on the URL alone.
+		return game:HttpGet('https://github.com/VainRoblox/VainCompiled?nocache='..tick(), true)
 	end)
 
 	local commit
@@ -57,6 +63,9 @@ if not shared.VainDeveloper then
 	-- on each run. Leaving it stale pins the entire client to whichever commit was
 	-- cached at the time and no amount of re-injecting will ever fetch an update.
 	writefile('vain/profiles/commit.txt', commit)
+	-- Printed so a stale client is obvious: if this hash does not change between
+	-- injections after a push, the update is being cached rather than fetched.
+	print('[Vain] loading commit ' .. commit)
 
 	-- Drop the cached copies so the commit above is actually pulled. 'vain' itself
 	-- has to be included because main.lua lives there - clearing only the
