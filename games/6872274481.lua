@@ -2290,21 +2290,25 @@ run(function()
 				bedwars.KnockbackUtil.applyKnockback = old
 			end
 		end,
-		Tooltip = 'Reduces knockback taken'
+		Tooltip = 'Changes how much knockback you take\nOver 100% throws you out of reach after a hit, which breaks combos'
 	})
 	Horizontal = Velocity:CreateSlider({
 		Name = 'Horizontal',
-		Tooltip = 'Horizontal offset',
+		-- Above 100 the knockback is amplified rather than reduced, which is how this stops
+		-- a combo: the first hit throws you out of sword reach, so the follow-ups have
+		-- nothing to connect with. Unlike hiding your position this is movement the server
+		-- applies itself, so there is nothing for it to reject or correct.
+		Tooltip = 'How much horizontal knockback you take\nUnder 100 takes less, over 100 takes more - which throws you out of reach and breaks combos',
 		Min = 0,
-		Max = 100,
+		Max = 400,
 		Default = 0,
 		Suffix = '%'
 	})
 	Vertical = Velocity:CreateSlider({
 		Name = 'Vertical',
-		Tooltip = 'Vertical offset',
+		Tooltip = 'How much vertical knockback you take\nUnder 100 takes less, over 100 takes more',
 		Min = 0,
-		Max = 100,
+		Max = 400,
 		Default = 0,
 		Suffix = '%'
 	})
