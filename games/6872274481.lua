@@ -7065,8 +7065,10 @@ run(function()
 	-- moveSpeedMultiplier on the SprintController's movement modifier, and sends a
 	-- multiplier of 1 once the orbs reset. Hooking updateSpeed is therefore the cleanest
 	-- signal for "does the player currently have stacks", which is all this needs.
+	-- Fixed rather than a slider, by request. Sprinting normally sits at 26.
+	local SPEED = 50
+	
 	local ZephyrSpeed
-	local Speed
 	local oldUpdateSpeed
 	local hasStacks = false
 	
@@ -7106,26 +7108,16 @@ run(function()
 					-- toggling on and off rewrites it constantly. Once the orbs reset,
 					-- hasStacks goes false and the game is left to set the speed itself,
 					-- which is what returns you to default.
-					entitylib.character.Humanoid.WalkSpeed = Speed.Value
+					entitylib.character.Humanoid.WalkSpeed = SPEED
 				end))
 			else
 				hasStacks = false
 			end
 		end,
 		ExtraText = function()
-			return Speed.Value .. ''
+			return SPEED .. ''
 		end,
-		Tooltip = 'Holds a fixed walkspeed while Zephyr has orbs'
-	})
-	Speed = ZephyrSpeed:CreateSlider({
-		Name = 'Speed',
-		Tooltip = 'The walkspeed to hold while you have orbs\nSprinting normally sits at 26',
-		Min = 16,
-		Max = 64,
-		Default = 32,
-		Suffix = function(val)
-			return val == 1 and 'stud' or 'studs'
-		end
+		Tooltip = 'Holds a walkspeed of ' .. SPEED .. ' while Zephyr has orbs'
 	})
 	
 end)
