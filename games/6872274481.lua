@@ -5809,18 +5809,34 @@ run(function()
 	--
 	-- The cycle is a little under a sword's attack speed, so a parked window always comes
 	-- round before Killaura is ready to swing again and nothing is lost waiting.
-	local PARK_TIME = 0.2
-	local BURY_TIME = 0.7
+	local PARK_TIME = 0.3
+	local BURY_TIME = 0.6
+	
+	-- Parking the root writes a CFrame; the server does not have that position until it has
+	-- been replicated. Announcing the window the instant it opens meant Killaura fired
+	-- immediately, while the server still held the buried copy, and the hit was rejected -
+	-- which looked like nothing landing at all. Attacks are only allowed once the parked
+	-- position has had time to arrive.
+	local SETTLE = 0.1
 	
 	-- How long to keep the root hidden after the last time anyone was in range.
 	local LINGER = 1
 	local lastNear = 0
 	local cycleStart = 0
 	
+	local function cycleElapsed()
+		return (tick() - cycleStart) % (PARK_TIME + BURY_TIME)
+	end
+	
 	-- True for the buried stretch of each cycle.
 	local function shouldBury()
-		local elapsed = (tick() - cycleStart) % (PARK_TIME + BURY_TIME)
-		return elapsed >= PARK_TIME
+		return cycleElapsed() >= PARK_TIME
+	end
+	
+	-- True only for the part of the parked window the server has actually caught up with.
+	local function attackAllowed()
+		local elapsed = cycleElapsed()
+		return elapsed >= SETTLE and elapsed < PARK_TIME
 	end
 	
 	local function detach()
@@ -6003,10 +6019,10 @@ run(function()
 						-- for a target who has not actually gone anywhere.
 						if tick() - lastNear < LINGER and detach() then
 							dodging = shouldBury()
-							-- Read by Killaura, which holds its swing until the root is parked.
-							-- Nil means this module is not hiding anything, so attacking is
-							-- unrestricted.
-							store.antiMeleeParked = not dodging
+							-- Read by Killaura, which holds its swing until the root is parked and
+							-- that position has reached the server. Nil means this module is not
+							-- hiding anything, so attacking is unrestricted.
+							store.antiMeleeParked = attackAllowed()
 						else
 							reattach()
 						end
