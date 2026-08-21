@@ -5748,6 +5748,14 @@ run(function()
 	local AutoAdetunde
 	local Priority
 	local Notify
+	local KeepJump
+	
+	-- How long after firing an upgrade to treat the player as "upgrading". The block is
+	-- brief, and keeping the window tight matters: leaps and dashes legitimately zero
+	-- jumping too, and restoring it during one of those would break the ability.
+	local JUMP_WINDOW = 2
+	local upgradingUntil = 0
+	local lastJumpHeight, lastJumpPower
 	
 	-- Level costs are the same for all three tracks: 2, 5 then 12 frost crystals
 	-- (FrostyHammerBalance.{ATTACK,SPEED,SHIELD}_LEVEL{1,2,3}_COST).
@@ -5809,6 +5817,28 @@ run(function()
 		Name = 'AutoAdetunde',
 		Function = function(callback)
 			if callback then
+				upgradingUntil = 0
+				AutoAdetunde:Clean(runService.RenderStepped:Connect(function()
+					if not (KeepJump.Enabled and entitylib.isAlive) then return end
+					local humanoid = entitylib.character.Humanoid
+	
+					-- Remember the last non-zero values so there is something real to put
+					-- back, rather than assuming Roblox's defaults - the kit and the game
+					-- both adjust these.
+					if humanoid.JumpHeight > 0 then lastJumpHeight = humanoid.JumpHeight end
+					if humanoid.JumpPower > 0 then lastJumpPower = humanoid.JumpPower end
+	
+					-- Only inside the upgrade window, so abilities that zero jumping on
+					-- purpose are left alone.
+					if tick() >= upgradingUntil then return end
+					if lastJumpHeight and humanoid.JumpHeight <= 0 then
+						humanoid.JumpHeight = lastJumpHeight
+					end
+					if lastJumpPower and humanoid.JumpPower <= 0 then
+						humanoid.JumpPower = lastJumpPower
+					end
+				end))
+	
 				repeat
 					-- Guarded and yielding outside the pcall, so a bad pass cannot spin.
 					local ok = pcall(function()
@@ -5821,6 +5851,7 @@ run(function()
 						local upgrade, level, cost = nextPurchase(enum)
 						if not upgrade or crystals() < cost then return end
 	
+						upgradingUntil = tick() + JUMP_WINDOW
 						bedwars.Client:Get('UpgradeFrostyHammer'):CallServerAsync(upgrade):andThen(function(result)
 							if result ~= false and Notify.Enabled then
 								notif('AutoAdetunde', 'Upgraded '..tostring(upgrade):lower()..' to '..level, 3)
@@ -5846,6 +5877,11 @@ run(function()
 			Speed = 'Faster hammer swings',
 			Shield = 'More shield from the hammer'
 		}
+	})
+	KeepJump = AutoAdetunde:CreateToggle({
+		Name = 'Keep Jump',
+		Tooltip = 'Restores your jump if buying an upgrade takes it away',
+		Default = true
 	})
 	Notify = AutoAdetunde:CreateToggle({
 		Name = 'Notify',
