@@ -2937,8 +2937,26 @@ run(function()
 								for _, v in plrs do
 									-- Entities can be torn down between selection and use (NPCs
 									-- despawning), so re-check rather than indexing blind.
-									if not v.RootPart or not v.Character then continue end
-									local delta = (v.RootPart.Position - selfpos)
+									if not v.Character or not v.Character.Parent then continue end
+
+									-- entitylib caches RootPart once when the entity is created and
+									-- never refreshes it - the code that would is commented out in
+									-- entity.lua. When a character's root part gets swapped mid-round
+									-- the cached one is left destroyed, and a destroyed part keeps
+									-- reporting its last Position, so the target looks frozen there:
+									-- still selected, still swung at, but every hit is aimed at a
+									-- dead instance and the server drops it. That is why it stops
+									-- landing on one specific person and never recovers for them.
+									-- Humanoid.RootPart tracks the live part, so re-resolve from it
+									-- and repair the shared record for every other module too.
+									local root = v.RootPart
+									if not root or root.Parent ~= v.Character then
+										root = v.Humanoid and v.Humanoid.RootPart
+										if not root then continue end
+										v.RootPart, v.HumanoidRootPart = root, root
+									end
+
+									local delta = (root.Position - selfpos)
 									-- Flatten first, then reject a zero-length horizontal delta.
 									-- A target directly overhead - a diamond guardian sitting on
 									-- top of the generator you are standing under - makes this a
@@ -2991,7 +3009,7 @@ run(function()
 									-- the box and swing above had already played, which is exactly
 									-- what "swings but deals no damage" looked like. RootPart is the
 									-- part the target was selected by, so it is the right fallback.
-									local actualRoot = v.Character.PrimaryPart or v.RootPart
+									local actualRoot = v.Character.PrimaryPart or root
 									if actualRoot then
 										-- Aim and reach maths must both come from actualRoot. dir used
 										-- to be measured to PrimaryPart while the offset below used
