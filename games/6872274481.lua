@@ -2904,6 +2904,13 @@ run(function()
 						Attacking = false
 						store.KillauraTarget = nil
 						if sword then
+							-- Deliberately unlimited: AllPosition applies Limit *after* sorting,
+							-- so passing MaxTargets here truncates the list before Killaura has
+							-- had a chance to check attack range or the angle cone. A target that
+							-- sits inside swing range but outside attack range - or behind you -
+							-- would eat the only slot and starve a closer, hittable one, which
+							-- looked like Killaura swinging endlessly for no damage. MaxTargets is
+							-- about how many entities to *hit*, so it is enforced below instead.
 							local plrs = entitylib.AllPosition({
 								Range = SwingRange.Value,
 								Wallcheck = Targets.Walls.Enabled or nil,
@@ -2911,12 +2918,12 @@ run(function()
 								Players = Targets.Players.Enabled,
 								NPCs = Targets.NPCs.Enabled,
 								Preference = Targets.Preference.Value,
-								Limit = MaxTargets.Value,
 								Sort = sortmethods[Sort.Value]
 							})
 
 							if #plrs > 0 then
 								switchItem(sword.tool, 0)
+								local hits = 0
 								local selfpos = entitylib.character.RootPart.Position
 								local localfacing = entitylib.character.RootPart.CFrame.LookVector * Vector3.new(1, 0, 1)
 
@@ -2936,9 +2943,11 @@ run(function()
 									local angle = math.acos(math.clamp(localfacing:Dot(flat.Unit), -1, 1))
 									if angle > (math.rad(AngleSlider.Value) / 2) then continue end
 
+									local inrange = delta.Magnitude <= AttackRange.Value
+
 									table.insert(attacked, {
 										Entity = v,
-										Check = delta.Magnitude > AttackRange.Value and BoxSwingColor or BoxAttackColor
+										Check = inrange and BoxAttackColor or BoxSwingColor
 									})
 									targetinfo.Targets[v] = tick() + 1
 
@@ -2958,7 +2967,11 @@ run(function()
 										end
 									end
 
-									if delta.Magnitude > AttackRange.Value then continue end
+									-- Out-of-reach targets still get a box and a swing, they just do
+									-- not consume one of the MaxTargets attack slots.
+									if not inrange then continue end
+									if hits >= MaxTargets.Value then continue end
+									hits += 1
 
 									local actualRoot = v.Character.PrimaryPart
 									if actualRoot then
