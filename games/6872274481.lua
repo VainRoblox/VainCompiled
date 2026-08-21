@@ -2837,10 +2837,8 @@ run(function()
 						if scytheknitindex then
 							debug.setupvalue(bedwars.ScytheController.playLocalAnimation, scytheknitindex, fake)
 						end
-					end
-				end)
 
-					task.spawn(function()
+						task.spawn(function()
 						local started = false
 						repeat
 							-- Guarded: this touches gameCamera.Viewmodel, which does not exist while
@@ -2889,8 +2887,9 @@ run(function()
 								task.wait(1 / UpdateRate.Value)
 							end
 						until (not Killaura.Enabled) or (not Animation.Enabled)
-					end)
-				end
+						end)
+					end
+				end)
 
 				repeat
 					local attacked = {}
@@ -7440,6 +7439,347 @@ run(function()
 end)
 
 run(function()
+	local AutoBuy
+	local Sword
+	local Armor
+	local Upgrades
+	local TierCheck
+	local BedwarsCheck
+	local GUI
+	local SmartCheck
+	local Custom = {}
+	local CustomPost = {}
+	local UpgradeToggles = {}
+	local Functions, id = {}
+	local Callbacks = {Custom, Functions, CustomPost}
+	local npctick = tick()
+	
+	local swords = {
+		'wood_sword',
+		'stone_sword',
+		'iron_sword',
+		'diamond_sword',
+		'emerald_sword'
+	}
+	
+	local armors = {
+		'none',
+		'leather_chestplate',
+		'iron_chestplate',
+		'diamond_chestplate',
+		'emerald_chestplate'
+	}
+	
+	local axes = {
+		'none',
+		'wood_axe',
+		'stone_axe',
+		'iron_axe',
+		'diamond_axe'
+	}
+	
+	local pickaxes = {
+		'none',
+		'wood_pickaxe',
+		'stone_pickaxe',
+		'iron_pickaxe',
+		'diamond_pickaxe'
+	}
+	
+	local function getShopNPC()
+		local shop, items, upgrades, newid = nil, false, false, nil
+		if entitylib.isAlive then
+			local localPosition = entitylib.character.RootPart.Position
+			for _, v in store.shop do
+				if (v.RootPart.Position - localPosition).Magnitude <= 20 then
+					shop = v.Upgrades or v.Shop or nil
+					upgrades = upgrades or v.Upgrades
+					items = items or v.Shop
+					newid = v.Shop and v.Id or newid
+				end
+			end
+		end
+		return shop, items, upgrades, newid
+	end
+	
+	local function canBuy(item, currencytable, amount)
+		amount = amount or 1
+		if not currencytable[item.currency] then
+			local currency = getItem(item.currency)
+			currencytable[item.currency] = currency and currency.amount or 0
+		end
+		if item.ignoredByKit and table.find(item.ignoredByKit, store.equippedKit or '') then return false end
+		if item.lockedByForge or item.disabled then return false end
+		if item.require and item.require.teamUpgrade then
+			if (bedwars.Store:getState().Bedwars.teamUpgrades[item.require.teamUpgrade.upgradeId] or -1) < item.require.teamUpgrade.lowestTierIndex then
+				return false
+			end
+		end
+		return currencytable[item.currency] >= (item.price * amount)
+	end
+	
+	local function buyItem(item, currencytable)
+		if not id then return end
+		notif('AutoBuy', 'Bought '..bedwars.ItemMeta[item.itemType].displayName, 3)
+		bedwars.Client:Get('BedwarsPurchaseItem'):CallServerAsync({
+			shopItem = item,
+			shopId = id
+		}):andThen(function(suc)
+			if suc then
+				bedwars.SoundManager:playSound(bedwars.SoundList.BEDWARS_PURCHASE_ITEM)
+				bedwars.Store:dispatch({
+					type = 'BedwarsAddItemPurchased',
+					itemType = item.itemType
+				})
+				bedwars.BedwarsShopController.alreadyPurchasedMap[item.itemType] = true
+			end
+		end)
+		currencytable[item.currency] -= item.price
+	end
+	
+	local function buyUpgrade(upgradeType, currencytable)
+		if not Upgrades.Enabled then return end
+		local upgrade = bedwars.TeamUpgradeMeta[upgradeType]
+		local currentUpgrades = bedwars.Store:getState().Bedwars.teamUpgrades[lplr:GetAttribute('Team')] or {}
+		local currentTier = (currentUpgrades[upgradeType] or 0) + 1
+		
+		if currentTier <= #upgrade.tiers then
+			local tier = upgrade.tiers[currentTier]
+			if tier.availableOnlyInQueue and not table.find(tier.availableOnlyInQueue, store.queueType) then return false end
+	
+			if canBuy({currency = 'diamond', price = tier.cost}, currencytable) then
+				notif('AutoBuy', 'Bought '..(upgrade.name == 'Armor' and 'Protection' or upgrade.name)..' '..currentTier, 3)
+				bedwars.Client:Get('RequestPurchaseTeamUpgrade'):CallServerAsync(upgradeType)
+				currencytable.diamond -= tier.cost
+				return true
+			end
+		end
+	
+		return false
+	end
+	
+	local function buyTool(tool, tools, currencytable)
+		local bought, buyable = false
+		tool = tool and table.find(tools, tool.itemType) and table.find(tools, tool.itemType) + 1 or math.huge
+	
+		for i = tool, #tools do
+			local v = bedwars.Shop.getShopItem(tools[i], lplr)
+			if canBuy(v, currencytable) then
+				if SmartCheck.Enabled and bedwars.ItemMeta[tools[i]].breakBlock and i > 2 then
+					if Armor.Enabled then
+						local currentarmor = store.inventory.inventory.armor[2]
+						currentarmor = currentarmor and currentarmor ~= 'empty' and currentarmor.itemType or 'none'
+						if (table.find(armors, currentarmor) or 3) < 3 then break end
+					end
+					if Sword.Enabled then
+						if store.tools.sword and (table.find(swords, store.tools.sword.itemType) or 2) < 2 then break end
+					end
+				end
+				bought = true
+				buyable = v
+			end
+			if TierCheck.Enabled and v.nextTier then break end
+		end
+	
+		if buyable then
+			buyItem(buyable, currencytable)
+		end
+	
+		return bought
+	end
+	
+	AutoBuy = vain.Categories.Inventory:CreateModule({
+		Name = 'AutoBuy',
+		Function = function(callback)
+			if callback then
+				repeat task.wait() until store.queueType ~= 'bedwars_test'
+				if BedwarsCheck.Enabled and not store.queueType:find('bedwars') then return end
+	
+				local lastupgrades
+				AutoBuy:Clean(vainEvents.InventoryAmountChanged.Event:Connect(function()
+					if (npctick - tick()) > 1 then npctick = tick() end
+				end))
+	
+				repeat
+					local npc, shop, upgrades, newid = getShopNPC()
+					id = newid
+					if GUI.Enabled then
+						if not (bedwars.AppController:isAppOpen('BedwarsItemShopApp') or bedwars.AppController:isAppOpen('TeamUpgradeApp')) then
+							npc = nil
+						end
+					end
+	
+					if npc and lastupgrades ~= upgrades then
+						if (npctick - tick()) > 1 then npctick = tick() end
+						lastupgrades = upgrades
+					end
+	
+					if npc and npctick <= tick() and store.matchState ~= 2 and store.shopLoaded then
+						local currencytable = {}
+						local waitcheck
+						for _, tab in Callbacks do
+							for _, callback in tab do
+								if callback(currencytable, shop, upgrades) then
+									waitcheck = true
+								end
+							end
+						end
+						npctick = tick() + (waitcheck and 0.4 or math.huge)
+					end
+	
+					task.wait(0.1)
+				until not AutoBuy.Enabled
+			else
+				npctick = tick()
+			end
+		end,
+		Tooltip = 'Automatically buys items when you go near the shop'
+	})
+	Sword = AutoBuy:CreateToggle({
+		Name = 'Buy Sword',
+		Tooltip = 'Automatically buys a sword upgrade',
+		Function = function(callback)
+			npctick = tick()
+			Functions[2] = callback and function(currencytable, shop)
+				if not shop then return end
+	
+				if store.equippedKit == 'dasher' then
+					swords = {
+						[1] = 'wood_dao',
+						[2] = 'stone_dao',
+						[3] = 'iron_dao',
+						[4] = 'diamond_dao',
+						[5] = 'emerald_dao'
+					}
+				elseif store.equippedKit == 'ice_queen' then
+					swords[5] = 'ice_sword'
+				elseif store.equippedKit == 'ember' then
+					swords[5] = 'infernal_saber'
+				elseif store.equippedKit == 'lumen' then
+					swords[5] = 'light_sword'
+				end
+	
+				return buyTool(store.tools.sword, swords, currencytable)
+			end or nil
+		end
+	})
+	Armor = AutoBuy:CreateToggle({
+		Name = 'Buy Armor',
+		Tooltip = 'Automatically buys armor',
+		Function = function(callback)
+			npctick = tick()
+			Functions[1] = callback and function(currencytable, shop)
+				if not shop then return end
+				local currentarmor = store.inventory.inventory.armor[2] ~= 'empty' and store.inventory.inventory.armor[2] or getBestArmor(1)
+				currentarmor = currentarmor and currentarmor.itemType or 'none'
+				return buyTool({itemType = currentarmor}, armors, currencytable)
+			end or nil
+		end,
+		Default = true
+	})
+	AutoBuy:CreateToggle({
+		Name = 'Buy Axe',
+		Tooltip = 'Automatically buys an axe',
+		Function = function(callback)
+			npctick = tick()
+			Functions[3] = callback and function(currencytable, shop)
+				if not shop then return end
+				return buyTool(store.tools.wood or {itemType = 'none'}, axes, currencytable)
+			end or nil
+		end
+	})
+	AutoBuy:CreateToggle({
+		Name = 'Buy Pickaxe',
+		Tooltip = 'Automatically buys a pickaxe',
+		Function = function(callback)
+			npctick = tick()
+			Functions[4] = callback and function(currencytable, shop)
+				if not shop then return end
+				return buyTool(store.tools.stone, pickaxes, currencytable)
+			end or nil
+		end
+	})
+	Upgrades = AutoBuy:CreateToggle({
+		Name = 'Buy Upgrades',
+		Tooltip = 'Automatically buys team upgrades',
+		Function = function(callback)
+			for _, v in UpgradeToggles do
+				v.Object.Visible = callback
+			end
+		end,
+		Default = true
+	})
+	local count = 0
+	for i, v in bedwars.TeamUpgradeMeta do
+		local toggleCount = count
+		table.insert(UpgradeToggles, AutoBuy:CreateToggle({
+			Name = 'Buy '..(v.name == 'Armor' and 'Protection' or v.name),
+			Function = function(callback)
+				npctick = tick()
+				Functions[5 + toggleCount + (v.name == 'Armor' and 20 or 0)] = callback and function(currencytable, shop, upgrades)
+					if not upgrades then return end
+					if v.disabledInQueue and table.find(v.disabledInQueue, store.queueType) then return end
+					return buyUpgrade(i, currencytable)
+				end or nil
+			end,
+			Darker = true,
+			Default = (i == 'ARMOR' or i == 'DAMAGE')
+		}))
+		count += 1
+	end
+	TierCheck = AutoBuy:CreateToggle({Name = 'Tier Check', Tooltip = 'Only buys when the next tier is actually affordable'})
+	BedwarsCheck = AutoBuy:CreateToggle({
+		Name = 'Only Bedwars',
+		Tooltip = 'Only runs while in a bedwars queue',
+		Function = function()
+			if AutoBuy.Enabled then
+				AutoBuy:Toggle()
+				AutoBuy:Toggle()
+			end
+		end,
+		Default = true
+	})
+	GUI = AutoBuy:CreateToggle({Name = 'GUI check', Tooltip = 'Stops acting while a game menu is open'})
+	SmartCheck = AutoBuy:CreateToggle({
+		Name = 'Smart check',
+		Default = true,
+		Tooltip = 'Buys iron armor before iron axe'
+	})
+	AutoBuy:CreateTextList({
+		Name = 'Item',
+		Tooltip = 'Which items this applies to',
+		Placeholder = 'priority/item/amount/after',
+		Function = function(list)
+			table.clear(Custom)
+			table.clear(CustomPost)
+			for _, entry in list do
+				local tab = entry:split('/')
+				local ind = tonumber(tab[1])
+				if ind then
+					(tab[4] and CustomPost or Custom)[ind] = function(currencytable, shop)
+						if not shop then return end
+	
+						local v = bedwars.Shop.getShopItem(tab[2], lplr)
+						if v then
+							-- getTeamWool was renamed getTeamWoolById upstream; same signature
+							-- (team id in, wool ItemType out).
+							local item = getItem(tab[2] == 'wool_white' and bedwars.Shop.getTeamWoolById(lplr:GetAttribute('Team')) or tab[2])
+							item = (item and tonumber(tab[3]) - item.amount or tonumber(tab[3])) // v.amount
+							if item > 0 and canBuy(v, currencytable, item) then
+								for _ = 1, item do
+									buyItem(v, currencytable)
+								end
+								return true
+							end
+						end
+					end
+				end
+			end
+		end
+	})
+end)
+
+run(function()
 	local AutoConsume
 	local Health
 	local SpeedPotion
@@ -8335,6 +8675,304 @@ run(function()
 			end
 		end,
 		Darker = true
+	})
+end)
+
+run(function()
+	local Breaker
+	local Range
+	local BreakSpeed
+	local UpdateRate
+	local Custom
+	local Bed
+	local LuckyBlock
+	local IronOre
+	local Effect
+	local CustomHealth = {}
+	local Animation
+	local SelfBreak
+	local InstantBreak
+	local LimitItem
+	local customlist, parts = {}, {}
+	
+	local function customHealthbar(self, blockRef, health, maxHealth, changeHealth, block)
+		if block:GetAttribute('NoHealthbar') then return end
+		if not self.healthbarPart or not self.healthbarBlockRef or self.healthbarBlockRef.blockPosition ~= blockRef.blockPosition then
+			self.healthbarMaid:DoCleaning()
+			self.healthbarBlockRef = blockRef
+			local create = bedwars.Roact.createElement
+			local percent = math.clamp(health / maxHealth, 0, 1)
+			local cleanCheck = true
+			local part = Instance.new('Part')
+			part.Size = Vector3.one
+			part.CFrame = CFrame.new(bedwars.BlockController:getWorldPosition(blockRef.blockPosition))
+			part.Transparency = 1
+			part.Anchored = true
+			part.CanCollide = false
+			part.Parent = workspace
+			self.healthbarPart = part
+			bedwars.QueryUtil:setQueryIgnored(self.healthbarPart, true)
+	
+			local mounted = bedwars.Roact.mount(create('BillboardGui', {
+				Size = UDim2.fromOffset(249, 102),
+				StudsOffset = Vector3.new(0, 2.5, 0),
+				Adornee = part,
+				MaxDistance = 40,
+				AlwaysOnTop = true
+			}, {
+				create('Frame', {
+					Size = UDim2.fromOffset(160, 50),
+					Position = UDim2.fromOffset(44, 32),
+					BackgroundColor3 = Color3.new(),
+					BackgroundTransparency = 0.5
+				}, {
+					create('UICorner', {CornerRadius = UDim.new(0, 5)}),
+					create('ImageLabel', {
+						Size = UDim2.new(1, 89, 1, 52),
+						Position = UDim2.fromOffset(-48, -31),
+						BackgroundTransparency = 1,
+						Image = getcustomasset('vain/assets/new/blur.png'),
+						ScaleType = Enum.ScaleType.Slice,
+						SliceCenter = Rect.new(52, 31, 261, 502)
+					}),
+					create('TextLabel', {
+						Size = UDim2.fromOffset(145, 14),
+						Position = UDim2.fromOffset(13, 12),
+						BackgroundTransparency = 1,
+						Text = bedwars.ItemMeta[block.Name].displayName or block.Name,
+						TextXAlignment = Enum.TextXAlignment.Left,
+						TextYAlignment = Enum.TextYAlignment.Top,
+						TextColor3 = Color3.new(),
+						TextScaled = true,
+						Font = Enum.Font.Arial
+					}),
+					create('TextLabel', {
+						Size = UDim2.fromOffset(145, 14),
+						Position = UDim2.fromOffset(12, 11),
+						BackgroundTransparency = 1,
+						Text = bedwars.ItemMeta[block.Name].displayName or block.Name,
+						TextXAlignment = Enum.TextXAlignment.Left,
+						TextYAlignment = Enum.TextYAlignment.Top,
+						TextColor3 = color.Dark(uipallet.Text, 0.16),
+						TextScaled = true,
+						Font = Enum.Font.Arial
+					}),
+					create('Frame', {
+						Size = UDim2.fromOffset(138, 4),
+						Position = UDim2.fromOffset(12, 32),
+						BackgroundColor3 = uipallet.Main
+					}, {
+						create('UICorner', {CornerRadius = UDim.new(1, 0)}),
+						create('Frame', {
+							[bedwars.Roact.Ref] = self.healthbarProgressRef,
+							Size = UDim2.fromScale(percent, 1),
+							BackgroundColor3 = Color3.fromHSV(math.clamp(percent / 2.5, 0, 1), 0.89, 0.75)
+						}, {create('UICorner', {CornerRadius = UDim.new(1, 0)})})
+					})
+				})
+			}), part)
+	
+			self.healthbarMaid:GiveTask(function()
+				cleanCheck = false
+				self.healthbarBlockRef = nil
+				bedwars.Roact.unmount(mounted)
+				if self.healthbarPart then
+					self.healthbarPart:Destroy()
+				end
+				self.healthbarPart = nil
+			end)
+	
+			bedwars.RuntimeLib.Promise.delay(5):andThen(function()
+				if cleanCheck then
+					self.healthbarMaid:DoCleaning()
+				end
+			end)
+		end
+	
+		local newpercent = math.clamp((health - changeHealth) / maxHealth, 0, 1)
+		tweenService:Create(self.healthbarProgressRef:getValue(), TweenInfo.new(0.3), {
+			Size = UDim2.fromScale(newpercent, 1), BackgroundColor3 = Color3.fromHSV(math.clamp(newpercent / 2.5, 0, 1), 0.89, 0.75)
+		}):Play()
+	end
+	
+	local hit = 0
+	
+	local function attemptBreak(tab, localPosition)
+		if not tab then return end
+		for _, v in tab do
+			if not v or not v.Parent then continue end
+			if (v.Position - localPosition).Magnitude < Range.Value then
+				local ok, isBreakable = pcall(function()
+					return bedwars.BlockController:isBlockBreakable({blockPosition = v.Position / 3}, lplr)
+				end)
+				if not ok or not isBreakable then continue end
+	
+				if not SelfBreak.Enabled and v:GetAttribute('PlacedByUserId') == lplr.UserId then continue end
+				if (v:GetAttribute('BedShieldEndTime') or 0) > workspace:GetServerTimeNow() then continue end
+				if LimitItem.Enabled and not (store.hand.tool and bedwars.ItemMeta[store.hand.tool.Name].breakBlock) then continue end
+	
+				hit += 1
+				local ok2 = pcall(function()
+					local target, path, endpos = bedwars.breakBlock(v, Effect.Enabled, Animation.Enabled, CustomHealth.Enabled and customHealthbar or nil, InstantBreak.Enabled)
+					if path then
+						local currentnode = target
+						for _, part in parts do
+							part.Position = currentnode or Vector3.zero
+							if currentnode then
+								part.BoxHandleAdornment.Color3 = currentnode == endpos and Color3.new(1, 0.2, 0.2) or currentnode == target and Color3.new(0.2, 0.2, 1) or Color3.new(0.2, 1, 0.2)
+							end
+							currentnode = path[currentnode]
+						end
+					end
+				end)
+				if ok2 then
+					task.wait(InstantBreak.Enabled and (store.damageBlockFail > tick() and 4.5 or 0) or BreakSpeed.Value)
+					return true
+				end
+			end
+		end
+	
+		return false
+	end
+	
+	Breaker = vain.Categories.Minigames:CreateModule({
+		Name = 'Breaker',
+		Function = function(callback)
+			if callback then
+				for _ = 1, 30 do
+					local part = Instance.new('Part')
+					part.Anchored = true
+					part.CanQuery = false
+					part.CanCollide = false
+					part.Transparency = 1
+					part.Parent = gameCamera
+					local highlight = Instance.new('BoxHandleAdornment')
+					highlight.Size = Vector3.one
+					highlight.AlwaysOnTop = true
+					highlight.ZIndex = 1
+					highlight.Transparency = 0.5
+					highlight.Adornee = part
+					highlight.Parent = part
+					table.insert(parts, part)
+				end
+	
+				local beds = collection('bed', Breaker)
+				local luckyblock = collection('LuckyBlock', Breaker)
+				local ironores = collection('iron-ore', Breaker)
+				customlist = collection('block', Breaker, function(tab, obj)
+					if table.find(Custom.ListEnabled, obj.Name) then
+						table.insert(tab, obj)
+					end
+				end)
+	
+				repeat
+					local ok = pcall(function()
+						if entitylib.isAlive then
+							local localPosition = entitylib.character.RootPart.Position
+	
+							if attemptBreak(Bed.Enabled and beds, localPosition) then return end
+							if attemptBreak(customlist, localPosition) then return end
+							if attemptBreak(LuckyBlock.Enabled and luckyblock, localPosition) then return end
+							if attemptBreak(IronOre.Enabled and ironores, localPosition) then return end
+	
+							for _, v in parts do
+								v.Position = Vector3.zero
+							end
+						end
+					end)
+					if not ok then
+						task.wait(0.5)
+					else
+						task.wait(1 / UpdateRate.Value)
+					end
+				until not Breaker.Enabled
+			else
+				for _, v in parts do
+					v:ClearAllChildren()
+					v:Destroy()
+				end
+				table.clear(parts)
+			end
+		end,
+		Tooltip = 'Break blocks around you automatically'
+	})
+	Range = Breaker:CreateSlider({
+		Name = 'Break range',
+		Tooltip = 'How far you can break blocks from, in studs',
+		Min = 1,
+		Max = 30,
+		Default = 30,
+		Suffix = function(val)
+			return val == 1 and 'stud' or 'studs'
+		end
+	})
+	BreakSpeed = Breaker:CreateSlider({
+		Name = 'Break speed',
+		Tooltip = 'How fast blocks are broken',
+		Min = 0,
+		Max = 0.3,
+		Default = 0.25,
+		Decimal = 100,
+		Suffix = 'seconds'
+	})
+	UpdateRate = Breaker:CreateSlider({
+		Name = 'Update rate',
+		Tooltip = 'How many times per second blocks are re-checked\nLower costs less performance',
+		Min = 1,
+		Max = 120,
+		Default = 60,
+		Suffix = 'hz'
+	})
+	Custom = Breaker:CreateTextList({
+		Name = 'Custom',
+		Tooltip = 'Extra block names to break',
+		Function = function()
+			if not customlist then return end
+			table.clear(customlist)
+			for _, obj in store.blocks do
+				if table.find(Custom.ListEnabled, obj.Name) then
+					table.insert(customlist, obj)
+				end
+			end
+		end
+	})
+	Bed = Breaker:CreateToggle({
+		Name = 'Break Bed',
+		Tooltip = 'Breaks beds',
+		Default = true
+	})
+	LuckyBlock = Breaker:CreateToggle({
+		Name = 'Break Lucky Block',
+		Tooltip = 'Breaks lucky blocks',
+		Default = true
+	})
+	IronOre = Breaker:CreateToggle({
+		Name = 'Break Iron Ore',
+		Tooltip = 'Breaks iron ore',
+		Default = true
+	})
+	Effect = Breaker:CreateToggle({
+		Name = 'Show Healthbar & Effects',
+		Tooltip = 'Shows break progress and particles',
+		Function = function(callback)
+			if CustomHealth.Object then
+				CustomHealth.Object.Visible = callback
+			end
+		end,
+		Default = true
+	})
+	CustomHealth = Breaker:CreateToggle({
+		Name = 'Custom Healthbar',
+		Tooltip = 'Uses the Vain healthbar instead of the game one',
+		Default = true,
+		Darker = true
+	})
+	Animation = Breaker:CreateToggle({Name = 'Animation', Tooltip = 'Plays the break animation'})
+	SelfBreak = Breaker:CreateToggle({Name = 'Self Break', Tooltip = 'Also breaks blocks placed by your own team'})
+	InstantBreak = Breaker:CreateToggle({Name = 'Instant Break', Tooltip = 'Breaks blocks in a single hit'})
+	LimitItem = Breaker:CreateToggle({
+		Name = 'Limit to items',
+		Tooltip = 'Only breaks when tools are held'
 	})
 end)
 
