@@ -7073,6 +7073,97 @@ end)
 	from the kit's display name, so expect some of these to need the same treatment.
 ]]
 
+-- Shared helpers these modules rely on. They live at the base level in the client
+-- they came from, outside the module blocks, so they had to be brought across too.
+
+local function getTeammates(namesOnly)
+	local result = {}
+	local myTeam = lplr:GetAttribute('Team')
+	if not myTeam then return result end
+	for _, player in playersService:GetPlayers() do
+		if player ~= lplr and player:GetAttribute('Team') == myTeam then
+			if namesOnly then
+				table.insert(result, player.Name)
+			elseif player.Character and player.Character:FindFirstChild('Humanoid') and player.Character.Humanoid.Health > 0 then
+				table.insert(result, player)
+			end
+		end
+	end
+	if namesOnly then
+		table.sort(result)
+	end
+	return result
+end
+
+local function getPlayerHealth(player)
+	if not player or not player.Character then return 0, 100 end
+	local health = player.Character:GetAttribute('Health') or (player.Character:FindFirstChildOfClass('Humanoid') and player.Character.Humanoid.Health) or 0
+	local maxHealth = player.Character:GetAttribute('MaxHealth') or (player.Character:FindFirstChildOfClass('Humanoid') and player.Character.Humanoid.MaxHealth) or 100
+	return health, maxHealth
+end
+
+local function getPlayerHealthPercent(player)
+	local health, maxHealth = getPlayerHealth(player)
+	if maxHealth == 0 then return 0 end
+	return (health / maxHealth) * 100
+end
+
+local function getAccountTier(player)
+	if getgenv().getAccountTier then
+		return getgenv().getAccountTier(player)
+	end
+	return 0
+end
+
+local function getHotbar(tool)
+	for i, v in (store.inventory.hotbar or {}) do
+		if v.item and v.item.tool == tool then
+			return i - 1
+		end
+	end
+	return nil
+end
+
+local function isFirstPerson()
+	local char = lplr.Character
+	local head = char and char:FindFirstChild('Head')
+	if not head or not gameCamera then return false end
+	return (gameCamera.CFrame.Position - head.Position).Magnitude < 1.5
+end
+
+local function isGUIOpen()
+	return inputService.MouseBehavior == Enum.MouseBehavior.Default
+end
+
+local function isHoldingBowCrossbow()
+	if not store.hand then return false end
+	local tt = store.hand.toolType
+	if tt == 'bow' or tt == 'crossbow' then return true end
+	local name = store.hand.tool and store.hand.tool.Name
+	return name ~= nil and (name:find('bow') ~= nil or name:find('crossbow') ~= nil)
+end
+
+-- getPickaxeSlot, isHoldingPickaxe and isSword are called by the ported modules but
+-- were never defined in that client either, so those paths threw "attempt to call a
+-- nil value" there too. Implemented here against the current store.
+local function isSword()
+	return store.hand ~= nil and store.hand.toolType == 'sword'
+end
+
+local function getPickaxeSlot()
+	local tool = store.tools and store.tools.stone
+	if not (tool and tool.itemType) then return nil end
+	local _, slot = getItem(tool.itemType)
+	return slot
+end
+
+local function isHoldingPickaxe()
+	local tool = store.hand and store.hand.tool
+	if not tool then return false end
+	local meta = bedwars.ItemMeta[tool.Name]
+	return meta ~= nil and meta.breakBlock ~= nil and meta.breakBlock.stone ~= nil
+end
+
 run(function()
 local AimAssist
 	local Targets
