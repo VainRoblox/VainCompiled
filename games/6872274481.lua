@@ -2812,30 +2812,33 @@ run(function()
 					end)
 				end
 
-				if Animation.Enabled and not (identifyexecutor and table.find({'Argon', 'Delta'}, ({identifyexecutor()})[1])) then
-					local fake = {
-						Controllers = {
-							ViewmodelController = {
-								isVisible = function()
-									return not Attacking
-								end,
-								playAnimation = function(...)
-									if not Attacking then
-										bedwars.ViewmodelController:playAnimation(select(2, ...))
+				pcall(function()
+					if Animation.Enabled and not (identifyexecutor and table.find({'Argon', 'Delta'}, ({identifyexecutor()})[1])) then
+						local fake = {
+							Controllers = {
+								ViewmodelController = {
+									isVisible = function()
+										return not Attacking
+									end,
+									playAnimation = function(...)
+										if not Attacking then
+											bedwars.ViewmodelController:playAnimation(select(2, ...))
+										end
 									end
-								end
+								}
 							}
 						}
-					}
-					local swingfunc = oldSwing or bedwars.SwordController.playSwordEffect
-					swingknitindex = findUpvalue(swingfunc, bedwars.Knit)
-					if swingknitindex then
-						debug.setupvalue(swingfunc, swingknitindex, fake)
+						local swingfunc = oldSwing or bedwars.SwordController.playSwordEffect
+						swingknitindex = findUpvalue(swingfunc, bedwars.Knit)
+						if swingknitindex then
+							debug.setupvalue(swingfunc, swingknitindex, fake)
+						end
+						scytheknitindex = findUpvalue(bedwars.ScytheController.playLocalAnimation, bedwars.Knit)
+						if scytheknitindex then
+							debug.setupvalue(bedwars.ScytheController.playLocalAnimation, scytheknitindex, fake)
+						end
 					end
-					scytheknitindex = findUpvalue(bedwars.ScytheController.playLocalAnimation, bedwars.Knit)
-					if scytheknitindex then
-						debug.setupvalue(bedwars.ScytheController.playLocalAnimation, scytheknitindex, fake)
-					end
+				end)
 
 					task.spawn(function()
 						local started = false
