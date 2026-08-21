@@ -5758,6 +5758,8 @@ run(function()
 	local Resync
 	local Duration
 	local Offset
+	local Grace
+	local Every
 	local choking
 	local chokeUntil = 0
 	
@@ -5792,6 +5794,7 @@ run(function()
 	-- the parts. This is the same split Invisible uses, for the same reason.
 	local realCF
 	local nearby = false
+	local frame = 0
 	
 	local function restore()
 		if realCF and entitylib.isAlive then
@@ -5824,6 +5827,26 @@ run(function()
 	
 				AntiMelee:Clean(runService.Heartbeat:Connect(function()
 					if not (Mode.Value == 'Teleport' and nearby and entitylib.isAlive) then return end
+	
+					-- Your own attacks are validated against the server's copy of you as well,
+					-- so being offset when you swing gets your hit rejected exactly the way it
+					-- rejects theirs. Stand down for a moment around your own swings.
+					local swordController = bedwars.SwordController
+					if swordController then
+						local since = math.min(
+							tick() - (swordController.lastSwing or 0),
+							workspace:GetServerTimeNow() - (swordController.lastAttack or 0)
+						)
+						if since < Grace.Value then return end
+					end
+	
+					-- Offsetting on every single frame means the server almost never holds a
+					-- true position for you, which is what its anti-teleport check reacts to -
+					-- the lagback. Skipping frames leaves it a majority of honest samples while
+					-- still poisoning enough of them to matter.
+					frame += 1
+					if frame % Every.Value ~= 0 then return end
+	
 					local root = entitylib.character.RootPart
 					realCF = root.CFrame
 					root.CFrame = realCF + Vector3.new(0, Offset.Value, 0)
@@ -5937,6 +5960,27 @@ run(function()
 		Default = 16,
 		Suffix = function(val)
 			return val == 1 and 'stud' or 'studs'
+		end
+	})
+	Grace = AntiMelee:CreateSlider({
+		Name = 'Attack grace',
+		Tooltip = 'How long to stay honest around your own swings, so your hits are not rejected too',
+		Min = 0,
+		Max = 1,
+		Default = 0.35,
+		Decimal = 100,
+		Suffix = function(val)
+			return val == 1 and 'second' or 'seconds'
+		end
+	})
+	Every = AntiMelee:CreateSlider({
+		Name = 'Every',
+		Tooltip = 'Offset only one frame in this many\nHigher lags you back less but blocks fewer hits',
+		Min = 1,
+		Max = 10,
+		Default = 3,
+		Suffix = function(val)
+			return val == 1 and 'frame' or 'frames'
 		end
 	})
 	Range = AntiMelee:CreateSlider({
