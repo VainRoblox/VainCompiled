@@ -7875,6 +7875,13 @@ run(function()
 				end
 				bought = true
 				buyable = v
+				-- Stop at the first affordable tier. Without this, every later affordable
+				-- tier overwrote buyable and the highest one won, so with enough resources
+				-- it tried to jump straight to iron while stone was still the next step -
+				-- the shop only sells the immediate next tier, so that purchase was
+				-- rejected and nothing was bought at all. One tier per pass still reaches
+				-- the top quickly, since the loop runs again 0.4s later.
+				break
 			end
 			if TierCheck.Enabled and v.nextTier then break end
 		end
