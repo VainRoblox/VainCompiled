@@ -2653,8 +2653,7 @@ run(function()
 		Function = function(callback)
 			if callback then
 				if Mode.Value == 'Sword' then
-					debug.setconstant(bedwars.SwordController.swingSwordInRegion, 6, (Expand.Value / 3))
-					set = true
+					-- Sword mode setconstant is broken (game changed constant type), disabled
 				else
 					HitBoxes:Clean(entitylib.Events.EntityAdded:Connect(createHitbox))
 					HitBoxes:Clean(entitylib.Events.EntityRemoving:Connect(function(ent)
@@ -2668,17 +2667,13 @@ run(function()
 					end
 				end
 			else
-				if set then
-					debug.setconstant(bedwars.SwordController.swingSwordInRegion, 6, 3.8)
-					set = nil
-				end
 				for _, part in objects do
 					part:Destroy()
 				end
 				table.clear(objects)
 			end
 		end,
-		Tooltip = 'Expands attack hitbox'
+		Tooltip = 'Expands attack hitbox (Sword mode disabled - game patch)'
 	})
 	Mode = HitBoxes:CreateDropdown({
 		Name = 'Mode',
@@ -2699,13 +2694,9 @@ run(function()
 		Default = 14.4,
 		Decimal = 10,
 		Function = function(val)
-			if HitBoxes.Enabled then
-				if Mode.Value == 'Sword' then
-					debug.setconstant(bedwars.SwordController.swingSwordInRegion, 6, (val / 3))
-				else
-					for _, part in objects do
-						part.Size = Vector3.new(3, 6, 3) + Vector3.one * (val / 5)
-					end
+			if HitBoxes.Enabled and Mode.Value == 'Player' then
+				for _, part in objects do
+					part.Size = Vector3.new(3, 6, 3) + Vector3.one * (val / 5)
 				end
 			end
 		end,
@@ -3101,8 +3092,8 @@ run(function()
 		Name = 'Attack range',
 		Tooltip = 'How far a target can be and still be hit',
 		Min = 1,
-		Max = 28,
-		Default = 28,
+		Max = 20,
+		Default = 20,
 		Suffix = function(val)
 			return val == 1 and 'stud' or 'studs'
 		end
@@ -4534,6 +4525,238 @@ run(function()
 		end,
 		Tooltip = 'Displays your health in the center of your screen.'
 	})
+end)
+
+run(function()
+	local InventoryESP
+	local List
+	local Background
+	local Color = {}
+	local ShowAmount
+	local ShowArmor
+	local Reference = {}
+	local Folder = Instance.new('Folder')
+	Folder.Parent = vain.gui
+	
+	local function nearItem(item)
+		for _, v in List.ListEnabled do
+			if item:find(v) then return v end
+		end
+	end
+	
+	local function refreshAdornee(billboard, plr)
+		if not plr or not plr.Parent then
+			billboard.Enabled = false
+			return
+		end
+	
+		local inventory = store.inventories[plr]
+		if not inventory then
+			billboard.Enabled = false
+			return
+		end
+	
+		for _, obj in billboard.Frame:GetChildren() do
+			if obj:IsA('ImageLabel') and obj.Name ~= 'Blur' then
+				obj:Destroy()
+			end
+		end
+	
+		billboard.Enabled = false
+		local shown = {}
+	
+		-- Show held item (hand)
+		if inventory.hand and (table.find(List.ListEnabled, inventory.hand.itemType) or nearItem(inventory.hand.itemType)) then
+			if not shown[inventory.hand.itemType] then
+				shown[inventory.hand.itemType] = true
+				billboard.Enabled = true
+				local image = Instance.new('ImageLabel')
+				image.Size = UDim2.fromOffset(32, 32)
+				image.BackgroundTransparency = 1
+				image.Image = bedwars.getIcon(inventory.hand, true)
+				image.Parent = billboard.Frame
+	
+				if ShowAmount.Enabled and inventory.hand.amount then
+					local text = Instance.new('TextLabel')
+					text.Name = 'Amount'
+					text.Size = UDim2.fromOffset(16, 16)
+					text.Position = UDim2.fromOffset(16, 16)
+					text.BackgroundColor3 = Color3.new(0, 0, 0)
+					text.BackgroundTransparency = 0.3
+					text.TextColor3 = Color3.new(1, 1, 1)
+					text.TextSize = 12
+					text.Text = tostring(inventory.hand.amount)
+					text.Parent = image
+					local corner = Instance.new('UICorner')
+					corner.CornerRadius = UDim.new(0, 2)
+					corner.Parent = text
+				end
+			end
+		end
+	
+		-- Show armor if enabled
+		if ShowArmor.Enabled and inventory.armor then
+			for slot = 4, 6 do
+				local armor = inventory.armor[slot]
+				if armor and not shown[armor.itemType] then
+					shown[armor.itemType] = true
+					billboard.Enabled = true
+					local image = Instance.new('ImageLabel')
+					image.Size = UDim2.fromOffset(32, 32)
+					image.BackgroundTransparency = 1
+					image.Image = bedwars.getIcon(armor, true)
+					image.Parent = billboard.Frame
+	
+					if ShowAmount.Enabled and armor.amount then
+						local text = Instance.new('TextLabel')
+						text.Name = 'Amount'
+						text.Size = UDim2.fromOffset(16, 16)
+						text.Position = UDim2.fromOffset(16, 16)
+						text.BackgroundColor3 = Color3.new(0, 0, 0)
+						text.BackgroundTransparency = 0.3
+						text.TextColor3 = Color3.new(1, 1, 1)
+						text.TextSize = 12
+						text.Text = tostring(armor.amount)
+						text.Parent = image
+						local corner = Instance.new('UICorner')
+						corner.CornerRadius = UDim.new(0, 2)
+						corner.Parent = text
+					end
+				end
+			end
+		end
+	end
+	
+	local function Added(ent)
+		if not ent.Player then return end
+	
+		local billboard = Instance.new('BillboardGui')
+		billboard.Parent = Folder
+		billboard.Name = 'inventory'
+		billboard.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
+		billboard.Size = UDim2.fromOffset(36, 36)
+		billboard.AlwaysOnTop = true
+		billboard.ClipsDescendants = false
+		billboard.Adornee = ent.RootPart
+		local blur = addBlur(billboard)
+		blur.Visible = Background.Enabled
+		local frame = Instance.new('Frame')
+		frame.Size = UDim2.fromScale(1, 1)
+		frame.BackgroundColor3 = Color3.fromHSV(Color.Hue, Color.Sat, Color.Value)
+		frame.BackgroundTransparency = 1 - (Background.Enabled and Color.Opacity or 0)
+		frame.Parent = billboard
+		local layout = Instance.new('UIListLayout')
+		layout.FillDirection = Enum.FillDirection.Horizontal
+		layout.Padding = UDim.new(0, 4)
+		layout.VerticalAlignment = Enum.VerticalAlignment.Center
+		layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		layout:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(function()
+			billboard.Size = UDim2.fromOffset(math.max(layout.AbsoluteContentSize.X + 4, 36), 36)
+		end)
+		layout.Parent = frame
+		local corner = Instance.new('UICorner')
+		corner.CornerRadius = UDim.new(0, 4)
+		corner.Parent = frame
+		Reference[ent] = billboard
+	
+		-- Refresh on inventory changes
+		InventoryESP:Clean(runService.RenderStepped:Connect(function()
+			if ent.Player and ent.Player.Parent then
+				refreshAdornee(billboard, ent.Player)
+			end
+		end))
+	end
+	
+	InventoryESP = vain.Categories.Render:CreateModule({
+		Name = 'InventoryESP',
+		Function = function(callback)
+			if callback then
+				for _, ent in entitylib.List do
+					if ent.Player and not Reference[ent] then
+						Added(ent)
+					end
+				end
+				InventoryESP:Clean(entitylib.Events.EntityAdded:Connect(function(ent)
+					if ent.Player and not Reference[ent] then
+						Added(ent)
+					end
+				end))
+				InventoryESP:Clean(entitylib.Events.EntityRemoved:Connect(function(ent)
+					if Reference[ent] then
+						Reference[ent]:Destroy()
+						Reference[ent] = nil
+					end
+				end))
+			else
+				table.clear(Reference)
+				Folder:ClearAllChildren()
+			end
+		end,
+		Tooltip = 'Displays what players are holding and wearing'
+	})
+	List = InventoryESP:CreateTextList({
+		Name = 'Item',
+		Tooltip = 'Which held items this applies to',
+		Function = function()
+			for _, v in Reference do
+				local plr = v.Adornee.Parent.Parent
+				if plr then
+					task.spawn(refreshAdornee, v, plr)
+				end
+			end
+		end
+	})
+	Background = InventoryESP:CreateToggle({
+		Name = 'Background',
+		Tooltip = 'Draws a background behind the icons',
+		Function = function(callback)
+			if Color.Object then Color.Object.Visible = callback end
+			for _, v in Reference do
+				v.Frame.BackgroundTransparency = 1 - (callback and Color.Opacity or 0)
+				v.Blur.Visible = callback
+			end
+		end,
+		Default = true
+	})
+	Color = InventoryESP:CreateColorSlider({
+		Name = 'Background Color',
+		Tooltip = 'Color of the background',
+		DefaultValue = 0.15,
+		DefaultOpacity = 0.5,
+		Function = function(hue, sat, val, opacity)
+			for _, v in Reference do
+				v.Frame.BackgroundColor3 = Color3.fromHSV(hue, sat, val)
+				v.Frame.BackgroundTransparency = 1 - opacity
+			end
+		end,
+		Darker = true
+	})
+	ShowAmount = InventoryESP:CreateToggle({
+		Name = 'Show Amount',
+		Tooltip = 'Displays the quantity of each item in the corner',
+		Function = function()
+			for _, v in Reference do
+				local plr = v.Adornee.Parent.Parent
+				if plr then
+					task.spawn(refreshAdornee, v, plr)
+				end
+			end
+		end
+	})
+	ShowArmor = InventoryESP:CreateToggle({
+		Name = 'Show Armor',
+		Tooltip = 'Displays the target armor pieces',
+		Default = true,
+		Function = function()
+			for _, v in Reference do
+				local plr = v.Adornee.Parent.Parent
+				if plr then
+					task.spawn(refreshAdornee, v, plr)
+				end
+			end
+		end
+	})
+	
 end)
 
 run(function()
@@ -6094,71 +6317,6 @@ run(function()
 end)
 
 run(function()
-	local PickupRange
-	local Range
-	local Network
-	local Lower
-	
-	PickupRange = vain.Categories.Utility:CreateModule({
-		Name = 'PickupRange',
-		Function = function(callback)
-			if callback then
-				local items = collection('ItemDrop', PickupRange)
-				repeat
-					if entitylib.isAlive then
-						local localPosition = entitylib.character.RootPart.Position
-						for _, v in items do
-							if tick() - (v:GetAttribute('ClientDropTime') or 0) < 2 then continue end
-							if isnetworkowner(v) and Network.Enabled and entitylib.character.Humanoid.Health > 0 then 
-								v.CFrame = CFrame.new(localPosition - Vector3.new(0, 3, 0)) 
-							end
-							
-							if (localPosition - v.Position).Magnitude <= Range.Value then
-								if Lower.Enabled and (localPosition.Y - v.Position.Y) < (entitylib.character.HipHeight - 1) then continue end
-								task.spawn(function()
-									bedwars.Client:Get(remotes.PickupItem):CallServerAsync({
-										itemDrop = v
-									}):andThen(function(suc)
-										if suc and bedwars.SoundList then
-											bedwars.SoundManager:playSound(bedwars.SoundList.PICKUP_ITEM_DROP)
-											local sound = bedwars.ItemMeta[v.Name].pickUpOverlaySound
-											if sound then
-												bedwars.SoundManager:playSound(sound, {
-													position = v.Position,
-													volumeMultiplier = 0.9
-												})
-											end
-										end
-									end)
-								end)
-							end
-						end
-					end
-					task.wait(0.1)
-				until not PickupRange.Enabled
-			end
-		end,
-		Tooltip = 'Picks up items from a farther distance'
-	})
-	Range = PickupRange:CreateSlider({
-		Name = 'Range',
-		Tooltip = 'How far this reaches, in studs',
-		Min = 1,
-		Max = 10,
-		Default = 10,
-		Suffix = function(val) 
-			return val == 1 and 'stud' or 'studs' 
-		end
-	})
-	Network = PickupRange:CreateToggle({
-		Name = 'Network TP',
-		Tooltip = 'Teleports using network ownership instead of moving normally',
-		Default = true
-	})
-	Lower = PickupRange:CreateToggle({Name = 'Feet Check', Tooltip = 'Also checks the block under your feet'})
-end)
-
-run(function()
 	local RavenTP
 	
 	RavenTP = vain.Categories.Utility:CreateModule({
@@ -6376,38 +6534,6 @@ run(function()
 				label = nil
 			end
 		end
-	})
-end)
-
-run(function()
-	local ShopTierBypass
-	local tiered, nexttier = {}, {}
-	
-	ShopTierBypass = vain.Categories.Utility:CreateModule({
-		Name = 'ShopTierBypass',
-		Function = function(callback)
-			if callback then
-				repeat task.wait() until store.shopLoaded or not ShopTierBypass.Enabled
-				if ShopTierBypass.Enabled then
-					for _, v in bedwars.Shop.ShopItems do
-						tiered[v] = v.tiered
-						nexttier[v] = v.nextTier
-						v.nextTier = nil
-						v.tiered = nil
-					end
-				end
-			else
-				for i, v in tiered do
-					i.tiered = v
-				end
-				for i, v in nexttier do
-					i.nextTier = v
-				end
-				table.clear(nexttier)
-				table.clear(tiered)
-			end
-		end,
-		Tooltip = 'Lets you buy things like armor early.'
 	})
 end)
 
