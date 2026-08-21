@@ -5751,126 +5751,218 @@ run(function()
 end)
 
 run(function()
-	-- Desyncs the position the server holds for you from the one you actually occupy,
-	-- while someone is close enough to melee you.
+	-- Stops melee landing on you by moving the part the server tracks you by, rather than
+	-- by trying to spoof where your character is.
 	--
-	-- Why this shape: the server takes a hit's reach from the attacker's own claimed
-	-- selfPosition and targetPosition - which is exactly how Reach works, by editing
-	-- selfPosition on the way out - so your real position never enters that check, and
-	-- choking replication cannot influence it. What the server does check against its own
-	-- copy of you is whether the attacker's claimed targetPosition matches it. That is the
-	-- check this breaks.
+	-- Spoofing position cannot work: replication is one channel, so an offset moves the
+	-- server's copy of you and every attacker's copy together - their sword query finds you
+	-- at the offset, they swing there, the server agrees. And an offset large enough to
+	-- clear sword reach is large enough for the character movement checks to correct, which
+	-- is the lagback.
 	--
-	-- Timing is the whole thing. A frame runs
+	-- This sidesteps both. The real HumanoidRootPart is taken out of the character and left
+	-- in the workspace as a loose part you still own, with a clone put in its place as the
+	-- character's PrimaryPart. Your character, camera and movement all run on the clone and
+	-- behave completely normally, while the real root - which is the instance the entity
+	-- system and hit detection identify you by - is dragged below the map. Character
+	-- movement validation does not apply to it, because as far as the game is concerned it
+	-- is no longer part of your character.
 	--
-	--     RenderStep -> render -> Stepped -> physics -> Heartbeat
-	--
-	-- and replication samples an owned part around the physics step. So the offset is
-	-- applied on Stepped, just before physics, and removed at render priority 0 on the
-	-- next frame, before the camera runs at priority 200. It therefore exists across
-	-- physics and Heartbeat - the window the server actually reads - and is gone again
-	-- before anything is drawn, so neither your screen nor your camera ever sees it.
-	--
-	-- Applying it on Heartbeat instead, as an earlier version did, put it entirely after
-	-- physics and removed it before the next one: the server never sampled it once, and
-	-- the module did nothing whatsoever.
-	--
-	-- Hitting while not being hit works because the two are not symmetric: their swings
-	-- arrive whenever they choose, so they land on offset samples, while yours are known
-	-- about in advance. Attacking stands the offset down for as long as you are attacking
-	-- and a moment after, so your own hits are validated against an honest position.
+	-- Derived from the Anti Hit module in the older VainV6 client.
 	local AntiMelee
-	local realCF
-	local nearby = false
-	local offsetStep = false
+	local Targets
+	local Range
+	local oldroot, clone, hip
+	local dodging = false
+	local lowestPoint = -math.huge
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Include
+	rayParams.RespectCanCollide = true
 	
-	-- Comfortably past sword reach, which is about 14.4 studs - anything under that leaves
-	-- you inside the region a swing covers and does nothing at all.
-	local OFFSET = Vector3.new(0, 18, 0)
+	-- Your own attacks are validated against the server's copy of you, which is the root
+	-- being held below the map - so a swing sent while dodging is rejected. The original
+	-- ran a blind 0.2s on / 0.4s off cycle to leave gaps for its own hits. Keying it to
+	-- actual swings instead means far more dodge uptime and the gap lands exactly when it
+	-- is needed.
+	local ATTACK_GRACE = 0.25
 	
-	-- Slightly wider than reach, so the offset is already in place by the time someone is
-	-- close enough to swing.
-	local RANGE = 18
-	
-	-- Just long enough for a swing that has already been sent to be validated. Kept tight
-	-- because every millisecond of it is a millisecond you are not desynced.
-	local ATTACK_GRACE = 0.1
-	
-	local function restore()
-		if realCF and entitylib.isAlive then
-			entitylib.character.RootPart.CFrame = realCF
-		end
-		realCF = nil
-	end
-	
-	-- Deliberately does NOT test whether the mouse is held. An earlier version did, and in
-	-- a melee fight the mouse is held nearly all the time - which stood the offset down for
-	-- almost the entire fight, exactly when it was supposed to be doing something. Only a
-	-- brief window around a swing that has actually been sent is excluded, so your own hit
-	-- is validated against an honest position without leaving you exposed the rest of the
-	-- time.
-	local function attacking()
+	local function swinging()
 		local controller = bedwars.SwordController
 		if not controller then return false end
-	
 		if tick() - (controller.lastSwing or 0) < ATTACK_GRACE then return true end
 		return workspace:GetServerTimeNow() - (controller.lastAttack or 0) < ATTACK_GRACE
+	end
+	
+	local function detach()
+		if oldroot and oldroot.Parent then return true end
+		if not entitylib.isAlive then return false end
+	
+		local character = lplr.Character
+		if not (character and character.Parent) then return false end
+	
+		local ok = pcall(function()
+			hip = entitylib.character.Humanoid.HipHeight
+			oldroot = entitylib.character.RootPart
+	
+			-- Reparented out of the workspace for the swap so the character is never seen
+			-- rootless, which would otherwise break the humanoid outright.
+			character.Parent = replicatedStorage
+			clone = oldroot:Clone()
+			clone.Parent = character
+			oldroot.Transparency = 1
+			oldroot.Parent = workspace
+			character.PrimaryPart = clone
+			character.Parent = workspace
+	
+			pcall(function()
+				bedwars.QueryUtil:setQueryIgnored(clone, true)
+				bedwars.QueryUtil:setQueryIgnored(oldroot, true)
+			end)
+	
+			-- entitylib caches the root instance, and every other module reads position from
+			-- it. Left pointing at the detached part they would all be working from a point
+			-- under the map, so they are repointed at the clone - which is where you are.
+			entitylib.character.RootPart = clone
+			entitylib.character.HumanoidRootPart = clone
+			store.rootpart = oldroot
+		end)
+	
+		if not ok then
+			oldroot, clone = nil, nil
+			return false
+		end
+		return true
+	end
+	
+	local function reattach()
+		if not (oldroot and oldroot.Parent) then
+			oldroot, clone, store.rootpart = nil, nil, nil
+			return
+		end
+	
+		pcall(function()
+			local character = lplr.Character
+			if character and character.Parent then
+				character.Parent = replicatedStorage
+				oldroot.Parent = character
+				if clone then
+					oldroot.CFrame = clone.CFrame
+					oldroot.Velocity = clone.Velocity
+					clone:Destroy()
+				end
+				character.PrimaryPart = oldroot
+				character.Parent = workspace
+			end
+	
+			oldroot.CanCollide = true
+			oldroot.Transparency = 1
+	
+			if entitylib.isAlive then
+				entitylib.character.RootPart = oldroot
+				entitylib.character.HumanoidRootPart = oldroot
+				entitylib.character.Humanoid.HipHeight = hip or 2.6
+			end
+		end)
+	
+		oldroot, clone, store.rootpart = nil, nil, nil
+		dodging = false
 	end
 	
 	AntiMelee = vain.Categories.Utility:CreateModule({
 		Name = 'AntiMelee',
 		Function = function(callback)
 			if callback then
-				nearby = false
-				realCF = nil
+				dodging = false
 	
-				local bindKey = httpService:GenerateGUID(true)
-				runService:BindToRenderStep(bindKey, 0, restore)
-				AntiMelee:Clean(function()
-					runService:UnbindFromRenderStep(bindKey)
-					restore()
+				-- Far enough under the lowest block that nothing can reach it. Recomputed on
+				-- enable rather than cached across rounds, since the map changes.
+				lowestPoint = -math.huge
+				pcall(function()
+					for _, v in store.blocks do
+						local point = (v.Position.Y - (v.Size.Y / 2)) - 50
+						if point < lowestPoint or lowestPoint == -math.huge then
+							lowestPoint = point
+						end
+					end
 				end)
+				if lowestPoint == -math.huge then lowestPoint = -200 end
 	
-				AntiMelee:Clean(runService.Stepped:Connect(function()
-					if not (nearby and entitylib.isAlive) or attacking() then return end
+				local map = workspace:FindFirstChild('Map')
+				rayParams.FilterDescendantsInstances = map and {map} or {}
 	
-					-- Alternated, not held. Replication is a single channel: if the server
-					-- believes you are 18 studs up then so does every other client, their sword
-					-- query finds you there, they swing there and the server agrees - a steady
-					-- offset moves both views together and achieves nothing. What can be
-					-- exploited is the gap between them. An attacker aims at their interpolated,
-					-- slightly stale copy of you, so flipping the position every physics step
-					-- leaves the server holding a different sample by the time their swing is
-					-- validated. This is what the first version did, and why it worked.
-					offsetStep = not offsetStep
-					if not offsetStep then return end
+				-- PostSimulation, so the position is written after the engine has finished
+				-- moving things and is what actually gets replicated.
+				AntiMelee:Clean(runService.PostSimulation:Connect(function()
+					if not (oldroot and oldroot.Parent and clone and clone.Parent) then return end
 	
-					local root = entitylib.character.RootPart
-					realCF = root.CFrame
-					root.CFrame = realCF + OFFSET
+					if dodging then
+						oldroot.Velocity = Vector3.zero
+						oldroot.CFrame = CFrame.new(clone.CFrame.X, lowestPoint - 6, clone.CFrame.Z)
+							* CFrame.Angles(math.rad(90), 0, 0)
+					else
+						-- Parked on the clone while not dodging, so your own hits and anything
+						-- else reading the root line up with where you actually are.
+						oldroot.Velocity = Vector3.zero
+						oldroot.CFrame = clone.CFrame
+					end
 				end))
+	
+				AntiMelee:Clean(entitylib.Events.LocalRemoved:Connect(reattach))
 	
 				repeat
 					local ok = pcall(function()
-						nearby = entitylib.isAlive and entitylib.EntityPosition({
-							Part = 'RootPart',
-							Range = RANGE,
-							Players = true,
-							NPCs = true
-						}) ~= nil
+						if not entitylib.isAlive then
+							reattach()
+							return
+						end
+	
+						-- Only meaningful where the executor actually implements it; it is
+						-- stubbed to true elsewhere in this client. When it does report a loss
+						-- the part is no longer ours to move, so put it back.
+						if oldroot and not isnetworkowner(oldroot) then
+							reattach()
+							return
+						end
+	
+						local near = entitylib.EntityPosition({
+							Range = Range.Value,
+							Players = Targets.Players.Enabled,
+							NPCs = Targets.NPCs.Enabled,
+							Wallcheck = Targets.Walls.Enabled or nil,
+							Sort = sortmethods.Distance,
+							Part = 'RootPart'
+						})
+	
+						if near and detach() then
+							dodging = not swinging()
+						else
+							reattach()
+						end
 					end)
 	
-					task.wait(ok and 0.05 or 0.25)
+					task.wait(ok and 0.03 or 0.25)
 				until not AntiMelee.Enabled
 	
-				nearby = false
-				restore()
+				reattach()
 			else
-				nearby = false
-				restore()
+				reattach()
 			end
 		end,
-		Tooltip = 'Makes the server hold a different position for you while someone is in melee range\nStands down while you attack so your own hits still land'
+		Tooltip = 'Moves the part the server hits you by out of your character\nStands down for a moment around your own swings so your hits still land'
+	})
+	Targets = AntiMelee:CreateTargets({
+		Players = true,
+		Tooltip = 'Which entities this reacts to'
+	})
+	Range = AntiMelee:CreateSlider({
+		Name = 'Range',
+		Tooltip = 'How close someone has to be before this engages',
+		Min = 1,
+		Max = 30,
+		Default = 20,
+		Suffix = function(val)
+			return val == 1 and 'stud' or 'studs'
+		end
 	})
 	
 end)
