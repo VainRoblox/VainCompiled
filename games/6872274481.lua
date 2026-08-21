@@ -937,7 +937,18 @@ run(function()
 	OldBreak = bedwars.BlockController.isBlockBreakable
 
 	Client.Get = function(self, remoteName)
+		-- Get yields while it waits on the remote, and a yield hands the thread back to
+		-- the scheduler, which resumes it carrying the game's identity rather than the
+		-- executor's. Anything the caller does afterwards that needs the executor's
+		-- identity then fails - a module calling this while it is being defined would
+		-- lose the ability to parent an Instance, so the CreateModule on the next line
+		-- died with "lacking capability Plugin". Restoring it here fixes every caller
+		-- rather than each one working around it.
+		local identity = getthreadidentity and getthreadidentity() or nil
 		local call = OldGet(self, remoteName)
+		if identity and setthreadidentity then
+			pcall(setthreadidentity, identity)
+		end
 
 		if remoteName == remotes.AttackEntity then
 			return {
