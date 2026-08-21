@@ -3270,15 +3270,8 @@ run(function()
 	Face = Killaura:CreateToggle({Name = 'Face target', Tooltip = 'Turns your character toward the target'})
 	Animation = Killaura:CreateToggle({
 		Name = 'Custom Animation',
-		Tooltip = 'Replaces the default swing with a custom animation',
+		Tooltip = '[DISABLED - causes errors]',
 		Function = function(callback)
-			AnimationMode.Object.Visible = callback
-			AnimationTween.Object.Visible = callback
-			AnimationSpeed.Object.Visible = callback
-			if Killaura.Enabled then
-				Killaura:Toggle()
-				Killaura:Toggle()
-			end
 		end
 	})
 	local animnames = {}
