@@ -5792,9 +5792,9 @@ run(function()
 	-- close enough to swing.
 	local RANGE = 18
 	
-	-- Long enough to cover the flight of a swing that has already been sent, short enough
-	-- that letting go leaves you covered again almost immediately.
-	local ATTACK_GRACE = 0.3
+	-- Just long enough for a swing that has already been sent to be validated. Kept tight
+	-- because every millisecond of it is a millisecond you are not desynced.
+	local ATTACK_GRACE = 0.1
 	
 	local function restore()
 		if realCF and entitylib.isAlive then
@@ -5803,13 +5803,13 @@ run(function()
 		realCF = nil
 	end
 	
-	-- Held mouse covers manual swings before they are even sent; the controller timestamps
-	-- cover Killaura, which attacks without the mouse held.
+	-- Deliberately does NOT test whether the mouse is held. An earlier version did, and in
+	-- a melee fight the mouse is held nearly all the time - which stood the offset down for
+	-- almost the entire fight, exactly when it was supposed to be doing something. Only a
+	-- brief window around a swing that has actually been sent is excluded, so your own hit
+	-- is validated against an honest position without leaving you exposed the rest of the
+	-- time.
 	local function attacking()
-		if inputService:IsMouseButtonPressed(0) and not inputService:GetFocusedTextBox() then
-			return true
-		end
-	
 		local controller = bedwars.SwordController
 		if not controller then return false end
 	
