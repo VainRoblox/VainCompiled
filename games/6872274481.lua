@@ -2399,10 +2399,12 @@ run(function()
 												for _ = 1, 10 do
 													local dpos = roundPos(ray.Position + ray.Normal * 1.5) + Vector3.new(0, 3, 0)
 													if not getPlacedBlock(dpos) then
-														-- dpos, not pos: there is no pos in this scope, so this
-														-- read whatever global another module had left behind -
-														-- everything in the bundle shares one scope - and threw
-														-- "attempt to index number with 'Y'" every frame of a fall.
+														-- dpos, not pos. pos is the enclosing local holding the low
+														-- ground height from getLowGround - a number - so this was
+														-- indexing a number and threw "attempt to index number with
+														-- 'Y'" on every touch of the anti-fall part. dpos is the
+														-- candidate position built on the line above and tested on
+														-- the line between, which is what the height should come from.
 														top = Vector3.new(top.X, dpos.Y, top.Z)
 														break
 													end
