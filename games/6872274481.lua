@@ -7071,7 +7071,7 @@ run(function()
 	-- multiplier of 1 once the orbs reset. Hooking updateSpeed is therefore the cleanest
 	-- signal for "does the player currently have stacks", which is all this needs.
 	-- Fixed rather than a slider, by request. Sprinting normally sits at 26.
-	local SPEED = 45
+	local SPEED = 40
 	
 	local ZephyrSpeed
 	local oldUpdateSpeed
