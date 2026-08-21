@@ -2918,6 +2918,7 @@ run(function()
 
 							if #plrs > 0 then
 								switchItem(sword.tool, 0)
+								task.wait(0.05)
 								local selfpos = entitylib.character.RootPart.Position
 								local localfacing = entitylib.character.RootPart.CFrame.LookVector * Vector3.new(1, 0, 1)
 
