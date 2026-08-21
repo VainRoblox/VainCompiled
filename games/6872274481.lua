@@ -7031,6 +7031,10 @@ run(function()
 	-- game's own modifier system instead of writing WalkSpeed behind its back - and when
 	-- the orbs reset the server sends a multiplier of 1, which passes straight through and
 	-- drops you back to default speed on its own.
+	-- How sharply the slider's effect tapers off as the kit's own bonus grows. Higher
+	-- means high stacks get proportionally less of the extra speed.
+	local FALLOFF = 2
+	
 	local ZephyrSpeed
 	local Multiplier
 	local oldUpdateSpeed
@@ -7064,11 +7068,18 @@ run(function()
 					-- Kept unscaled so toggling off can hand the real value back.
 					lastMultiplier = multiplier or 1
 					if ZephyrSpeed.Enabled and lastMultiplier ~= 1 then
-						-- Scales the bonus, not the multiplier: 1.3 with the slider at 3
-						-- gives 1.9, not 3.9. That keeps the setting predictable as orbs
-						-- climb instead of exploding at high stacks, and a multiplier of 1
-						-- (orbs reset) is left alone so speed returns to default.
-						multiplier = 1 + ((lastMultiplier - 1) * Multiplier.Value)
+						-- Scales the bonus rather than the multiplier, so a server value of
+						-- 1.3 with the slider at 3 gives 1.9 and not 3.9, and a multiplier
+						-- of 1 (orbs reset) is left alone so speed returns to default.
+						--
+						-- The slider's effect is then tapered by how large the server's own
+						-- bonus already is. Applying it flat meant the extra speed grew in
+						-- step with the orb count and ran away at high stacks; this keeps
+						-- most of the slider at low orb counts and progressively less of it
+						-- as the kit's own bonus climbs.
+						local bonus = lastMultiplier - 1
+						local falloff = 1 / (1 + (bonus * FALLOFF))
+						multiplier = 1 + (bonus * (1 + ((Multiplier.Value - 1) * falloff)))
 					end
 					return oldUpdateSpeed(self, multiplier, ...)
 				end
