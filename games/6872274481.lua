@@ -5771,11 +5771,16 @@ run(function()
 	-- about in advance. Attacking stands the offset down for as long as you are attacking
 	-- and a moment after, so your own hits are validated against an honest position.
 	local AntiMelee
-	local Targets
-	local Range
-	local Offset
 	local realCF
 	local nearby = false
+	
+	-- Comfortably past sword reach, which is about 14.4 studs - anything under that leaves
+	-- you inside the region a swing covers and does nothing at all.
+	local OFFSET = Vector3.new(0, 18, 0)
+	
+	-- Slightly wider than reach, so the offset is already in place by the time someone is
+	-- close enough to swing.
+	local RANGE = 18
 	
 	-- Long enough to cover the flight of a swing that has already been sent, short enough
 	-- that letting go leaves you covered again almost immediately.
@@ -5821,17 +5826,16 @@ run(function()
 	
 					local root = entitylib.character.RootPart
 					realCF = root.CFrame
-					root.CFrame = realCF + Vector3.new(0, Offset.Value, 0)
+					root.CFrame = realCF + OFFSET
 				end))
 	
 				repeat
 					local ok = pcall(function()
 						nearby = entitylib.isAlive and entitylib.EntityPosition({
 							Part = 'RootPart',
-							Range = Range.Value,
-							Players = Targets.Players.Enabled,
-							NPCs = Targets.NPCs.Enabled,
-							Preference = Targets.Preference.Value
+							Range = RANGE,
+							Players = true,
+							NPCs = true
 						}) ~= nil
 					end)
 	
@@ -5845,34 +5849,7 @@ run(function()
 				restore()
 			end
 		end,
-		ExtraText = function()
-			return Offset.Value .. ''
-		end,
 		Tooltip = 'Makes the server hold a different position for you while someone is in melee range\nStands down while you attack so your own hits still land'
-	})
-	Offset = AntiMelee:CreateSlider({
-		Name = 'Offset',
-		Tooltip = 'How far up the server sees you\nSword reach is about 14 studs, so below that changes nothing',
-		Min = 1,
-		Max = 40,
-		Default = 18,
-		Suffix = function(val)
-			return val == 1 and 'stud' or 'studs'
-		end
-	})
-	Range = AntiMelee:CreateSlider({
-		Name = 'Range',
-		Tooltip = 'How close someone has to be before this engages',
-		Min = 1,
-		Max = 30,
-		Default = 18,
-		Suffix = function(val)
-			return val == 1 and 'stud' or 'studs'
-		end
-	})
-	Targets = AntiMelee:CreateTargets({
-		Players = true,
-		Tooltip = 'Which entities this watches for'
 	})
 	
 end)
