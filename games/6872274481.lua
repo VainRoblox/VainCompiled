@@ -9412,8 +9412,10 @@ run(function()
 	-- window when the GUI restores a saved config.
 	local function wantedBlock(name)
 		if Custom and Custom.ListEnabled and table.find(Custom.ListEnabled, name) then return true end
-		if IronOre and IronOre.Enabled and name == 'iron_ore' then return true end
-		if Tesla and Tesla.Enabled and (name == 'tesla' or name == 'tesla_trap') then return true end
+		-- iron_ore is the item you collect; the thing standing in the world is
+		-- iron_ore_mesh_block. Matching only the former found nothing, which is why ores
+		-- were still being skipped. Both are accepted in case a mode places either.
+		if IronOre and IronOre.Enabled and (name == 'iron_ore' or name == 'iron_ore_mesh_block') then return true end
 		return false
 	end
 	
@@ -9599,6 +9601,10 @@ run(function()
 	
 				local beds = collection('bed', Breaker)
 				local luckyblock = collection('LuckyBlock', Breaker)
+				-- Teslas carry a real tag, so they are collected rather than name matched.
+				-- 'tesla' and 'tesla_trap' are ItemType values, not tags - matching those found
+				-- nothing at all.
+				local teslas = collection('tesla-trap', Breaker)
 				customlist = collection('block', Breaker, function(tab, obj)
 					if wantedBlock(obj.Name) then
 						table.insert(tab, obj)
@@ -9613,6 +9619,7 @@ run(function()
 							if attemptBreak(Bed.Enabled and beds, localPosition) then return end
 							if attemptBreak(customlist, localPosition) then return end
 							if attemptBreak(LuckyBlock.Enabled and luckyblock, localPosition) then return end
+							if attemptBreak(Tesla.Enabled and teslas, localPosition) then return end
 	
 							for _, v in parts do
 								v.Position = Vector3.zero
@@ -9686,8 +9693,7 @@ run(function()
 	Tesla = Breaker:CreateToggle({
 		Name = 'Break Tesla',
 		Tooltip = 'Breaks tesla traps',
-		Default = true,
-		Function = rebuildList
+		Default = true
 	})
 	Effect = Breaker:CreateToggle({
 		Name = 'Show Healthbar & Effects',
