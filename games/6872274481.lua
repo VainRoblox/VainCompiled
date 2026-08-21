@@ -8808,27 +8808,35 @@ run(function()
 	local function attemptBreak(tab, localPosition)
 		if not tab then return end
 		for _, v in tab do
-			if (v.Position - localPosition).Magnitude < Range.Value and bedwars.BlockController:isBlockBreakable({blockPosition = v.Position / 3}, lplr) then
+			if not v or not v.Parent then continue end
+			if (v.Position - localPosition).Magnitude < Range.Value then
+				local ok, isBreakable = pcall(function()
+					return bedwars.BlockController:isBlockBreakable({blockPosition = v.Position / 3}, lplr)
+				end)
+				if not ok or not isBreakable then continue end
+	
 				if not SelfBreak.Enabled and v:GetAttribute('PlacedByUserId') == lplr.UserId then continue end
 				if (v:GetAttribute('BedShieldEndTime') or 0) > workspace:GetServerTimeNow() then continue end
 				if LimitItem.Enabled and not (store.hand.tool and bedwars.ItemMeta[store.hand.tool.Name].breakBlock) then continue end
 	
 				hit += 1
-				local target, path, endpos = bedwars.breakBlock(v, Effect.Enabled, Animation.Enabled, CustomHealth.Enabled and customHealthbar or nil, InstantBreak.Enabled)
-				if path then
-					local currentnode = target
-					for _, part in parts do
-						part.Position = currentnode or Vector3.zero
-						if currentnode then
-							part.BoxHandleAdornment.Color3 = currentnode == endpos and Color3.new(1, 0.2, 0.2) or currentnode == target and Color3.new(0.2, 0.2, 1) or Color3.new(0.2, 1, 0.2)
+				local ok2 = pcall(function()
+					local target, path, endpos = bedwars.breakBlock(v, Effect.Enabled, Animation.Enabled, CustomHealth.Enabled and customHealthbar or nil, InstantBreak.Enabled)
+					if path then
+						local currentnode = target
+						for _, part in parts do
+							part.Position = currentnode or Vector3.zero
+							if currentnode then
+								part.BoxHandleAdornment.Color3 = currentnode == endpos and Color3.new(1, 0.2, 0.2) or currentnode == target and Color3.new(0.2, 0.2, 1) or Color3.new(0.2, 1, 0.2)
+							end
+							currentnode = path[currentnode]
 						end
-						currentnode = path[currentnode]
 					end
+				end)
+				if ok2 then
+					task.wait(InstantBreak.Enabled and (store.damageBlockFail > tick() and 4.5 or 0) or BreakSpeed.Value)
+					return true
 				end
-	
-				task.wait(InstantBreak.Enabled and (store.damageBlockFail > tick() and 4.5 or 0) or BreakSpeed.Value)
-	
-				return true
 			end
 		end
 	
@@ -8866,19 +8874,24 @@ run(function()
 				end)
 	
 				repeat
-					task.wait(1 / UpdateRate.Value)
-					if not Breaker.Enabled then break end
-					if entitylib.isAlive then
-						local localPosition = entitylib.character.RootPart.Position
+					local ok = pcall(function()
+						if entitylib.isAlive then
+							local localPosition = entitylib.character.RootPart.Position
 	
-						if attemptBreak(Bed.Enabled and beds, localPosition) then continue end
-						if attemptBreak(customlist, localPosition) then continue end
-						if attemptBreak(LuckyBlock.Enabled and luckyblock, localPosition) then continue end
-						if attemptBreak(IronOre.Enabled and ironores, localPosition) then continue end
+							if attemptBreak(Bed.Enabled and beds, localPosition) then return end
+							if attemptBreak(customlist, localPosition) then return end
+							if attemptBreak(LuckyBlock.Enabled and luckyblock, localPosition) then return end
+							if attemptBreak(IronOre.Enabled and ironores, localPosition) then return end
 	
-						for _, v in parts do
-							v.Position = Vector3.zero
+							for _, v in parts do
+								v.Position = Vector3.zero
+							end
 						end
+					end)
+					if not ok then
+						task.wait(0.5)
+					else
+						task.wait(1 / UpdateRate.Value)
 					end
 				until not Breaker.Enabled
 			else
