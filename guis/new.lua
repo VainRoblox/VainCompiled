@@ -5861,6 +5861,18 @@ mainapi:CreateCategory({
 	Icon = getcustomasset('vain/assets/new/miniicon.png'),
 	Size = UDim2.fromOffset(19, 12)
 })
+-- Kit modules only exist for bedwars, so the category is gated on the place rather
+-- than shown everywhere. It has to be created here rather than from the game file:
+-- categories are appended to the sidebar in creation order, and anything made after
+-- this point lands below the misc divider at the very bottom of the list. The lobby
+-- place is deliberately absent - it has no kit modules.
+if table.find({6872274481, 8444591321, 8560631822}, game.PlaceId) then
+	mainapi:CreateCategory({
+		Name = 'Kit',
+		Icon = getcustomasset('vain/assets/new/combaticon.png'),
+		Size = UDim2.fromOffset(13, 14)
+	})
+end
 mainapi.Categories.Main:CreateDivider('misc')
 
 --[[
