@@ -5746,10 +5746,13 @@ end)
 
 run(function()
 	local AntiMelee
+	local Mode
 	local Targets
 	local Range
 	local Resync
+	local Duration
 	local choking
+	local chokeUntil = 0
 	
 	-- Roblox retires fast flags without warning and setfflag throws once the name is gone,
 	-- so every call goes through this - same reason Blink does it.
@@ -5779,10 +5782,41 @@ run(function()
 		Name = 'AntiMelee',
 		Function = function(callback)
 			if callback then
+				chokeUntil = 0
+	
+				-- On Hit mode. The victim's client is told about damage after the fact -
+				-- onEntityDamaged in the game, a health drop from here - which is useless for
+				-- stopping the hit that just landed but is a precise trigger for the next
+				-- one. Melee is repeated swings about a second apart, so choking for a
+				-- fraction of a second on each hit breaks the follow-ups in a combo while
+				-- leaving you fully synced the rest of the time.
+				AntiMelee:Clean(entitylib.Events.LocalAdded:Connect(function(ent)
+					AntiMelee:Clean(ent.Humanoid.HealthChanged:Connect(function(health)
+						if health < (ent.Health or health) then
+							chokeUntil = tick() + Duration.Value
+						end
+						ent.Health = health
+					end))
+				end))
+				if entitylib.isAlive then
+					local ent = entitylib.character
+					AntiMelee:Clean(ent.Humanoid.HealthChanged:Connect(function(health)
+						if health < (ent.Health or health) then
+							chokeUntil = tick() + Duration.Value
+						end
+						ent.Health = health
+					end))
+				end
+	
 				repeat
 					local ok = pcall(function()
 						if blinkActive() or not entitylib.isAlive then
 							setChoke(false)
+							return
+						end
+	
+						if Mode.Value == 'On Hit' then
+							setChoke(tick() < chokeUntil)
 							return
 						end
 	
@@ -5815,6 +5849,31 @@ run(function()
 			end
 		end,
 		Tooltip = 'Chokes movement packets while someone is in melee range\nOnly works while you keep moving'
+	})
+	Mode = AntiMelee:CreateDropdown({
+		Name = 'Mode',
+		Tooltip = 'When to choke movement packets',
+		List = {'On Hit', 'Proximity'},
+		Tooltips = {
+			['On Hit'] = 'Chokes for a moment each time you take damage, to break the rest of a combo\nStays synced the rest of the time',
+			Proximity = 'Chokes the whole time anyone is within range\nStronger, but you desync constantly'
+		},
+		Function = function()
+			if AntiMelee.Enabled then
+				setChoke(false)
+			end
+		end
+	})
+	Duration = AntiMelee:CreateSlider({
+		Name = 'Duration',
+		Tooltip = 'How long to choke after being hit',
+		Min = 0.05,
+		Max = 1,
+		Default = 0.4,
+		Decimal = 100,
+		Suffix = function(val)
+			return val == 1 and 'second' or 'seconds'
+		end
 	})
 	Targets = AntiMelee:CreateTargets({
 		Players = true,
