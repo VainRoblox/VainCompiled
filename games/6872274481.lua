@@ -5761,10 +5761,19 @@ run(function()
 	-- copy of you is whether the attacker's claimed targetPosition matches it. That is the
 	-- check this breaks.
 	--
-	-- The offset is applied on Heartbeat and removed at render priority 0, before the
-	-- camera runs at priority 200. Replication samples the root between those two points,
-	-- so the server sees the offset while your screen and camera only ever see the real
-	-- position.
+	-- Timing is the whole thing. A frame runs
+	--
+	--     RenderStep -> render -> Stepped -> physics -> Heartbeat
+	--
+	-- and replication samples an owned part around the physics step. So the offset is
+	-- applied on Stepped, just before physics, and removed at render priority 0 on the
+	-- next frame, before the camera runs at priority 200. It therefore exists across
+	-- physics and Heartbeat - the window the server actually reads - and is gone again
+	-- before anything is drawn, so neither your screen nor your camera ever sees it.
+	--
+	-- Applying it on Heartbeat instead, as an earlier version did, put it entirely after
+	-- physics and removed it before the next one: the server never sampled it once, and
+	-- the module did nothing whatsoever.
 	--
 	-- Hitting while not being hit works because the two are not symmetric: their swings
 	-- arrive whenever they choose, so they land on offset samples, while yours are known
@@ -5821,7 +5830,7 @@ run(function()
 					restore()
 				end)
 	
-				AntiMelee:Clean(runService.Heartbeat:Connect(function()
+				AntiMelee:Clean(runService.Stepped:Connect(function()
 					if not (nearby and entitylib.isAlive) or attacking() then return end
 	
 					local root = entitylib.character.RootPart
