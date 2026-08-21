@@ -3112,7 +3112,14 @@ run(function()
 									-- Nil means AntiMelee is not hiding anything and this does not
 									-- apply. The wait costs nothing: its cycle is shorter than a
 									-- sword's attack speed, so a window always comes round first.
-									if store.antiMeleeParked == false then continue end
+									if store.antiMeleeParked == false then
+										-- Ask for one. AntiMelee keeps the root buried by default and
+										-- surfaces it because this asked, so a swing is delayed only by
+										-- the time that takes rather than waiting for a window on a
+										-- clock that its own attack cooldown drifts against.
+										store.antiMeleeWantAttack = tick()
+										continue
+									end
 
 									-- The loop used to fire on every pass, which with one target in
 									-- range meant an attack every 0.02s - fifty a second against a
@@ -3123,6 +3130,9 @@ run(function()
 									-- Hit delay slider when it is set above zero.
 									if (AttackTimes[v] or 0) > tick() then continue end
 									AttackTimes[v] = tick() + (HitDelay.Value > 0 and HitDelay.Value or (meta.sword.attackSpeed or 0.5))
+									-- The swing this asked for is going out, so release AntiMelee to
+									-- bury the root again rather than leaving it surfaced.
+									store.antiMeleeWantAttack = nil
 
 									-- PrimaryPart is not guaranteed to be set on a character model.
 									-- Bailing out when it was nil skipped the attack entirely while
@@ -5809,8 +5819,19 @@ run(function()
 	--
 	-- The cycle is a little under a sword's attack speed, so a parked window always comes
 	-- round before Killaura is ready to swing again and nothing is lost waiting.
-	local PARK_TIME = 0.3
-	local BURY_TIME = 0.6
+	-- Parking is driven by demand rather than a clock. A fixed cycle exposed you for a set
+	-- share of every second no matter what, and worse, Killaura's own attack cooldown drifts
+	-- against a fixed period - its ready moment kept landing inside a buried stretch and
+	-- being pushed back another one, so it swung far less often than it should while you
+	-- stayed just as exposed. Now the root is buried whenever nothing needs it, and only
+	-- surfaces because Killaura has asked to swing.
+	--
+	-- How long a request stays live. Long enough for the park to settle and the swing to go
+	-- out, short enough that a request which never turns into an attack stops holding you up.
+	local REQUEST_TIMEOUT = 0.6
+	
+	-- Never stay surfaced longer than this, however many requests arrive.
+	local MAX_PARK = 0.4
 	
 	-- Parking the root writes a CFrame; the server does not have that position until it has
 	-- been replicated. Announcing the window the instant it opens meant Killaura fired
@@ -5822,21 +5843,35 @@ run(function()
 	-- How long to keep the root hidden after the last time anyone was in range.
 	local LINGER = 1
 	local lastNear = 0
-	local cycleStart = 0
+	local parkStart = 0
 	
-	local function cycleElapsed()
-		return (tick() - cycleStart) % (PARK_TIME + BURY_TIME)
-	end
+	-- Returns whether the root should be buried this pass, and whether an attack may go out.
+	-- Surfacing is requested by Killaura through store.antiMeleeWantAttack and cleared by it
+	-- once a swing has actually been sent.
+	local function evaluate()
+		local request = store.antiMeleeWantAttack or 0
+		local pending = (tick() - request) < REQUEST_TIMEOUT
 	
-	-- True for the buried stretch of each cycle.
-	local function shouldBury()
-		return cycleElapsed() >= PARK_TIME
-	end
+		if not pending then
+			parkStart = 0
+			return true, false
+		end
 	
-	-- True only for the part of the parked window the server has actually caught up with.
-	local function attackAllowed()
-		local elapsed = cycleElapsed()
-		return elapsed >= SETTLE and elapsed < PARK_TIME
+		if parkStart == 0 then
+			parkStart = tick()
+		end
+	
+		local parked = tick() - parkStart
+		if parked > MAX_PARK then
+			-- Held up too long by a request that never became a swing. Drop it and go back
+			-- under rather than staying exposed indefinitely.
+			store.antiMeleeWantAttack = nil
+			parkStart = 0
+			return true, false
+		end
+	
+		-- Surfaced, but an attack is only worth sending once the position has replicated.
+		return false, parked >= SETTLE
 	end
 	
 	local function detach()
@@ -5912,9 +5947,11 @@ run(function()
 	
 		oldroot, clone, store.rootpart = nil, nil, nil
 		dodging = false
-		-- Cleared rather than left true, so Killaura is never left waiting on a window that
-		-- is no longer being produced.
+		parkStart = 0
+		-- Cleared rather than left set, so Killaura is never left waiting on a window that
+		-- is no longer being produced, and no stale request is left pending.
 		store.antiMeleeParked = nil
+		store.antiMeleeWantAttack = nil
 	end
 	
 	AntiMelee = vain.Categories.Utility:CreateModule({
@@ -5923,7 +5960,8 @@ run(function()
 			if callback then
 				dodging = false
 				lastNear = 0
-				cycleStart = tick()
+				parkStart = 0
+				store.antiMeleeWantAttack = nil
 	
 				-- Far enough under the lowest block that nothing can reach it. Recomputed on
 				-- enable rather than cached across rounds, since the map changes.
@@ -6018,11 +6056,12 @@ run(function()
 						-- reattaching is the expensive part - it is not worth doing repeatedly
 						-- for a target who has not actually gone anywhere.
 						if tick() - lastNear < LINGER and detach() then
-							dodging = shouldBury()
+							local bury, mayAttack = evaluate()
+							dodging = bury
 							-- Read by Killaura, which holds its swing until the root is parked and
 							-- that position has reached the server. Nil means this module is not
 							-- hiding anything, so attacking is unrestricted.
-							store.antiMeleeParked = attackAllowed()
+							store.antiMeleeParked = mayAttack
 						else
 							reattach()
 						end
