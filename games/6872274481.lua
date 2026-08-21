@@ -2759,16 +2759,72 @@ run(function()
 	-- only once at load meant a single early failure - injecting before the remotes are
 	-- registered - left every later attack silently going nowhere for the rest of the
 	-- session, so this runs again on enable while the stub is still in place.
+	-- The remote name is scraped out of the game's own bytecode in base.lua, so a
+	-- game update can hand back a name that is wrong but not empty, and Get then
+	-- fails without base.lua's "failed to grab remote" warning firing. Landing on
+	-- the stub is completely silent: target boxes, particles and the swing effect
+	-- all still play because none of them touch the remote, and only the damage is
+	-- missing. That is indistinguishable from a reach or validation problem from
+	-- the outside, so say so out loud instead of failing quietly.
+	local warned = false
 	local function resolveAttackRemote()
 		if AttackRemote ~= AttackStub then return end
+
+		local function fail(reason)
+			if warned then return end
+			warned = true
+			notif('Killaura', 'No damage will be dealt - '..reason, 10, 'alert')
+		end
+
+		if not remotes.AttackEntity or remotes.AttackEntity == '' then
+			fail('the attack remote name could not be read from the game')
+			return
+		end
+
 		local ok, remote = pcall(function()
 			return bedwars.Client:Get(remotes.AttackEntity).instance
 		end)
 		if ok and remote then
 			AttackRemote = remote
+			warned = false
+			return
 		end
+
+		fail('the attack remote ('..tostring(remotes.AttackEntity)..') could not be resolved')
 	end
 	task.spawn(resolveAttackRemote)
+
+	-- store.tools is only rebuilt when the inventory items table changes identity, so
+	-- after a respawn the cached entry can still hold the Tool instance from the
+	-- previous life. Every visual in Killaura runs off client state and keeps playing
+	-- normally, but the server drops an attack whose weapon is a destroyed instance -
+	-- target box, particles and swing all correct, no damage, and it stays that way
+	-- until something happens to rebuild the items table. store.inventory is refreshed
+	-- on every inventory change, so re-resolve a live tool from there. Falling back to
+	-- the original item on failure keeps this strictly no worse than not checking.
+	local function liveItem(item, isHand)
+		if not item then return item end
+		if item.tool and item.tool.Parent then return item end
+
+		local inv = store.inventory and store.inventory.inventory
+		if not inv then return item end
+
+		if isHand then
+			local hand = inv.hand
+			if hand and hand.tool and hand.tool.Parent then
+				return {tool = hand.tool, amount = hand.amount or 0, toolType = item.toolType}
+			end
+			return item
+		end
+
+		for _, v in inv.items do
+			if v.itemType == item.itemType and v.tool and v.tool.Parent then
+				store.tools.sword = v
+				return v
+			end
+		end
+		return item
+	end
 
 	local function getAttackData()
 		if Mouse.Enabled then
@@ -2781,6 +2837,7 @@ run(function()
 
 		local sword = Limit.Enabled and store.hand or store.tools.sword
 		if not sword or not sword.tool then return false end
+		sword = liveItem(sword, Limit.Enabled)
 
 		-- store.hand carries no itemType, so the tool instance name is the fallback key.
 		-- An item the metadata does not know about leaves meta nil, and the attack path
