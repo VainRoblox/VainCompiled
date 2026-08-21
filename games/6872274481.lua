@@ -43,6 +43,19 @@ local prediction = vain.Libraries.prediction
 local getfontsize = vain.Libraries.getfontsize
 local getcustomasset = vain.Libraries.getcustomasset
 
+-- Kit modules are bedwars-only, so the category is created here rather than in the
+-- shared GUI file - creating it there put an empty Kit tab in front of every other
+-- game. The icon is borrowed from the combat one and is wrapped because asset paths
+-- are per-GUI: a GUI without that file should cost us the icon, not the category.
+if not vain.Categories.Kit then
+	local icon = select(2, pcall(getcustomasset, 'vain/assets/new/combaticon.png'))
+	vain:CreateCategory({
+		Name = 'Kit',
+		Icon = type(icon) == 'string' and icon or nil,
+		Size = UDim2.fromOffset(13, 14)
+	})
+end
+
 local store = {
 	attackReach = 0,
 	attackReachUpdate = tick(),
