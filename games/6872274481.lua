@@ -7033,7 +7033,7 @@ run(function()
 	-- drops you back to default speed on its own.
 	-- How sharply the slider's effect tapers off as the kit's own bonus grows. Higher
 	-- means high stacks get proportionally less of the extra speed.
-	local FALLOFF = 2
+	local FALLOFF = 4
 	
 	local ZephyrSpeed
 	local Multiplier
