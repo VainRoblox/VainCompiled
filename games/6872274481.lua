@@ -5780,25 +5780,29 @@ run(function()
 	rayParams.RespectCanCollide = true
 	
 	-- Your own attacks are validated against the server's copy of you, which is the root
-	-- being held below the map - so a swing sent while dodging is rejected. The original
-	-- ran a blind 0.2s on / 0.4s off cycle to leave gaps for its own hits. Keying it to
-	-- actual swings instead means far more dodge uptime and the gap lands exactly when it
-	-- is needed.
-	-- Every millisecond of this is a millisecond you are hittable, and with Killaura
-	-- swinging about once a second a quarter-second window left you exposed a quarter of
-	-- the fight. Kept to roughly one round trip - just enough for a swing that has already
-	-- been sent to be validated against an honest position.
-	local ATTACK_GRACE = 0.1
+	-- being held below the map, so a swing sent while it is buried gets rejected.
+	--
+	-- Keying the stand-down to lastSwing / lastAttack does not work, and an earlier version
+	-- here did exactly that: those fields only update once a swing has already been sent,
+	-- so the root was being parked after the server had already rejected it. Your own hits
+	-- never landed, however long the window was.
+	--
+	-- Parking has to lead the swing, not follow it, and nothing can tell us a swing is
+	-- coming. So the root alternates on a fixed cycle, the way the original client did it:
+	-- swings that fall in a parked window land, and anything aimed at you during a buried
+	-- window misses. Longer BURY_TIME means fewer hits taken and fewer of yours landing.
+	local PARK_TIME = 0.25
+	local BURY_TIME = 0.45
 	
 	-- How long to keep the root hidden after the last time anyone was in range.
 	local LINGER = 1
 	local lastNear = 0
+	local cycleStart = 0
 	
-	local function swinging()
-		local controller = bedwars.SwordController
-		if not controller then return false end
-		if tick() - (controller.lastSwing or 0) < ATTACK_GRACE then return true end
-		return workspace:GetServerTimeNow() - (controller.lastAttack or 0) < ATTACK_GRACE
+	-- True for the buried stretch of each cycle.
+	local function shouldBury()
+		local elapsed = (tick() - cycleStart) % (PARK_TIME + BURY_TIME)
+		return elapsed >= PARK_TIME
 	end
 	
 	local function detach()
@@ -5882,6 +5886,7 @@ run(function()
 			if callback then
 				dodging = false
 				lastNear = 0
+				cycleStart = tick()
 	
 				-- Far enough under the lowest block that nothing can reach it. Recomputed on
 				-- enable rather than cached across rounds, since the map changes.
@@ -5976,7 +5981,7 @@ run(function()
 						-- reattaching is the expensive part - it is not worth doing repeatedly
 						-- for a target who has not actually gone anywhere.
 						if tick() - lastNear < LINGER and detach() then
-							dodging = not swinging()
+							dodging = shouldBury()
 						else
 							reattach()
 						end
