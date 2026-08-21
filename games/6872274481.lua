@@ -5845,6 +5845,39 @@ run(function()
 	local FLICKER_INTERVAL = 0.35
 	local lastFlicker = 0
 	
+	-- Reparenting the character takes it out of the physics world for a moment, and the
+	-- humanoid comes back in Freefall having built up downward velocity. Fall damage is
+	-- client reported - FallDamageController samples velocity during Freefall and fires
+	-- GroundHit with it on landing - so those swaps were being reported as a real fall and
+	-- killing you. Anything that moves the character runs through this, which puts the
+	-- humanoid back the way it found it.
+	local function preserveGround(swap)
+		if not entitylib.isAlive then
+			swap()
+			return
+		end
+	
+		local humanoid = entitylib.character.Humanoid
+		local grounded = humanoid.FloorMaterial ~= Enum.Material.Air
+		local velocity = entitylib.character.RootPart.AssemblyLinearVelocity
+	
+		swap()
+	
+		if not entitylib.isAlive then return end
+		pcall(function()
+			local root = entitylib.character.RootPart
+			-- Carry the velocity across rather than whatever the swap left behind, and never
+			-- carry a downward one while grounded - that is the part that becomes damage.
+			root.AssemblyLinearVelocity = grounded
+				and Vector3.new(velocity.X, math.max(velocity.Y, 0), velocity.Z)
+				or velocity
+	
+			if grounded then
+				entitylib.character.Humanoid:ChangeState(Enum.HumanoidStateType.Landed)
+			end
+		end)
+	end
+	
 	-- Parking the root writes a CFrame; the server does not have that position until it has
 	-- been replicated. Announcing the window the instant it opens meant Killaura fired
 	-- immediately, while the server still held the buried copy, and the hit was rejected -
@@ -6068,7 +6101,14 @@ run(function()
 						-- a free swing every time they step back over the boundary, and
 						-- reattaching is the expensive part - it is not worth doing repeatedly
 						-- for a target who has not actually gone anywhere.
-						if tick() - lastNear < LINGER and detach() then
+						local engaged = tick() - lastNear < LINGER
+						if engaged then
+							-- Wrapped too: the first detach of a fight is a reparent like any
+							-- other, and left alone it starts the fall the swaps below continue.
+							preserveGround(detach)
+						end
+	
+						if engaged and oldroot and oldroot.Parent then
 							local bury, mayAttack = evaluate()
 							dodging = bury
 							-- Read by Killaura, which holds its swing until the root is parked and
@@ -6080,11 +6120,13 @@ run(function()
 							-- position the attack is about to be validated against.
 							if bury and tick() - lastFlicker > FLICKER_INTERVAL then
 								lastFlicker = tick()
-								reattach()
-								detach()
+								preserveGround(function()
+									reattach()
+									detach()
+								end)
 							end
 						else
-							reattach()
+							preserveGround(reattach)
 						end
 					end)
 	
