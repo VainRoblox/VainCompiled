@@ -5782,6 +5782,7 @@ run(function()
 	local AntiMelee
 	local realCF
 	local nearby = false
+	local offsetStep = false
 	
 	-- Comfortably past sword reach, which is about 14.4 studs - anything under that leaves
 	-- you inside the region a swing covers and does nothing at all.
@@ -5832,6 +5833,17 @@ run(function()
 	
 				AntiMelee:Clean(runService.Stepped:Connect(function()
 					if not (nearby and entitylib.isAlive) or attacking() then return end
+	
+					-- Alternated, not held. Replication is a single channel: if the server
+					-- believes you are 18 studs up then so does every other client, their sword
+					-- query finds you there, they swing there and the server agrees - a steady
+					-- offset moves both views together and achieves nothing. What can be
+					-- exploited is the gap between them. An attacker aims at their interpolated,
+					-- slightly stale copy of you, so flipping the position every physics step
+					-- leaves the server holding a different sample by the time their swing is
+					-- validated. This is what the first version did, and why it worked.
+					offsetStep = not offsetStep
+					if not offsetStep then return end
 	
 					local root = entitylib.character.RootPart
 					realCF = root.CFrame
