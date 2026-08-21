@@ -5887,8 +5887,15 @@ run(function()
 				end)
 				if lowestPoint == -math.huge then lowestPoint = -200 end
 	
-				local map = workspace:FindFirstChild('Map')
-				rayParams.FilterDescendantsInstances = map and {map} or {}
+				-- Looked up rather than indexed, and refreshed in the loop below: workspace.Map
+				-- does not exist yet in the lobby, and without it the raycast has nothing to
+				-- hit, which would leave the module permanently unable to find a safe spot.
+				local function refreshMap()
+					local map = workspace:FindFirstChild('Map')
+					rayParams.FilterDescendantsInstances = map and {map} or {}
+					return map ~= nil
+				end
+				refreshMap()
 	
 				-- PostSimulation, so the position is written after the engine has finished
 				-- moving things and is what actually gets replicated.
@@ -5896,8 +5903,23 @@ run(function()
 					if not (oldroot and oldroot.Parent and clone and clone.Parent) then return end
 	
 					if dodging then
+						-- Parking the root at a fixed depth buries it inside whatever geometry
+						-- happens to be there, and the game damages you for having your tracked
+						-- position inside a block - that is the suffocation. Casting up from
+						-- below the map finds the underside of the nearest thing above, and
+						-- sitting just beneath that keeps the root in open air. If nothing is
+						-- found there is no known-safe spot, so it stops dodging rather than
+						-- guessing and killing you.
+						local basePos = Vector3.new(clone.CFrame.X, lowestPoint - 6, clone.CFrame.Z)
+						local hit = workspace:Raycast(basePos, Vector3.new(0, 1000, 0), rayParams)
+						if not hit then
+							oldroot.Velocity = Vector3.zero
+							oldroot.CFrame = clone.CFrame
+							return
+						end
+	
 						oldroot.Velocity = Vector3.zero
-						oldroot.CFrame = CFrame.new(clone.CFrame.X, lowestPoint - 6, clone.CFrame.Z)
+						oldroot.CFrame = CFrame.new(basePos.X, hit.Position.Y - 6, basePos.Z)
 							* CFrame.Angles(math.rad(90), 0, 0)
 					else
 						-- Parked on the clone while not dodging, so your own hits and anything
@@ -5923,6 +5945,8 @@ run(function()
 							reattach()
 							return
 						end
+	
+						refreshMap()
 	
 						local near = entitylib.EntityPosition({
 							Range = Range.Value,
