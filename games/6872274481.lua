@@ -2904,6 +2904,13 @@ run(function()
 						Attacking = false
 						store.KillauraTarget = nil
 						if sword then
+							-- Swing range and attack range are independent: swing range is how
+							-- close something must be to make you swing, attack range is how close
+							-- it must be to actually be hit. The query therefore has to cover
+							-- whichever is larger, or setting attack range above swing range would
+							-- silently clamp it - those targets would never be selected at all.
+							-- Hitting is still gated strictly on attack range further down.
+							--
 							-- Deliberately unlimited: AllPosition applies Limit *after* sorting,
 							-- so passing MaxTargets here truncates the list before Killaura has
 							-- had a chance to check attack range or the angle cone. A target that
@@ -2912,7 +2919,7 @@ run(function()
 							-- looked like Killaura swinging endlessly for no damage. MaxTargets is
 							-- about how many entities to *hit*, so it is enforced below instead.
 							local plrs = entitylib.AllPosition({
-								Range = SwingRange.Value,
+								Range = math.max(SwingRange.Value, AttackRange.Value),
 								Wallcheck = Targets.Walls.Enabled or nil,
 								Part = 'RootPart',
 								Players = Targets.Players.Enabled,
@@ -2943,15 +2950,22 @@ run(function()
 									local angle = math.acos(math.clamp(localfacing:Dot(flat.Unit), -1, 1))
 									if angle > (math.rad(AngleSlider.Value) / 2) then continue end
 
-									local inrange = delta.Magnitude <= AttackRange.Value
+									local dist = delta.Magnitude
+									local inrange = dist <= AttackRange.Value
+									local inswing = dist <= SwingRange.Value
+									-- Beyond both ranges this target is of no interest. It can only
+									-- show up here because the query covers whichever range is larger.
+									if not (inrange or inswing) then continue end
 
-									table.insert(attacked, {
-										Entity = v,
-										Check = inrange and BoxAttackColor or BoxSwingColor
-									})
-									targetinfo.Targets[v] = tick() + 1
+									if inswing then
+										table.insert(attacked, {
+											Entity = v,
+											Check = inrange and BoxAttackColor or BoxSwingColor
+										})
+										targetinfo.Targets[v] = tick() + 1
+									end
 
-									if not Attacking then
+									if inswing and not Attacking then
 										Attacking = true
 										store.KillauraTarget = v
 										if not Swing.Enabled and AnimDelay < tick() and not LegitAura.Enabled then
