@@ -4183,13 +4183,26 @@ run(function()
 			aimpos = applySpread(aimpos, offsetpos)
 		end
 	
-		local newlook = CFrame.new(offsetpos, aimpos) * CFrame.new(projmeta.projectile == 'owl_projectile' and Vector3.zero or Vector3.new(bedwars.BowConstantsTable.RelX, bedwars.BowConstantsTable.RelY, bedwars.BowConstantsTable.RelZ))
-		local calc = prediction.SolveTrajectory(newlook.p, projSpeed, gravity, aimpos, projmeta.projectile == 'telepearl' and Vector3.zero or target.Velocity, playerGravity, plr.HipHeight, plr.Jumping and 42.6 or nil, rayCheck)
+		-- Solved from the same point that gets returned as positionFrom, so the trajectory
+		-- and the shot share an origin.
+		--
+		-- This used to apply the bow offset here and solve from the offset point, while
+		-- still returning the unoffset one. The game applies that offset itself once this
+		-- returns:
+		--
+		--     positionFrom = (CFrame.new(positionFrom, positionFrom + initialVelocity)
+		--                     * CFrame.new(Vector3.new(RelX, RelY, RelZ))).Position
+		--
+		-- so it was being counted twice, and along two different directions - the straight
+		-- line to the target here, the solved launch direction there. The two only agree on
+		-- a perfectly flat shot, and they diverge further the more the shot has to arc,
+		-- which is exactly when the aim needs to be right.
+		local calc = prediction.SolveTrajectory(offsetpos, projSpeed, gravity, aimpos, projmeta.projectile == 'telepearl' and Vector3.zero or target.Velocity, playerGravity, plr.HipHeight, plr.Jumping and 42.6 or nil, rayCheck)
 		if not calc then return nil end
 	
 		targetinfo.Targets[plr] = tick() + 1
 		return {
-			initialVelocity = CFrame.new(newlook.Position, calc).LookVector * projSpeed,
+			initialVelocity = CFrame.new(offsetpos, calc).LookVector * projSpeed,
 			positionFrom = offsetpos,
 			deltaT = lifetime,
 			gravitationalAcceleration = gravity,
