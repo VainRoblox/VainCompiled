@@ -4178,7 +4178,25 @@ run(function()
 	
 		refreshMapFilter()
 	
+		-- The position replicated for a target is already about one trip old by the time it
+		-- reaches you, and the shot needs another trip before the server acts on it. The
+		-- solver accounts for how far they move during the projectile's flight but knows
+		-- nothing about that, so the shot lands where they were rather than where they are -
+		-- an error that scales directly with ping, and the reason this misses worst on a bad
+		-- connection. Aim a round trip ahead of what is on screen.
+		--
+		-- Skipped for telepearl, whose target velocity is deliberately ignored below.
 		local aimpos = target.Position
+		if projmeta.projectile ~= 'telepearl' then
+			local latency = 0
+			pcall(function()
+				latency = lplr:GetNetworkPing() * 2
+			end)
+			-- Clamped: GetNetworkPing occasionally spikes, and a bad sample would otherwise
+			-- throw the aim a long way off for that shot.
+			aimpos += target.Velocity * math.clamp(latency, 0, 0.5)
+		end
+	
 		if HitChance.Value < 100 and math.random(1, 100) > HitChance.Value then
 			aimpos = applySpread(aimpos, offsetpos)
 		end
@@ -4526,7 +4544,18 @@ run(function()
 										local projSpeed = meta and meta.launchVelocity
 										if not projSpeed then continue end
 										local gravity = meta.gravitationalAcceleration or 196.2
-										local calc = prediction.SolveTrajectory(pos, projSpeed, gravity, ent.RootPart.Position, ent.RootPart.Velocity, workspace.Gravity, ent.HipHeight, ent.Jumping and 42.6 or nil, rayCheck)
+										-- Aimed a round trip ahead of where the target appears, for the
+										-- same reason ProjectileAimbot does: their replicated position
+										-- is already about one trip old and the shot needs another
+										-- before the server acts on it. The solver covers movement
+										-- during flight but not that, so without it the miss grows
+										-- with ping. Clamped because the ping reading can spike.
+										local latency = 0
+										pcall(function()
+											latency = lplr:GetNetworkPing() * 2
+										end)
+										local aimAt = ent.RootPart.Position + (ent.RootPart.Velocity * math.clamp(latency, 0, 0.5))
+										local calc = prediction.SolveTrajectory(pos, projSpeed, gravity, aimAt, ent.RootPart.Velocity, workspace.Gravity, ent.HipHeight, ent.Jumping and 42.6 or nil, rayCheck)
 										if calc then
 											targetinfo.Targets[ent] = tick() + 1
 											local switched = switchItem(item.tool)
