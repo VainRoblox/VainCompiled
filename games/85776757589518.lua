@@ -224,18 +224,23 @@ end
 -- Still one key per pass rather than both at once: a game will generally drop all but the
 -- first of a burst. With only two keys each comes round twice a second, which is faster
 -- than either cooldown, so nothing is held up waiting its turn.
+-- Pressed every pass, with no rate limit of its own.
+--
+-- There is no reading a cooldown from here, but there is no need to: pressing an ability
+-- that is still cooling does nothing at all. So the way to cast the moment one comes back
+-- is simply to keep asking, and the old quarter second gate only meant an ability could
+-- sit ready for a quarter second doing nothing.
+--
+-- The two keys are still separated by a frame rather than sent together, because a game
+-- will generally act on the first of a burst and drop the rest.
 local function useAbility()
-	if tick() < nextAbility then return end
-	nextAbility = tick() + 0.25
-
-	local key = ABILITY_KEYS[abilityIndex]
-	abilityIndex = abilityIndex % #ABILITY_KEYS + 1
-
-	pcall(function()
-		virtualInput:SendKeyEvent(true, key, false, game)
-		task.wait()
-		virtualInput:SendKeyEvent(false, key, false, game)
-	end)
+	for _, key in ABILITY_KEYS do
+		pcall(function()
+			virtualInput:SendKeyEvent(true, key, false, game)
+			task.wait()
+			virtualInput:SendKeyEvent(false, key, false, game)
+		end)
+	end
 end
 
 
@@ -272,6 +277,8 @@ run(function()
 	local candidates = {}
 	local nextScan = 0
 	local incoming = {}
+	local currentRoot
+	local autoRotate
 	
 	-- Dodging.
 	--
@@ -337,6 +344,36 @@ run(function()
 				table.clear(incoming)
 				AutoFarm:Clean(watchProjectiles())
 	
+				-- Aim is held every frame, not once per pass.
+				--
+				-- Setting it on the 0.15s loop left the character free to turn in between,
+				-- because the humanoid rotates itself toward wherever it thinks you are
+				-- heading - so swings kept going out while facing somewhere else. AutoRotate
+				-- is switched off for the same reason, and put back when the module stops.
+				AutoFarm:Clean(runService.PostSimulation:Connect(function()
+					if not (currentRoot and currentRoot.Parent and entitylib.isAlive) then return end
+	
+					local me = entitylib.character.RootPart
+					local targetPos = currentRoot.Position
+					-- Aimed at the target itself, pitch included, rather than at a point level
+					-- with you. Flattening it to the horizontal meant that standing above an
+					-- enemy you faced its direction but never looked down at it, so swings
+					-- went out over its head.
+					me.CFrame = CFrame.new(me.CFrame.Position, targetPos)
+					pcall(function()
+						gameCamera.CFrame = CFrame.new(gameCamera.CFrame.Position, targetPos)
+					end)
+				end))
+	
+				AutoFarm:Clean(function()
+					currentRoot = nil
+					local character = lplr.Character
+					local humanoid = character and character:FindFirstChildOfClass('Humanoid')
+					if humanoid and autoRotate ~= nil then
+						humanoid.AutoRotate = autoRotate
+					end
+				end)
+	
 				task.spawn(function()
 					repeat
 						-- Guarded, yielding outside, so one bad pass cannot spin or end the
@@ -353,6 +390,7 @@ run(function()
 							-- was found. Enemies also only appear once a room starts, so
 							-- finding none early on is normal rather than a fault.
 							if not enemy then
+								currentRoot = nil
 								if not warned then
 									warned = true
 									notif('AutoFarm', 'Waiting for enemies to spawn.', 6, 'info')
@@ -383,6 +421,16 @@ run(function()
 							local dodge = dodgeDirection(me.Position)
 							if dodge then
 								spot += dodge * DODGE_DISTANCE
+							end
+	
+							currentRoot = root
+	
+							local humanoid = entitylib.character.Humanoid
+							if humanoid then
+								if autoRotate == nil then
+									autoRotate = humanoid.AutoRotate
+								end
+								humanoid.AutoRotate = false
 							end
 	
 							me.CFrame = CFrame.new(spot, targetPos)
