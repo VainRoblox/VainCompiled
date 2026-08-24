@@ -131,15 +131,16 @@ run(function()
 	-- because these are its own attacks.
 	local virtualInput = cloneref(game:GetService('VirtualInputManager'))
 	
-	-- Every key an ability realistically sits on. Pressing an unbound one does nothing, so
-	-- covering the whole set costs nothing and means no ability is missed for being on a key
-	-- that was not on a shorter list.
+	-- Letters only, deliberately.
+	--
+	-- The number row is Roblox's own backpack hotbar - 1 to 9 select a slot, and pressing
+	-- the slot you already hold puts the tool away. Cycling through them was not casting
+	-- anything, it was unequipping the weapon mid fight. Letters are not bound by the
+	-- backpack, so an unbound one does nothing at all and the set can stay broad.
 	local ABILITY_KEYS = {
 		Enum.KeyCode.Q, Enum.KeyCode.E, Enum.KeyCode.R, Enum.KeyCode.F,
 		Enum.KeyCode.C, Enum.KeyCode.V, Enum.KeyCode.X, Enum.KeyCode.Z,
-		Enum.KeyCode.G, Enum.KeyCode.T,
-		Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three,
-		Enum.KeyCode.Four, Enum.KeyCode.Five, Enum.KeyCode.Six
+		Enum.KeyCode.G, Enum.KeyCode.T, Enum.KeyCode.Y, Enum.KeyCode.H
 	}
 	
 	local HEALTH_KEYS = {'Health', 'HP', 'CurrentHealth', 'health'}
