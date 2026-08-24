@@ -148,16 +148,15 @@ run(function()
 	-- because these are its own attacks.
 	local virtualInput = cloneref(game:GetService('VirtualInputManager'))
 	
-	-- Letters only, deliberately.
+	-- The game's actual ability keys, rather than a spread of guesses.
 	--
-	-- The number row is Roblox's own backpack hotbar - 1 to 9 select a slot, and pressing
-	-- the slot you already hold puts the tool away. Cycling through them was not casting
-	-- anything, it was unequipping the weapon mid fight. Letters are not bound by the
-	-- backpack, so an unbound one does nothing at all and the set can stay broad.
+	-- Two earlier versions cycled a broad set hoping to land on the right ones. The number
+	-- row turned out to be Roblox's backpack hotbar, so those presses were unequipping the
+	-- weapon rather than casting, and the letters after that were no better than a guess.
+	-- Pressing only what is bound means nothing is wasted and nothing has a side effect.
 	local ABILITY_KEYS = {
-		Enum.KeyCode.Q, Enum.KeyCode.E, Enum.KeyCode.R, Enum.KeyCode.F,
-		Enum.KeyCode.C, Enum.KeyCode.V, Enum.KeyCode.X, Enum.KeyCode.Z,
-		Enum.KeyCode.G, Enum.KeyCode.T, Enum.KeyCode.Y, Enum.KeyCode.H
+		Enum.KeyCode.Q,
+		Enum.KeyCode.E
 	}
 	
 	local HEALTH_KEYS = {'Health', 'HP', 'CurrentHealth', 'health'}
@@ -317,11 +316,12 @@ run(function()
 		end)
 	end
 	
-	-- One key per pass rather than the whole set at once: a game will generally drop all but
-	-- the first of a burst, and spacing them lets each cooldown come back round on its own.
+	-- Still one key per pass rather than both at once: a game will generally drop all but the
+	-- first of a burst. With only two keys each comes round twice a second, which is faster
+	-- than either cooldown, so nothing is held up waiting its turn.
 	local function useAbility()
 		if tick() < nextAbility then return end
-		nextAbility = tick() + 0.4
+		nextAbility = tick() + 0.25
 	
 		local key = ABILITY_KEYS[abilityIndex]
 		abilityIndex = abilityIndex % #ABILITY_KEYS + 1
