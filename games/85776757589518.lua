@@ -96,7 +96,11 @@ vain.Libraries.dungeonquest = {
 		-- Set by AutoFarm when it wants to attack.
 		wantAttack = 0,
 		-- Set by Godmode once the surfaced position has had time to replicate.
-		attackReady = false
+		attackReady = false,
+		-- Set by AutoFarm the moment it sees something on course to hit you, so Godmode
+		-- can hide before it lands rather than after. AutoFarm already works this out for
+		-- dodging, so it costs nothing to share.
+		threat = 0
 	}
 }
 
@@ -274,6 +278,11 @@ run(function()
 	
 			local closest = (relative + (velocity * time)).Magnitude
 			if closest > DODGE_RADIUS then continue end
+	
+			-- Something is on course to hit you. Godmode watches this so it can hide before
+			-- it lands rather than after, which is the difference between taking the hit and
+			-- not.
+			vain.Libraries.dungeonquest.combat.threat = tick()
 	
 			-- Sideways relative to its travel, which is the shortest way out of its path.
 			local sideways = Vector3.new(-velocity.Z, 0, velocity.X)
@@ -587,7 +596,13 @@ run(function()
 	--
 	-- Health dropping is the one signal for this that needs no knowledge of the game: it is
 	-- true whatever hit you, melee, ranged or otherwise.
-	local HIDE_AFTER_HIT = 2.5
+	-- Kept short. This is time spent where your own attacks need a window bought for them,
+	-- so a long tail costs damage for protection you are mostly not using - the follow up
+	-- either comes quickly or not at all.
+	local HIDE_AFTER_HIT = 1
+	-- Hiding from something already in the air, before it arrives. Long enough to cover the
+	-- flight of what was seen, short enough to be back out almost immediately.
+	local HIDE_ON_THREAT = 0.5
 	local hideUntil = 0
 	local lastHealth
 	
@@ -695,9 +710,12 @@ run(function()
 					if not (oldroot and oldroot.Parent and clone and clone.Parent) then return end
 					oldroot.AssemblyLinearVelocity = Vector3.zero
 	
-					-- Out in the open unless something has just hurt you, so your own
-					-- attacks land without having to buy a window for each one.
+					-- Out in the open unless something has just hurt you, or something is
+					-- on its way - so your own attacks land without buying a window each
+					-- time. Reacting to the incoming shot rather than the damage it does is
+					-- what turns this from surviving a hit into not taking it.
 					local hurt = tick() < hideUntil
+						or (tick() - (combat.threat or 0)) < HIDE_ON_THREAT
 					local wants = (tick() - (combat.wantAttack or 0)) < REQUEST_TIMEOUT
 	
 					if not hurt then
