@@ -580,7 +580,7 @@ run(function()
 	-- Long enough for the surfaced position to reach the server before the attack does.
 	-- Without this the swing goes out while the server still has you two thousand studs up
 	-- and is rejected, which is the whole problem this is meant to solve.
-	local SETTLE = 0.12
+	local SETTLE = 0.25
 	
 	-- How long a request stays live, so one that never becomes a swing cannot hold you out
 	-- in the open indefinitely.
@@ -596,15 +596,15 @@ run(function()
 	--
 	-- Health dropping is the one signal for this that needs no knowledge of the game: it is
 	-- true whatever hit you, melee, ranged or otherwise.
-	-- Kept short. This is time spent where your own attacks need a window bought for them,
-	-- so a long tail costs damage for protection you are mostly not using - the follow up
-	-- either comes quickly or not at all.
-	local HIDE_AFTER_HIT = 1
-	-- Hiding from something already in the air, before it arrives. Long enough to cover the
-	-- flight of what was seen, short enough to be back out almost immediately.
-	local HIDE_ON_THREAT = 0.5
-	local hideUntil = 0
-	local lastHealth
+	-- Hidden by default, which is the only arrangement that actually prevents hits.
+	--
+	-- Two reactive versions came before this and both were wrong. Hiding once health drops
+	-- means always taking the hit that triggers it. Hiding on anything moving quickly nearby
+	-- meant hiding almost permanently, because a dungeon is full of fast moving effect parts
+	-- and debris - and since being hidden also blocks your own attacks, that is why the tool
+	-- stopped landing. Neither reacted quickly enough to be worth what it cost.
+	--
+	-- So it stays hidden and surfaces only for the instant of your own swing.
 	
 	-- Damage aimed at you is worked out from where the server thinks you are, and where the
 	-- server thinks you are comes from the part it identifies you by - which is yours to
@@ -691,8 +691,6 @@ run(function()
 		oldroot, clone = nil, nil
 		hidden = false
 		surfacedAt = 0
-		hideUntil = 0
-		lastHealth = nil
 		-- Cleared so AutoFarm stops waiting on a window nothing is producing any more.
 		combat.hidden = false
 		combat.attackReady = false
@@ -710,20 +708,7 @@ run(function()
 					if not (oldroot and oldroot.Parent and clone and clone.Parent) then return end
 					oldroot.AssemblyLinearVelocity = Vector3.zero
 	
-					-- Out in the open unless something has just hurt you, or something is
-					-- on its way - so your own attacks land without buying a window each
-					-- time. Reacting to the incoming shot rather than the damage it does is
-					-- what turns this from surviving a hit into not taking it.
-					local hurt = tick() < hideUntil
-						or (tick() - (combat.threat or 0)) < HIDE_ON_THREAT
 					local wants = (tick() - (combat.wantAttack or 0)) < REQUEST_TIMEOUT
-	
-					if not hurt then
-						surfacedAt = 0
-						combat.attackReady = true
-						oldroot.CFrame = clone.CFrame
-						return
-					end
 	
 					if wants then
 						if surfacedAt == 0 then
@@ -741,21 +726,6 @@ run(function()
 				end))
 	
 				Godmode:Clean(entitylib.Events.LocalRemoved:Connect(restore))
-	
-				-- Re-hooked on respawn, since the humanoid is a new one each time.
-				local function watchHealth(entity)
-					lastHealth = entity.Humanoid.Health
-					Godmode:Clean(entity.Humanoid.HealthChanged:Connect(function(health)
-						if lastHealth and health < lastHealth then
-							hideUntil = tick() + HIDE_AFTER_HIT
-						end
-						lastHealth = health
-					end))
-				end
-				Godmode:Clean(entitylib.Events.LocalAdded:Connect(watchHealth))
-				if entitylib.isAlive then
-					watchHealth(entitylib.character)
-				end
 	
 				task.spawn(function()
 					repeat
