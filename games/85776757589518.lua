@@ -558,6 +558,19 @@ run(function()
 	local REQUEST_TIMEOUT = 0.6
 	local surfacedAt = 0
 	
+	-- Reactive rather than permanent.
+	--
+	-- Hiding all the time means every swing of yours has to buy a window first, and each of
+	-- those windows is a moment you can be hit anyway. Staying out in the open and hiding the
+	-- instant something actually hurts you costs one hit and covers everything after it,
+	-- which is what a burst of damage from a pack of enemies actually looks like.
+	--
+	-- Health dropping is the one signal for this that needs no knowledge of the game: it is
+	-- true whatever hit you, melee, ranged or otherwise.
+	local HIDE_AFTER_HIT = 2.5
+	local hideUntil = 0
+	local lastHealth
+	
 	-- Damage aimed at you is worked out from where the server thinks you are, and where the
 	-- server thinks you are comes from the part it identifies you by - which is yours to
 	-- move, since you own your own character.
@@ -643,6 +656,8 @@ run(function()
 		oldroot, clone = nil, nil
 		hidden = false
 		surfacedAt = 0
+		hideUntil = 0
+		lastHealth = nil
 		-- Cleared so AutoFarm stops waiting on a window nothing is producing any more.
 		combat.hidden = false
 		combat.attackReady = false
@@ -660,7 +675,18 @@ run(function()
 					if not (oldroot and oldroot.Parent and clone and clone.Parent) then return end
 					oldroot.AssemblyLinearVelocity = Vector3.zero
 	
+					-- Out in the open unless something has just hurt you, so your own
+					-- attacks land without having to buy a window for each one.
+					local hurt = tick() < hideUntil
 					local wants = (tick() - (combat.wantAttack or 0)) < REQUEST_TIMEOUT
+	
+					if not hurt then
+						surfacedAt = 0
+						combat.attackReady = true
+						oldroot.CFrame = clone.CFrame
+						return
+					end
+	
 					if wants then
 						if surfacedAt == 0 then
 							surfacedAt = tick()
@@ -677,6 +703,21 @@ run(function()
 				end))
 	
 				Godmode:Clean(entitylib.Events.LocalRemoved:Connect(restore))
+	
+				-- Re-hooked on respawn, since the humanoid is a new one each time.
+				local function watchHealth(entity)
+					lastHealth = entity.Humanoid.Health
+					Godmode:Clean(entity.Humanoid.HealthChanged:Connect(function(health)
+						if lastHealth and health < lastHealth then
+							hideUntil = tick() + HIDE_AFTER_HIT
+						end
+						lastHealth = health
+					end))
+				end
+				Godmode:Clean(entitylib.Events.LocalAdded:Connect(watchHealth))
+				if entitylib.isAlive then
+					watchHealth(entitylib.character)
+				end
 	
 				task.spawn(function()
 					repeat
@@ -705,7 +746,7 @@ run(function()
 				restore()
 			end
 		end,
-		Tooltip = 'Moves the part the game hits you by far above the map, so attacks that check your position miss'
+		Tooltip = 'Moves the part the game hits you by out of reach the moment something damages you, then brings it back'
 	})
 	
 end)
