@@ -429,7 +429,10 @@ run(function()
 	-- That button is only on screen once the dungeon is over, whether it was cleared or
 	-- everybody died, so its appearing is the signal. No knowledge of the game's internals
 	-- is needed, and it cannot fire mid-run because the button is not there to find.
-	local RESTART_WORDS = {'restart', 'play again', 'try again', 'retry', 'start over', 'again', 'replay'}
+	local RESTART_WORDS = {
+		'restart', 'play again', 'try again', 'retry', 'start over', 'again', 'replay',
+		'new run', 'requeue', 'rejoin', 'next run', 'play'
+	}
 	
 	local virtualInput = cloneref(game:GetService('VirtualInputManager'))
 	
@@ -445,10 +448,27 @@ run(function()
 		return true
 	end
 	
-	local function looksLikeRestart(button)
-		local text = ((button:IsA('TextButton') and button.Text or button.Name) or ''):lower()
+	local function matches(text)
+		if not text or text == '' then return false end
+		text = text:lower()
 		for _, word in RESTART_WORDS do
 			if text:find(word, 1, true) then return true end
+		end
+		return false
+	end
+	
+	-- Checks the labels inside the button as well as the button itself.
+	--
+	-- A Roblox button usually carries no text of its own - the wording sits on a TextLabel
+	-- parented inside it - so matching only the button's own Text and Name found nothing at
+	-- all here, however right the word list was.
+	local function looksLikeRestart(button)
+		if matches(button.Name) then return true end
+		if button:IsA('TextButton') and matches(button.Text) then return true end
+	
+		for _, child in button:GetDescendants() do
+			if child:IsA('TextLabel') and matches(child.Text) then return true end
+			if child:IsA('TextButton') and matches(child.Text) then return true end
 		end
 		return false
 	end
