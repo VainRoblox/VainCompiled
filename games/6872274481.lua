@@ -7145,6 +7145,10 @@ end)
 --
 -- Raising the identity at the start of every block means one module's yield cannot
 -- take out the ones after it.
+-- Not defined by the base, and not by the client these came from either - so the module
+-- reaching for it (Fisherman Spy, for its auto cast) threw the moment that path ran.
+local VirtualInputManager = cloneref(game:GetService('VirtualInputManager'))
+
 local function kitRun(func)
 	if setthreadidentity then
 		pcall(setthreadidentity, 8)
