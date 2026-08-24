@@ -733,6 +733,16 @@ run(function()
 		'restart', 'play again', 'try again', 'start over', 'new run', 'next run', 'replay', 'requeue'
 	}
 	
+	-- Starting a run puts up a confirmation, and nothing was answering it - so the restart
+	-- got as far as the popup and stopped there. These are the words on the button that
+	-- accepts it. 'start' is included because the dialog often repeats the action's name,
+	-- and it is only ever looked for in the couple of seconds after a restart has been asked
+	-- for, so it cannot pick up a stray Start button at any other time.
+	local CONFIRM_WORDS = {'yes', 'confirm', 'accept', 'ok', 'start', 'sure'}
+	
+	-- How long to keep looking for the confirmation after asking for the restart.
+	local CONFIRM_WINDOW = 4
+	
 	local virtualInput = cloneref(game:GetService('VirtualInputManager'))
 	
 	-- A run is over when everyone is dead, or when the final boss has been beaten. A restart
@@ -817,10 +827,10 @@ run(function()
 		return true
 	end
 	
-	local function matches(text)
+	local function matches(text, words)
 		if not text or text == '' then return false end
 		text = text:lower()
-		for _, word in RESTART_WORDS do
+		for _, word in words do
 			if text:find(word, 1, true) then return true end
 		end
 		return false
@@ -831,23 +841,24 @@ run(function()
 	-- A Roblox button usually carries no text of its own - the wording sits on a TextLabel
 	-- parented inside it - so matching only the button's own Text and Name found nothing at
 	-- all here, however right the word list was.
-	local function looksLikeRestart(button)
-		if matches(button.Name) then return true end
-		if button:IsA('TextButton') and matches(button.Text) then return true end
+	local function looksLike(button, words)
+		if matches(button.Name, words) then return true end
+		if button:IsA('TextButton') and matches(button.Text, words) then return true end
 	
 		for _, child in button:GetDescendants() do
-			if child:IsA('TextLabel') and matches(child.Text) then return true end
-			if child:IsA('TextButton') and matches(child.Text) then return true end
+			if (child:IsA('TextLabel') or child:IsA('TextButton')) and matches(child.Text, words) then
+				return true
+			end
 		end
 		return false
 	end
 	
-	local function findRestartButton()
+	local function findButton(words)
 		local gui = lplr:FindFirstChildOfClass('PlayerGui')
 		if not gui then return nil end
 	
 		for _, object in gui:GetDescendants() do
-			if object:IsA('GuiButton') and looksLikeRestart(object) and onScreen(object) then
+			if object:IsA('GuiButton') and looksLike(object, words) and onScreen(object) then
 				-- Zero sized buttons are usually templates parked off to one side rather
 				-- than anything a player could press.
 				if object.AbsoluteSize.X > 0 and object.AbsoluteSize.Y > 0 then
@@ -904,7 +915,7 @@ run(function()
 							-- has ended, and acting on it alone restarted runs mid fight.
 							if not runOver() then return end
 	
-							local button = findRestartButton()
+							local button = findButton(RESTART_WORDS)
 	
 							nextPress = tick() + 3
 	
@@ -923,6 +934,22 @@ run(function()
 								sawEnemies = false
 								emptySince = 0
 								notif('AutoRestart', 'Dungeon over - starting again.', 4, 'info')
+	
+								-- Answer the confirmation. It does not appear in the same frame
+								-- as the request, so this waits for it rather than looking once
+								-- and giving up - which is where the restart was stopping,
+								-- leaving the popup sat on screen.
+								task.spawn(function()
+									local until_ = tick() + CONFIRM_WINDOW
+									repeat
+										local confirm = findButton(CONFIRM_WORDS)
+										if confirm then
+											press(confirm)
+											return
+										end
+										task.wait(0.15)
+									until tick() > until_
+								end)
 							end
 						end)
 	
