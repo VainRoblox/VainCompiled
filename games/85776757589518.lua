@@ -719,6 +719,9 @@ run(function()
 	-- in the open indefinitely.
 	local REQUEST_TIMEOUT = 0.6
 	local surfacedAt = 0
+	-- Counted so it is possible to tell an attack window never opening apart from one
+	-- opening and the swing still doing nothing.
+	local windowCount = 0
 	
 	-- Reactive rather than permanent.
 	--
@@ -846,6 +849,7 @@ run(function()
 					if wants then
 						if surfacedAt == 0 then
 							surfacedAt = tick()
+							windowCount += 1
 						end
 						-- Back where you actually are, so the swing is validated against a
 						-- position that matches the enemy you are stood next to.
@@ -861,6 +865,13 @@ run(function()
 				Godmode:Clean(entitylib.Events.LocalRemoved:Connect(restore))
 	
 				task.spawn(function()
+					task.wait(12)
+					if Godmode.Enabled and hidden then
+						notif('Godmode', 'Hidden ok. Attack windows opened so far: ' .. windowCount .. '. Zero means AutoFarm never asked; a number with no damage means the swing is rejected anyway.', 12, 'info')
+					end
+				end)
+	
+				task.spawn(function()
 					repeat
 						local ok = pcall(function()
 							if not entitylib.isAlive then
@@ -868,7 +879,21 @@ run(function()
 								return
 							end
 	
-							if hide() and not hidden then
+							local ok = hide()
+							if not ok then
+								-- Said out loud rather than silently retried. The reparent can
+								-- fail outright, and a silent failure here is indistinguishable
+								-- from the technique simply not working on this game - which is
+								-- the difference between a bug worth fixing and an approach
+								-- worth abandoning.
+								if not warned then
+									warned = true
+									notif('Godmode', 'Could not detach the root - this game will not allow the swap, so this module cannot work here.', 12, 'alert')
+								end
+								return
+							end
+	
+							if not hidden then
 								hidden = true
 								combat.hidden = true
 								if not warned then
