@@ -88,9 +88,168 @@ end)
 -- which also stops your own attacks landing, since the server checks that same position
 -- when you swing. So AutoFarm asks for the part to be put back for a moment, waits to be
 -- told it has arrived, attacks, and Godmode hides it again.
+
+-- Shared combat helpers.
+--
+-- These started inside AutoFarm and moved here when a second module needed them. Keeping
+-- one copy matters more than it sounds: the ability keys took several attempts to get
+-- right, and a duplicated set is one that quietly drifts out of step with the other.
+
+local candidates = {}
+local nextScan = 0
+local nextAbility = 0
+local abilityIndex = 1
+
+local virtualInput = cloneref(game:GetService('VirtualInputManager'))
+
+-- The game's actual ability keys, rather than a spread of guesses. The number row is
+-- Roblox's backpack hotbar, so pressing those unequips the weapon rather than casting.
+local ABILITY_KEYS = {
+	Enum.KeyCode.Q,
+	Enum.KeyCode.E
+}
+
+local HEALTH_KEYS = {'Health', 'HP', 'CurrentHealth', 'health'}
+
+-- Finds enemies without going through entitylib.
+--
+-- entitylib only builds an entity when a model has a Humanoid - addEntity waits for one
+-- and gives up silently without it. The boss has one, ordinary enemies here evidently do
+-- not, which is exactly why the farm worked on the boss and ignored everything else. No
+-- amount of widening the base's detection fixes that, because the library itself cannot
+-- represent them, so this looks for them directly.
+local function rootOf(model)
+	if model.PrimaryPart then return model.PrimaryPart end
+	for _, name in {'HumanoidRootPart', 'Torso', 'Root', 'UpperTorso', 'Head'} do
+		local part = model:FindFirstChild(name)
+		if part and part:IsA('BasePart') then return part end
+	end
+	return model:FindFirstChildWhichIsA('BasePart')
+end
+
+-- Something has to say "this is a thing with health", or every crate and door in the
+-- dungeon becomes a target.
+local function healthOf(model)
+	local humanoid = model:FindFirstChildOfClass('Humanoid')
+	if humanoid then return humanoid.Health end
+
+	for _, key in HEALTH_KEYS do
+		local attr = model:GetAttribute(key)
+		if type(attr) == 'number' then return attr end
+
+		local value = model:FindFirstChild(key)
+		if value and value:IsA('ValueBase') and type(value.Value) == 'number' then
+			return value.Value
+		end
+	end
+
+	return nil
+end
+
+-- Distinct from isEnemy above, which decides what gets registered with entitylib and so
+-- insists on a Humanoid. This one decides what is worth attacking, and most enemies here
+-- have no Humanoid at all - that difference is the whole reason the farm looks for them
+-- itself.
+local function isFarmable(model)
+	if not model:IsA('Model') then return false end
+	if playersService:GetPlayerFromCharacter(model) then return false end
+	if model == lplr.Character then return false end
+
+	local health = healthOf(model)
+	return health ~= nil and health > 0 and rootOf(model) ~= nil
+end
+
+-- Rebuilt on a timer rather than every pass: walking every descendant is far too much to
+-- do several times a second, and enemies spawn once a room starts rather than
+-- continuously, so a second-old list is fine.
+local function rescan()
+	if tick() < nextScan then return end
+	nextScan = tick() + 1
+
+	table.clear(candidates)
+	for _, model in workspace:GetDescendants() do
+		if isFarmable(model) then
+			table.insert(candidates, model)
+		end
+	end
+end
+
+local function nearestEnemy()
+	if not entitylib.isAlive then return nil end
+	local origin = entitylib.character.RootPart.Position
+	local best, bestRoot, bestDist
+
+	for _, model in candidates do
+		-- Re-checked rather than trusted: the list is up to a second old, and most of
+		-- what is on it is in the middle of being killed.
+		if model.Parent and isFarmable(model) then
+			local root = rootOf(model)
+			if root then
+				local dist = (root.Position - origin).Magnitude
+				if not bestDist or dist < bestDist then
+					best, bestRoot, bestDist = model, root, dist
+				end
+			end
+		end
+	end
+
+	return best, bestRoot
+end
+
+-- Nothing swings without something equipped, whatever the weapon is.
+local function equipWeapon()
+	local character = lplr.Character
+	if not character then return end
+	if character:FindFirstChildOfClass('Tool') then return end
+
+	local backpack = lplr:FindFirstChildOfClass('Backpack')
+	local spare = backpack and backpack:FindFirstChildOfClass('Tool')
+	local humanoid = character:FindFirstChildOfClass('Humanoid')
+	if spare and humanoid then
+		pcall(function()
+			humanoid:EquipTool(spare)
+		end)
+	end
+end
+
+local function swing()
+	local centre = gameCamera.ViewportSize / 2
+	pcall(function()
+		virtualInput:SendMouseButtonEvent(centre.X, centre.Y, 0, true, game, 1)
+		task.wait()
+		virtualInput:SendMouseButtonEvent(centre.X, centre.Y, 0, false, game, 1)
+	end)
+end
+
+-- Still one key per pass rather than both at once: a game will generally drop all but the
+-- first of a burst. With only two keys each comes round twice a second, which is faster
+-- than either cooldown, so nothing is held up waiting its turn.
+local function useAbility()
+	if tick() < nextAbility then return end
+	nextAbility = tick() + 0.25
+
+	local key = ABILITY_KEYS[abilityIndex]
+	abilityIndex = abilityIndex % #ABILITY_KEYS + 1
+
+	pcall(function()
+		virtualInput:SendKeyEvent(true, key, false, game)
+		task.wait()
+		virtualInput:SendKeyEvent(false, key, false, game)
+	end)
+end
+
+
+-- Re-exported so the modules can share one implementation of each.
 vain.Libraries.dungeonquest = {
 	isEnemy = isEnemy,
+	isFarmable = isFarmable,
 	tracked = tracked,
+	equipWeapon = equipWeapon,
+	swing = swing,
+	useAbility = useAbility,
+	findEnemy = nearestEnemy,
+	rescan = rescan,
+	rootOf = rootOf,
 	combat = {
 		hidden = false,
 		-- Set by AutoFarm when it wants to attack.
@@ -163,179 +322,9 @@ run(function()
 		Enum.KeyCode.E
 	}
 	
-	local HEALTH_KEYS = {'Health', 'HP', 'CurrentHealth', 'health'}
-	
-	-- Finds enemies without going through entitylib.
-	--
-	-- entitylib only builds an entity when a model has a Humanoid - addEntity waits for one
-	-- and gives up silently without it. The boss has one, ordinary enemies here evidently do
-	-- not, which is exactly why the farm worked on the boss and ignored everything else. No
-	-- amount of widening the base's detection fixes that, because the library itself cannot
-	-- represent them, so this looks for them directly.
-	local function rootOf(model)
-		if model.PrimaryPart then return model.PrimaryPart end
-		for _, name in {'HumanoidRootPart', 'Torso', 'Root', 'UpperTorso', 'Head'} do
-			local part = model:FindFirstChild(name)
-			if part and part:IsA('BasePart') then return part end
-		end
-		return model:FindFirstChildWhichIsA('BasePart')
-	end
-	
-	-- Something has to say "this is a thing with health", or every crate and door in the
-	-- dungeon becomes a target.
-	local function healthOf(model)
-		local humanoid = model:FindFirstChildOfClass('Humanoid')
-		if humanoid then return humanoid.Health end
-	
-		for _, key in HEALTH_KEYS do
-			local attr = model:GetAttribute(key)
-			if type(attr) == 'number' then return attr end
-	
-			local value = model:FindFirstChild(key)
-			if value and value:IsA('ValueBase') and type(value.Value) == 'number' then
-				return value.Value
-			end
-		end
-	
-		return nil
-	end
-	
-	local function isEnemy(model)
-		if not model:IsA('Model') then return false end
-		if playersService:GetPlayerFromCharacter(model) then return false end
-		if model == lplr.Character then return false end
-	
-		local health = healthOf(model)
-		return health ~= nil and health > 0 and rootOf(model) ~= nil
-	end
-	
-	-- Rebuilt on a timer rather than every pass: walking every descendant is far too much to
-	-- do several times a second, and enemies spawn once a room starts rather than
-	-- continuously, so a second-old list is fine.
-	local function rescan()
-		if tick() < nextScan then return end
-		nextScan = tick() + 1
-	
-		table.clear(candidates)
-		for _, model in workspace:GetDescendants() do
-			if isEnemy(model) then
-				table.insert(candidates, model)
-			end
-		end
-	end
-	
-	local function nearestEnemy()
-		if not entitylib.isAlive then return nil end
-		local origin = entitylib.character.RootPart.Position
-		local best, bestRoot, bestDist
-	
-		for _, model in candidates do
-			-- Re-checked rather than trusted: the list is up to a second old, and most of
-			-- what is on it is in the middle of being killed.
-			if model.Parent and isEnemy(model) then
-				local root = rootOf(model)
-				if root then
-					local dist = (root.Position - origin).Magnitude
-					if not bestDist or dist < bestDist then
-						best, bestRoot, bestDist = model, root, dist
-					end
-				end
-			end
-		end
-	
-		return best, bestRoot
-	end
-	
-	-- Watched from the moment they appear rather than found by scanning: a projectile is in
-	-- the air for a fraction of a second, so anything rebuilt on a timer would miss it.
-	local function watchProjectiles()
-		return workspace.DescendantAdded:Connect(function(object)
-			if not object:IsA('BasePart') then return end
-			-- Bodies are made of fast moving parts too, whenever their owner is running.
-			local model = object:FindFirstAncestorWhichIsA('Model')
-			if model and model:FindFirstChildOfClass('Humanoid') then return end
-			incoming[object] = tick() + WATCH_FOR
-		end)
-	end
-	
-	-- Returns which way to step, or nil if nothing is actually coming at you. Works out the
-	-- closest the thing will ever get on its current course rather than how far away it is
-	-- now, so a shot that is near but passing wide is correctly ignored.
-	local function dodgeDirection(myPos)
-		for part, expiry in incoming do
-			if tick() > expiry or not part.Parent then
-				incoming[part] = nil
-				continue
-			end
-	
-			local velocity = part.AssemblyLinearVelocity
-			if velocity.Magnitude < PROJECTILE_SPEED then continue end
-	
-			local relative = part.Position - myPos
-			-- Positive means it is moving away, so it can be left alone.
-			local closing = relative:Dot(velocity)
-			if closing >= 0 then continue end
-	
-			local time = -closing / velocity:Dot(velocity)
-			if time > LOOK_AHEAD then continue end
-	
-			local closest = (relative + (velocity * time)).Magnitude
-			if closest > DODGE_RADIUS then continue end
-	
-			-- Something is on course to hit you. Godmode watches this so it can hide before
-			-- it lands rather than after, which is the difference between taking the hit and
-			-- not.
-			vain.Libraries.dungeonquest.combat.threat = tick()
-	
-			-- Sideways relative to its travel, which is the shortest way out of its path.
-			local sideways = Vector3.new(-velocity.Z, 0, velocity.X)
-			if sideways.Magnitude < 0.1 then continue end
-			return sideways.Unit
-		end
-		return nil
-	end
-	
-	-- Nothing swings without something equipped, whatever the weapon is.
-	local function equipWeapon()
-		local character = lplr.Character
-		if not character then return end
-		if character:FindFirstChildOfClass('Tool') then return end
-	
-		local backpack = lplr:FindFirstChildOfClass('Backpack')
-		local spare = backpack and backpack:FindFirstChildOfClass('Tool')
-		local humanoid = character:FindFirstChildOfClass('Humanoid')
-		if spare and humanoid then
-			pcall(function()
-				humanoid:EquipTool(spare)
-			end)
-		end
-	end
-	
-	local function swing()
-		local centre = gameCamera.ViewportSize / 2
-		pcall(function()
-			virtualInput:SendMouseButtonEvent(centre.X, centre.Y, 0, true, game, 1)
-			task.wait()
-			virtualInput:SendMouseButtonEvent(centre.X, centre.Y, 0, false, game, 1)
-		end)
-	end
-	
-	-- Still one key per pass rather than both at once: a game will generally drop all but the
-	-- first of a burst. With only two keys each comes round twice a second, which is faster
-	-- than either cooldown, so nothing is held up waiting its turn.
-	local function useAbility()
-		if tick() < nextAbility then return end
-		nextAbility = tick() + 0.25
-	
-		local key = ABILITY_KEYS[abilityIndex]
-		abilityIndex = abilityIndex % #ABILITY_KEYS + 1
-	
-		pcall(function()
-			virtualInput:SendKeyEvent(true, key, false, game)
-			task.wait()
-			virtualInput:SendKeyEvent(false, key, false, game)
-		end)
-	end
+	-- The scan, the swing, the abilities and the equip check all live in the base now, so
+	-- AutoKill shares one copy of each rather than carrying its own that drifts.
+	local dq = vain.Libraries.dungeonquest
 	
 	AutoFarm = vain.Categories.Blatant:CreateModule({
 		Name = 'AutoFarm',
@@ -355,8 +344,8 @@ run(function()
 						local ok = pcall(function()
 							if not entitylib.isAlive then return end
 	
-							rescan()
-							local enemy, root = nearestEnemy()
+							dq.dq.rescan()
+							local enemy, root = dq.findEnemy()
 	
 							-- Deliberately does nothing when there is nothing to do. An
 							-- earlier version returned you to where you switched it on, every
@@ -372,7 +361,7 @@ run(function()
 							end
 	
 							warned = false
-							equipWeapon()
+							dq.dq.equipWeapon()
 	
 							local me = entitylib.character.RootPart
 							local targetPos = root.Position
@@ -413,14 +402,14 @@ run(function()
 							-- hidden is rejected. Ask for it back, wait to be told it has
 							-- arrived, then attack. When Godmode is off there is nothing to
 							-- wait for and this is skipped entirely.
-							local combat = vain.Libraries.dungeonquest.combat
+							local combat = dq.combat
 							if combat.hidden then
 								combat.wantAttack = tick()
 								if not combat.attackReady then return end
 							end
 	
-							swing()
-							useAbility()
+							dq.swing()
+							dq.useAbility()
 						end)
 	
 						task.wait(ok and 0.15 or 0.4)
@@ -448,6 +437,28 @@ run(function()
 	}
 	
 	local virtualInput = cloneref(game:GetService('VirtualInputManager'))
+	
+	-- The game keeps its own remote for this, under ReplicatedStorage.remotes, so the
+	-- restart can be asked for directly instead of being mimed through the interface.
+	-- Hunting for a button meant guessing at its label, and a guess that is close but wrong
+	-- looks exactly like the module being broken.
+	--
+	-- The button is still used as a fallback: firing the remote is only right once a run has
+	-- actually ended, and the button appearing is what says so.
+	local function startRemote()
+		local remotes = replicatedStorage:FindFirstChild('remotes')
+		local remote = remotes and remotes:FindFirstChild('startDungeon')
+		if not remote then return false end
+	
+		local ok = pcall(function()
+			if remote:IsA('RemoteFunction') then
+				remote:InvokeServer()
+			else
+				remote:FireServer()
+			end
+		end)
+		return ok
+	end
 	
 	-- A button is only really on screen if every frame above it is visible too, so this
 	-- walks up rather than trusting the button's own Visible.
@@ -548,8 +559,13 @@ run(function()
 							if not button then return end
 	
 							nextPress = tick() + 3
+	
+							-- Both: the remote is the reliable half, the press covers a build
+							-- where the remote is named something else or expects arguments
+							-- this does not send.
+							local viaRemote = startRemote()
 							press(button)
-							notif('AutoRestart', 'Starting the dungeon over.', 4, 'info')
+							notif('AutoRestart', viaRemote and 'Starting the dungeon over.' or 'Starting over (button only).', 4, 'info')
 						end)
 	
 						task.wait(ok and 0.5 or 1)
