@@ -95,11 +95,15 @@ run(function()
 	local candidates = {}
 	local nextScan = 0
 	
-	-- How far to stand from the enemy, and how far above the floor. This used to hover 8
-	-- studs directly overhead, which put you outside melee reach - the module's swings
-	-- missed and so did any you threw yourself. Melee wants arm's length and roughly level.
-	local STAND_OFF = 4
-	local STAND_UP = 2
+	-- Where to sit relative to the enemy.
+	--
+	-- Overhead, and high enough that ground melee cannot reach you - being hit back was
+	-- killing runs. An earlier version blamed height for swings not landing, but attacks
+	-- were going through tool:Activate then, which does nothing in this game at all; height
+	-- was never why they missed. Now that a swing is a real click at the crosshair the limit
+	-- is the weapon's own range, so height is free and worth taking.
+	local STAND_OFF = 2
+	local STAND_UP = 14
 	
 	-- Attacking through tool:Activate and firetouchinterest does nothing here. That works in
 	-- games whose damage comes off a touch or off the tool itself; this one runs combat
@@ -291,9 +295,17 @@ run(function()
 							end
 	
 							local spot = targetPos + (away.Unit * STAND_OFF) + Vector3.new(0, STAND_UP, 0)
-							-- Facing the target, so the swing and the camera both point at it.
 							me.CFrame = CFrame.new(spot, targetPos)
+							-- Zeroed so hovering above the floor does not turn into a fall.
 							me.AssemblyLinearVelocity = Vector3.zero
+	
+							-- The camera has to point at the enemy too, not just the
+							-- character. A swing is a click at the centre of the screen, so
+							-- it hits whatever the camera is looking at - aiming the body
+							-- alone left the crosshair wherever the camera happened to be.
+							pcall(function()
+								gameCamera.CFrame = CFrame.new(gameCamera.CFrame.Position, targetPos)
+							end)
 	
 							swing()
 							useAbility()
