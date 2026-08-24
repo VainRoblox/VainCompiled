@@ -94,6 +94,22 @@ run(function()
 	local abilityIndex = 1
 	local candidates = {}
 	local nextScan = 0
+	local incoming = {}
+	
+	-- Dodging.
+	--
+	-- What counts as a projectile here is not something that can be looked up, so it is
+	-- recognised by behaviour instead: a loose part, not part of anybody's body, travelling
+	-- fast enough that it was fired rather than dropped. Anything matching is watched
+	-- briefly then forgotten, since projectiles do not live long and a stale list is worse
+	-- than none.
+	local PROJECTILE_SPEED = 25
+	local WATCH_FOR = 3
+	-- How close it has to be heading, and how far ahead to care. Reacting to everything on
+	-- the map would have you sidestepping shots that were never going to land.
+	local DODGE_RADIUS = 10
+	local LOOK_AHEAD = 1.5
+	local DODGE_DISTANCE = 14
 	
 	-- Where to sit relative to the enemy.
 	--
@@ -206,6 +222,50 @@ run(function()
 		return best, bestRoot
 	end
 	
+	-- Watched from the moment they appear rather than found by scanning: a projectile is in
+	-- the air for a fraction of a second, so anything rebuilt on a timer would miss it.
+	local function watchProjectiles()
+		return workspace.DescendantAdded:Connect(function(object)
+			if not object:IsA('BasePart') then return end
+			-- Bodies are made of fast moving parts too, whenever their owner is running.
+			local model = object:FindFirstAncestorWhichIsA('Model')
+			if model and model:FindFirstChildOfClass('Humanoid') then return end
+			incoming[object] = tick() + WATCH_FOR
+		end)
+	end
+	
+	-- Returns which way to step, or nil if nothing is actually coming at you. Works out the
+	-- closest the thing will ever get on its current course rather than how far away it is
+	-- now, so a shot that is near but passing wide is correctly ignored.
+	local function dodgeDirection(myPos)
+		for part, expiry in incoming do
+			if tick() > expiry or not part.Parent then
+				incoming[part] = nil
+				continue
+			end
+	
+			local velocity = part.AssemblyLinearVelocity
+			if velocity.Magnitude < PROJECTILE_SPEED then continue end
+	
+			local relative = part.Position - myPos
+			-- Positive means it is moving away, so it can be left alone.
+			local closing = relative:Dot(velocity)
+			if closing >= 0 then continue end
+	
+			local time = -closing / velocity:Dot(velocity)
+			if time > LOOK_AHEAD then continue end
+	
+			local closest = (relative + (velocity * time)).Magnitude
+			if closest > DODGE_RADIUS then continue end
+	
+			-- Sideways relative to its travel, which is the shortest way out of its path.
+			local sideways = Vector3.new(-velocity.Z, 0, velocity.X)
+			if sideways.Magnitude < 0.1 then continue end
+			return sideways.Unit
+		end
+		return nil
+	end
+	
 	-- Nothing swings without something equipped, whatever the weapon is.
 	local function equipWeapon()
 		local character = lplr.Character
@@ -255,6 +315,8 @@ run(function()
 				nextAbility = 0
 				nextScan = 0
 				table.clear(candidates)
+				table.clear(incoming)
+				AutoFarm:Clean(watchProjectiles())
 	
 				task.spawn(function()
 					repeat
@@ -295,6 +357,15 @@ run(function()
 							end
 	
 							local spot = targetPos + (away.Unit * STAND_OFF) + Vector3.new(0, STAND_UP, 0)
+	
+							-- Stepped aside before being placed, rather than moved after, so
+							-- the dodge is not immediately undone by the next pass putting
+							-- you back over the enemy.
+							local dodge = dodgeDirection(me.Position)
+							if dodge then
+								spot += dodge * DODGE_DISTANCE
+							end
+	
 							me.CFrame = CFrame.new(spot, targetPos)
 							-- Zeroed so hovering above the floor does not turn into a fall.
 							me.AssemblyLinearVelocity = Vector3.zero
