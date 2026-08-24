@@ -479,12 +479,64 @@ run(function()
 	-- That button is only on screen once the dungeon is over, whether it was cleared or
 	-- everybody died, so its appearing is the signal. No knowledge of the game's internals
 	-- is needed, and it cannot fire mid-run because the button is not there to find.
+	-- Whole phrases only.
+	--
+	-- 'play' and 'again' were in here on their own, and since the search also looks at the
+	-- labels inside a button, those matched almost any interface carrying the word - Play,
+	-- Replay, PlayerList - and fired a restart in the middle of a run.
 	local RESTART_WORDS = {
-		'restart', 'play again', 'try again', 'retry', 'start over', 'again', 'replay',
-		'new run', 'requeue', 'rejoin', 'next run', 'play'
+		'restart', 'play again', 'try again', 'start over', 'new run', 'next run', 'replay', 'requeue'
 	}
 	
 	local virtualInput = cloneref(game:GetService('VirtualInputManager'))
+	
+	-- A run is over when everyone is dead, or when the final boss has been beaten. A restart
+	-- button being on screen is not that: it turned out to be visible at other times too, so
+	-- pressing on sight restarted runs that were still going.
+	--
+	-- Both conditions are only meaningful once a run has actually started, which is what
+	-- seeing enemies establishes - otherwise sitting in the lobby, where nobody has a
+	-- character and there is nothing to fight, reads as a finished run.
+	local CLEARED_FOR = 3
+	local sawEnemies = false
+	local emptySince = 0
+	
+	local function everyoneDead()
+		local anyAlive = false
+		for _, player in playersService:GetPlayers() do
+			local character = player.Character
+			local humanoid = character and character:FindFirstChildOfClass('Humanoid')
+			if humanoid and humanoid.Health > 0 then
+				anyAlive = true
+				break
+			end
+		end
+		return not anyAlive
+	end
+	
+	local function runOver()
+		local dq = vain.Libraries.dungeonquest
+		dq.rescan()
+		local enemy = dq.findEnemy()
+	
+		if enemy then
+			sawEnemies = true
+			emptySince = 0
+			-- Enemies are up, so whatever is on screen, this run is still going.
+			return false
+		end
+	
+		if not sawEnemies then return false end
+	
+		if everyoneDead() then return true end
+	
+		-- Nothing left to fight for a few seconds running: the boss is down. Held for a
+		-- moment rather than acted on instantly, since a gap between waves also looks empty.
+		if emptySince == 0 then
+			emptySince = tick()
+		end
+		return (tick() - emptySince) >= CLEARED_FOR
+	end
 	
 	-- The game keeps its own remote for this, under ReplicatedStorage.remotes, so the
 	-- restart can be asked for directly instead of being mimed through the interface.
@@ -603,8 +655,11 @@ run(function()
 							-- can end up undoing itself.
 							if tick() < nextPress then return end
 	
+							-- The gate, not the button. A button appearing is not proof a run
+							-- has ended, and acting on it alone restarted runs mid fight.
+							if not runOver() then return end
+	
 							local button = findRestartButton()
-							if not button then return end
 	
 							nextPress = tick() + 3
 	
@@ -612,8 +667,18 @@ run(function()
 							-- where the remote is named something else or expects arguments
 							-- this does not send.
 							local viaRemote = startRemote()
-							press(button)
-							notif('AutoRestart', viaRemote and 'Starting the dungeon over.' or 'Starting over (button only).', 4, 'info')
+							-- The button is optional now: the remote is the reliable path, and
+							-- a build that names it differently still has the button to fall
+							-- back on.
+							if button then
+								press(button)
+							end
+	
+							if viaRemote or button then
+								sawEnemies = false
+								emptySince = 0
+								notif('AutoRestart', 'Dungeon over - starting again.', 4, 'info')
+							end
 						end)
 	
 						task.wait(ok and 0.5 or 1)
