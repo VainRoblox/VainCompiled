@@ -558,16 +558,34 @@ run(function()
 	-- shortest wait that still lets the hit count.
 	local DWELL = 0.12
 	
+	-- How long to stay home between trips.
+	--
+	-- Without this the loop went straight back in - a tenth of a second away, a tenth of a
+	-- second at the enemy - which is most of the time spent standing in reach and barely
+	-- different from parking there. Waiting between strikes is what makes this hit and run
+	-- rather than hit and stay, and it costs nothing: a weapon cannot swing faster than its
+	-- own animation, so the extra trips were never landing anything anyway.
+	local STRIKE_INTERVAL = 0.6
+	local nextStrike = 0
+	
 	AutoKill = vain.Categories.Blatant:CreateModule({
 		Name = 'AutoKill',
 		Function = function(callback)
 			if callback then
+				nextStrike = 0
 				task.spawn(function()
 					repeat
 						-- Guarded, yielding outside, so one bad pass cannot spin or end the
 						-- module for the session.
 						local ok = pcall(function()
 							if not entitylib.isAlive then return end
+	
+							-- Abilities are cast from here, before going anywhere. They do not
+							-- need to be near the target, so casting them on the trip would
+							-- only lengthen the time spent in reach.
+							dq.useAbility()
+	
+							if tick() < nextStrike then return end
 	
 							dq.rescan()
 							local enemy, root = dq.findEnemy()
@@ -608,8 +626,8 @@ run(function()
 								if not dq.combat.attackReady then return end
 							end
 	
+							nextStrike = tick() + STRIKE_INTERVAL
 							dq.swing()
-							dq.useAbility()
 	
 							task.wait(DWELL)
 	
