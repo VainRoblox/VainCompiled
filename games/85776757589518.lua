@@ -333,6 +333,52 @@ run(function()
 	-- AutoKill shares one copy of each rather than carrying its own that drifts.
 	local dq = vain.Libraries.dungeonquest
 	
+	-- Projectile watching and the dodge maths stay here rather than moving to the base with
+	-- the rest: they are AutoFarm's alone, and nothing else needs them.
+	-- Watched from the moment they appear rather than found by scanning: a projectile is in
+	-- the air for a fraction of a second, so anything rebuilt on a timer would miss it.
+	local function watchProjectiles()
+		return workspace.DescendantAdded:Connect(function(object)
+			if not object:IsA('BasePart') then return end
+			-- Bodies are made of fast moving parts too, whenever their owner is running.
+			local model = object:FindFirstAncestorWhichIsA('Model')
+			if model and model:FindFirstChildOfClass('Humanoid') then return end
+			incoming[object] = tick() + WATCH_FOR
+		end)
+	end
+	
+	-- Returns which way to step, or nil if nothing is actually coming at you. Works out the
+	-- closest the thing will ever get on its current course rather than how far away it is
+	-- now, so a shot that is near but passing wide is correctly ignored.
+	local function dodgeDirection(myPos)
+		for part, expiry in incoming do
+			if tick() > expiry or not part.Parent then
+				incoming[part] = nil
+				continue
+			end
+	
+			local velocity = part.AssemblyLinearVelocity
+			if velocity.Magnitude < PROJECTILE_SPEED then continue end
+	
+			local relative = part.Position - myPos
+			-- Positive means it is moving away, so it can be left alone.
+			local closing = relative:Dot(velocity)
+			if closing >= 0 then continue end
+	
+			local time = -closing / velocity:Dot(velocity)
+			if time > LOOK_AHEAD then continue end
+	
+			local closest = (relative + (velocity * time)).Magnitude
+			if closest > DODGE_RADIUS then continue end
+	
+			-- Sideways relative to its travel, which is the shortest way out of its path.
+			local sideways = Vector3.new(-velocity.Z, 0, velocity.X)
+			if sideways.Magnitude < 0.1 then continue end
+			return sideways.Unit
+		end
+		return nil
+	end
+	
 	AutoFarm = vain.Categories.Blatant:CreateModule({
 		Name = 'AutoFarm',
 		Function = function(callback)
