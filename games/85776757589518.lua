@@ -274,31 +274,26 @@ run(function()
 end)
 
 -- ── Auto Start (begin the run) ─────────────────────────────────────────
--- Keyed on the game's own state rather than on a GUI name.
+-- Each half keys on its own button, because the two appear under different conditions.
 --
--- The previous version looked for ScreenGuis called 'readyButton' and 'startButton' in
--- PlayerGui and only fired the remotes once it had found one. readyButton is genuinely
--- a direct child - showReadyGui clones ReplicatedStorage.ui.readyButton there - but the
--- start button is not: it lives at lobbyInfo.startBackground.startFrame.startButton, so
--- that search never matched and the remotes it was gating were never reached. This is
--- why nothing happened.
+-- The server asks for a ready by firing showReadyGui, whose handler clones
+-- ReplicatedStorage.ui.readyButton into PlayerGui - but only while
+-- workspace.dungeonProgress is "playersNotReady". It asks for a start by firing
+-- showStartButton, whose handler clones ui.startButton into PlayerGui with no condition
+-- attached at all.
 --
--- What the real button does when clicked is a single line:
---     game.ReplicatedStorage.remotes.startDungeon:FireServer()
--- with no arguments. And the ready phase is workspace.dungeonProgress being
--- "playersNotReady", which is the same condition the game uses before it will even show
--- the ready button. So both are driven directly, and the buttons are only clicked as
--- well, never instead.
+-- That difference is what broke the previous attempt: it gated everything on
+-- playersNotReady, which is the ready button's condition, so the start was blocked
+-- outright whenever the state had already moved on. The attempt before that gated on
+-- finding a ScreenGui named startButton and never fired the remotes without one.
+--
+-- The button existing is the signal in both cases, since the server only sends it when
+-- it wants that action. Every start button in the place runs the same single line when
+-- clicked - startDungeon:FireServer(), no arguments - so that is fired directly, with
+-- the button clicked as well rather than instead.
 run(function()
 	local AutoStart
 
-	local function progress()
-		local dp = workspace:FindFirstChild('dungeonProgress')
-		return dp and dp:IsA('StringValue') and dp.Value or nil
-	end
-
-	-- Clicks anything clickable inside a container, if the executor can. Purely
-	-- additional now - the remotes below do the work.
 	local function clickInside(container)
 		if not (container and firesignal) then return end
 		for _, g in container:GetDescendants() do
@@ -311,27 +306,29 @@ run(function()
 
 	AutoStart = vain.Categories.Blatant:CreateModule({
 		Name = 'Auto Start',
-		Tooltip = 'Readies up and starts the run as soon as the game is waiting for it.',
+		Tooltip = 'Readies up and starts the run the moment the game offers either.',
 		Function = function(callback)
 			if not callback then return end
 			repeat
 				pcall(function()
-					-- Only while the game is actually waiting on players. Once it moves
-					-- past this the module has nothing to do and stops acting on its own.
-					if progress() ~= 'playersNotReady' then return end
-
-					local ru = remote('readyUp')
-					if ru then pcall(function() ru:FireServer() end) end
-
-					-- The host-only action. Sending it as a non-host is ignored server
-					-- side, which is what makes it safe to send unconditionally.
-					local sd = remote('startDungeon')
-					if sd then pcall(function() sd:FireServer() end) end
-
 					local pg = lplr:FindFirstChild('PlayerGui')
 					if not pg then return end
-					clickInside(pg:FindFirstChild('readyButton'))
-					clickInside(pg:FindFirstChild('lobbyInfo', true))
+
+					local ready = pg:FindFirstChild('readyButton')
+					if ready then
+						local ru = remote('readyUp')
+						if ru then pcall(function() ru:FireServer() end) end
+						clickInside(ready)
+					end
+
+					local start = pg:FindFirstChild('startButton')
+					if start then
+						-- Host only, and ignored server side for everyone else, which is
+						-- what makes it safe to send without working out whether you are.
+						local sd = remote('startDungeon')
+						if sd then pcall(function() sd:FireServer() end) end
+						clickInside(start)
+					end
 				end)
 				task.wait(1)
 			until not AutoStart.Enabled
