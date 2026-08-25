@@ -274,100 +274,66 @@ run(function()
 end)
 
 -- ── Auto Start (begin the run) ─────────────────────────────────────────
--- Loading into a dungeon the game shows a READY button, then the host a big green
--- START button - both are ScreenGuis cloned into PlayerGui named 'readyButton' /
--- 'startButton' (the label reads 'Start', not exactly 'START', so we match by the
--- GUI name, not the text). We firesignal every button inside them (runs whatever click
--- handler the game wired) and also fire the readyUp/start remotes. They vanish once the
--- run begins, so it stops on its own; the server ignores host-only actions for others.
+-- Keyed on the game's own state rather than on a GUI name.
+--
+-- The previous version looked for ScreenGuis called 'readyButton' and 'startButton' in
+-- PlayerGui and only fired the remotes once it had found one. readyButton is genuinely
+-- a direct child - showReadyGui clones ReplicatedStorage.ui.readyButton there - but the
+-- start button is not: it lives at lobbyInfo.startBackground.startFrame.startButton, so
+-- that search never matched and the remotes it was gating were never reached. This is
+-- why nothing happened.
+--
+-- What the real button does when clicked is a single line:
+--     game.ReplicatedStorage.remotes.startDungeon:FireServer()
+-- with no arguments. And the ready phase is workspace.dungeonProgress being
+-- "playersNotReady", which is the same condition the game uses before it will even show
+-- the ready button. So both are driven directly, and the buttons are only clicked as
+-- well, never instead.
 run(function()
 	local AutoStart
-	local function onScreen(inst)
-		local node = inst
-		while node and node ~= game do
-			if node:IsA('GuiObject') and node.Visible == false then return false end
-			if node:IsA('LayerCollector') then return node.Enabled ~= false end
-			node = node.Parent
-		end
-		return false
-	end
-	-- Is the named prompt on screen? Separate from clicking it, so the remotes can be
-	-- sent even when the click cannot be delivered.
-	local function findStartPrompt(pg, name)
-		local gui = pg:FindFirstChild(name) or pg:FindFirstChild(name, true)
-		if not gui then return nil end
-		for _, g in gui:GetDescendants() do
-			if g:IsA('GuiButton') and onScreen(g) then return gui end
-		end
-		return nil
+
+	local function progress()
+		local dp = workspace:FindFirstChild('dungeonProgress')
+		return dp and dp:IsA('StringValue') and dp.Value or nil
 	end
 
-	-- firesignal every visible button inside a named ScreenGui in PlayerGui.
-	local function clickGui(pg, name)
-		-- Searched recursively. The game's own check is
-		-- PlayerGui:FindFirstChild("startButton"), but the button that carries the click
-		-- handlers sits deeper, at startBackground.startFrame.startButton, and a
-		-- top-level-only lookup misses it whenever the wrapper is nested at all.
-		local gui = pg:FindFirstChild(name) or pg:FindFirstChild(name, true)
-		if not gui then return false end
-		local fired = false
-		for _, g in gui:GetDescendants() do
-			if g:IsA('GuiButton') and onScreen(g) then
+	-- Clicks anything clickable inside a container, if the executor can. Purely
+	-- additional now - the remotes below do the work.
+	local function clickInside(container)
+		if not (container and firesignal) then return end
+		for _, g in container:GetDescendants() do
+			if g:IsA('GuiButton') then
 				pcall(function() firesignal(g.MouseButton1Click) end)
 				pcall(function() firesignal(g.Activated) end)
-				fired = true
 			end
 		end
-		return fired
 	end
+
 	AutoStart = vain.Categories.Blatant:CreateModule({
 		Name = 'Auto Start',
-		Tooltip = 'Auto-readies and clicks the in-dungeon START button the moment it appears so the run begins automatically. Stops itself once the run has started.',
+		Tooltip = 'Readies up and starts the run as soon as the game is waiting for it.',
 		Function = function(callback)
 			if not callback then return end
 			repeat
-				local acted = false
 				pcall(function()
+					-- Only while the game is actually waiting on players. Once it moves
+					-- past this the module has nothing to do and stops acting on its own.
+					if progress() ~= 'playersNotReady' then return end
+
+					local ru = remote('readyUp')
+					if ru then pcall(function() ru:FireServer() end) end
+
+					-- The host-only action. Sending it as a non-host is ignored server
+					-- side, which is what makes it safe to send unconditionally.
+					local sd = remote('startDungeon')
+					if sd then pcall(function() sd:FireServer() end) end
+
 					local pg = lplr:FindFirstChild('PlayerGui')
 					if not pg then return end
-
-					-- Nothing to start once it has started. dungeonStarted is the game's own
-					-- flag, so this stops on its own rather than firing into a running run.
-					-- Searched rather than assumed to sit directly under workspace: the
-					-- place has exactly one instance by this name, but nothing says where,
-					-- and a wrong path here fails silently as "no information" instead of
-					-- announcing itself.
-					local started = workspace:FindFirstChild('dungeonStarted', true)
-					if started and started:IsA('BoolValue') and started.Value == true then
-						return
-					end
-
-					-- The prompt being on screen is what says a start is wanted. It is
-					-- looked for whether or not the click can be delivered, because the
-					-- remotes below do not need the button - only the knowledge that now is
-					-- the moment.
-					local ready = findStartPrompt(pg, 'readyButton')
-					local start = findStartPrompt(pg, 'startButton')
-					if not (ready or start) then return end
-					acted = true
-
-					if firesignal then
-						if ready then clickGui(pg, 'readyButton') end
-						if start then clickGui(pg, 'startButton') end
-					end
-
-					-- Fired regardless of whether the click went through.
-					--
-					-- These used to run only once a button had been clicked, so an executor
-					-- without firesignal, or a button nested past the lookup, meant nothing
-					-- happened at all - the remotes were there the whole time and never
-					-- reached. The server ignores an action that is not valid for you, so
-					-- sending them costs nothing.
-					local ru = remote('readyUp'); if ru then pcall(function() ru:FireServer() end) end
-					local sd = remote('startDungeon'); if sd then pcall(function() sd:FireServer() end) end
-					local sb = remote('startBossRaid'); if sb then pcall(function() sb:FireServer() end) end
+					clickInside(pg:FindFirstChild('readyButton'))
+					clickInside(pg:FindFirstChild('lobbyInfo', true))
 				end)
-				task.wait(acted and 1.5 or 0.5)
+				task.wait(1)
 			until not AutoStart.Enabled
 		end,
 	})
