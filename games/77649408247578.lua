@@ -427,9 +427,31 @@ run(function()
 		return nil
 	end
 	
-	local function statOf(item)
-		local value = fv(item, Stat.Value)
-		return tonumber(value) or 0
+	-- The stats an item can actually be upgraded on. A weapon carries damage stats and
+	-- armour carries health, so most items only have some of these - the ones it does not
+	-- have simply read as nothing and are skipped.
+	local UPGRADEABLE = {'physicalDamage', 'spellPower', 'health', 'physicalPower'}
+	
+	-- Which stat to pour into for a given item.
+	--
+	-- On Highest this is whichever of its stats is already the largest, so upgrades stack
+	-- into what the item is good at instead of being spread across stats it was never going
+	-- to be used for. Anything else is the fixed choice from the dropdown.
+	local function statFor(item)
+		if Stat.Value ~= 'Highest' then return Stat.Value end
+	
+		local best, bestValue
+		for _, name in UPGRADEABLE do
+			local value = tonumber(fv(item, name))
+			if value and (not bestValue or value > bestValue) then
+				best, bestValue = name, value
+			end
+		end
+		return best
+	end
+	
+	local function statOf(item, name)
+		return tonumber(fv(item, name)) or 0
 	end
 	
 	AutoUpgrade = vain.Categories.Utility:CreateModule({
@@ -450,7 +472,6 @@ run(function()
 						if type(list) ~= 'table' then continue end
 	
 						local worn = equippedIn(list)
-						local wornStat = worn and statOf(worn) or 0
 	
 						for _, item in list do
 							if type(item) ~= 'table' then continue end
@@ -461,22 +482,34 @@ run(function()
 							local max = tonumber(fv(item, 'maxUpgrades')) or 0
 							if current >= max then continue end
 	
+							-- Whichever stat this item is getting upgraded on is also the one
+							-- it is judged by, so a candidate is compared with the equipped
+							-- item on the same footing rather than on a stat it happens not to
+							-- have.
+							local stat = statFor(item)
+							if not stat then continue end
+	
 							-- Only worth spending on something you would actually wear. The
 							-- item you have on is always worth upgrading; anything else has to
 							-- beat it first, or the gold goes into gear that stays in storage.
-							if OnlyBetter.Enabled and item ~= worn and statOf(item) <= wornStat then
-								continue
+							if OnlyBetter.Enabled and item ~= worn then
+								local wornStat = worn and statOf(worn, stat) or 0
+								if statOf(item, stat) <= wornStat then continue end
 							end
 	
 							local category = fv(item, 'itemType')
 							local unique = fv(item, 'uniqueItemNum')
 							if not (category and unique) then continue end
 	
-							-- One at a time, with no mode string: the ten and spend-all modes
-							-- are what the interface sends when those toggles are lit, and
-							-- asking for more than is affordable is refused outright rather
-							-- than partially filled.
-							upgrade:FireServer(category, unique, Stat.Value, 1, nil)
+							-- Everything remaining in one go, which is what the interface's own
+							-- spend-all toggle sends: the count is maxUpgrades minus
+							-- currentUpgrade and the mode string is 'spendAll'.
+							--
+							-- An earlier version sent one at a time on the assumption that
+							-- asking for more than was affordable would be refused outright.
+							-- That was never checked, and it is not what the game does - it
+							-- sends the full remainder itself.
+							upgrade:FireServer(category, unique, stat, max - current, 'spendAll')
 							return
 						end
 					end
@@ -496,9 +529,10 @@ run(function()
 	})
 	Stat = AutoUpgrade:CreateDropdown({
 		Name = 'Stat',
-		Tooltip = 'Which stat the upgrades go into, and the one compared against your equipped gear',
-		List = {'physicalDamage', 'spellPower', 'health', 'physicalPower'},
+		Tooltip = 'Which stat the upgrades go into, and the one your gear is compared on',
+		List = {'Highest', 'physicalDamage', 'spellPower', 'health', 'physicalPower'},
 		Tooltips = {
+			Highest = 'Whichever stat the item is already highest in, so upgrades stack into what it is good at',
 			physicalDamage = 'Weapon damage',
 			spellPower = 'Ability damage',
 			health = 'Armour health',
