@@ -332,6 +332,27 @@ run(function()
 		end))
 	end
 
+	-- Roblox's own activation path, borrowed from how console controls work.
+	--
+	-- A GuiButton has no Activate method - only an Activated event, which cannot be
+	-- called directly, which is why the routes above either fire the signal or click
+	-- where the button sits. But setting GuiService.SelectedObject and sending a
+	-- controller A press makes Roblox activate the selection itself, running whatever
+	-- the button is wired to without needing firesignal and without depending on the
+	-- button being where its coordinates say it is.
+	local function activateSelected(button)
+		return (pcall(function()
+			local previous = guiService.SelectedObject
+			guiService.SelectedObject = button
+			virtualInput:SendKeyEvent(true, Enum.KeyCode.ButtonA, false, game)
+			task.wait()
+			virtualInput:SendKeyEvent(false, Enum.KeyCode.ButtonA, false, game)
+			-- Put the selection back, so this does not leave the interface focused
+			-- somewhere the player did not choose.
+			guiService.SelectedObject = previous
+		end))
+	end
+
 	-- Every visible button inside a container, largest first: the one that actually
 	-- starts the run is the big obvious one, and clicking a small decorative sibling
 	-- first can close the prompt before the real one is reached.
@@ -349,6 +370,10 @@ run(function()
 		end)
 
 		for _, g in buttons do
+			-- Both, since they fail in different circumstances: the click misses if the
+			-- button is not where its coordinates put it, and the selection route does
+			-- nothing if the game has gamepad selection turned off.
+			activateSelected(g)
 			if realClick(g) then return true end
 		end
 		return false
