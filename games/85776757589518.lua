@@ -292,7 +292,9 @@ end)
 -- clicked - startDungeon:FireServer(), no arguments - so that is fired directly, with
 -- the button clicked as well rather than instead.
 run(function()
-	local AutoStart
+	local AutoStart, Mode
+	local virtualInput = cloneref(game:GetService('VirtualInputManager'))
+	local guiService = cloneref(game:GetService('GuiService'))
 
 	local function clickInside(container)
 		if not (container and firesignal) then return end
@@ -302,6 +304,54 @@ run(function()
 				pcall(function() firesignal(g.Activated) end)
 			end
 		end
+	end
+
+	-- A real click at the button's position on screen, as though you had moved the mouse
+	-- there and pressed it.
+	--
+	-- This is the fallback for when neither of the other two routes lands: firesignal is
+	-- not available on every executor, and firing the remote assumes the button does
+	-- nothing else worth doing. A genuine click goes through whatever the game has wired
+	-- up, whatever that turns out to be.
+	local function realClick(button)
+		if not (button and button.AbsoluteSize.X > 0 and button.AbsoluteSize.Y > 0) then
+			return false
+		end
+
+		-- AbsolutePosition is measured below the topbar, but the mouse coordinates this
+		-- takes are measured from the very top of the window - so without adding the
+		-- inset back the click lands about thirty pixels above the button, which on a
+		-- small button means missing it entirely.
+		local inset = guiService:GetGuiInset()
+		local centre = button.AbsolutePosition + inset + (button.AbsoluteSize / 2)
+
+		return (pcall(function()
+			virtualInput:SendMouseButtonEvent(centre.X, centre.Y, 0, true, game, 1)
+			task.wait()
+			virtualInput:SendMouseButtonEvent(centre.X, centre.Y, 0, false, game, 1)
+		end))
+	end
+
+	-- Every visible button inside a container, largest first: the one that actually
+	-- starts the run is the big obvious one, and clicking a small decorative sibling
+	-- first can close the prompt before the real one is reached.
+	local function clickForReal(container)
+		if not container then return false end
+
+		local buttons = {}
+		for _, g in container:GetDescendants() do
+			if g:IsA('GuiButton') and g.Visible then
+				table.insert(buttons, g)
+			end
+		end
+		table.sort(buttons, function(a, b)
+			return (a.AbsoluteSize.X * a.AbsoluteSize.Y) > (b.AbsoluteSize.X * b.AbsoluteSize.Y)
+		end)
+
+		for _, g in buttons do
+			if realClick(g) then return true end
+		end
+		return false
 	end
 
 	AutoStart = vain.Categories.Blatant:CreateModule({
@@ -314,25 +364,47 @@ run(function()
 					local pg = lplr:FindFirstChild('PlayerGui')
 					if not pg then return end
 
+					local clickOnly = Mode.Value == 'Click Only'
 					local ready = pg:FindFirstChild('readyButton')
+					local start = pg:FindFirstChild('startButton')
+
 					if ready then
-						local ru = remote('readyUp')
-						if ru then pcall(function() ru:FireServer() end) end
-						clickInside(ready)
+						if clickOnly then
+							clickForReal(ready)
+						else
+							local ru = remote('readyUp')
+							if ru then pcall(function() ru:FireServer() end) end
+							clickInside(ready)
+							clickForReal(ready)
+						end
 					end
 
-					local start = pg:FindFirstChild('startButton')
 					if start then
-						-- Host only, and ignored server side for everyone else, which is
-						-- what makes it safe to send without working out whether you are.
-						local sd = remote('startDungeon')
-						if sd then pcall(function() sd:FireServer() end) end
-						clickInside(start)
+						if clickOnly then
+							clickForReal(start)
+						else
+							-- Host only, and ignored server side for everyone else, which
+							-- is what makes it safe to send without working out whether
+							-- you are.
+							local sd = remote('startDungeon')
+							if sd then pcall(function() sd:FireServer() end) end
+							clickInside(start)
+							clickForReal(start)
+						end
 					end
 				end)
 				task.wait(1)
 			until not AutoStart.Enabled
 		end,
+	})
+	Mode = AutoStart:CreateDropdown({
+		Name = 'Mode',
+		Tooltip = 'How the start is triggered',
+		List = {'Everything', 'Click Only'},
+		Tooltips = {
+			Everything = 'Fires the remote, fires the button handlers, and clicks it for real',
+			['Click Only'] = 'Just moves the mouse onto the button and clicks it, exactly as you would'
+		}
 	})
 end)
 
