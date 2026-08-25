@@ -291,9 +291,24 @@ run(function()
 		end
 		return false
 	end
+	-- Is the named prompt on screen? Separate from clicking it, so the remotes can be
+	-- sent even when the click cannot be delivered.
+	local function findStartPrompt(pg, name)
+		local gui = pg:FindFirstChild(name) or pg:FindFirstChild(name, true)
+		if not gui then return nil end
+		for _, g in gui:GetDescendants() do
+			if g:IsA('GuiButton') and onScreen(g) then return gui end
+		end
+		return nil
+	end
+
 	-- firesignal every visible button inside a named ScreenGui in PlayerGui.
 	local function clickGui(pg, name)
-		local gui = pg:FindFirstChild(name)
+		-- Searched recursively. The game's own check is
+		-- PlayerGui:FindFirstChild("startButton"), but the button that carries the click
+		-- handlers sits deeper, at startBackground.startFrame.startButton, and a
+		-- top-level-only lookup misses it whenever the wrapper is nested at all.
+		local gui = pg:FindFirstChild(name) or pg:FindFirstChild(name, true)
 		if not gui then return false end
 		local fired = false
 		for _, g in gui:GetDescendants() do
@@ -313,18 +328,44 @@ run(function()
 			repeat
 				local acted = false
 				pcall(function()
-					if not firesignal then return end
 					local pg = lplr:FindFirstChild('PlayerGui')
 					if not pg then return end
-					-- ready up first (if the ready prompt shows), then start
-					if clickGui(pg, 'readyButton') then acted = true end
-					if clickGui(pg, 'startButton') then acted = true end
-					if acted then
-						-- fire the matching remotes too, in case the button's handler isn't on the click signal
-						local ru = remote('readyUp'); if ru then pcall(function() ru:FireServer() end) end
-						local sd = remote('startDungeon'); if sd then pcall(function() sd:FireServer() end) end
-						local sb = remote('startBossRaid'); if sb then pcall(function() sb:FireServer() end) end
+
+					-- Nothing to start once it has started. dungeonStarted is the game's own
+					-- flag, so this stops on its own rather than firing into a running run.
+					-- Searched rather than assumed to sit directly under workspace: the
+					-- place has exactly one instance by this name, but nothing says where,
+					-- and a wrong path here fails silently as "no information" instead of
+					-- announcing itself.
+					local started = workspace:FindFirstChild('dungeonStarted', true)
+					if started and started:IsA('BoolValue') and started.Value == true then
+						return
 					end
+
+					-- The prompt being on screen is what says a start is wanted. It is
+					-- looked for whether or not the click can be delivered, because the
+					-- remotes below do not need the button - only the knowledge that now is
+					-- the moment.
+					local ready = findStartPrompt(pg, 'readyButton')
+					local start = findStartPrompt(pg, 'startButton')
+					if not (ready or start) then return end
+					acted = true
+
+					if firesignal then
+						if ready then clickGui(pg, 'readyButton') end
+						if start then clickGui(pg, 'startButton') end
+					end
+
+					-- Fired regardless of whether the click went through.
+					--
+					-- These used to run only once a button had been clicked, so an executor
+					-- without firesignal, or a button nested past the lookup, meant nothing
+					-- happened at all - the remotes were there the whole time and never
+					-- reached. The server ignores an action that is not valid for you, so
+					-- sending them costs nothing.
+					local ru = remote('readyUp'); if ru then pcall(function() ru:FireServer() end) end
+					local sd = remote('startDungeon'); if sd then pcall(function() sd:FireServer() end) end
+					local sb = remote('startBossRaid'); if sb then pcall(function() sb:FireServer() end) end
 				end)
 				task.wait(acted and 1.5 or 0.5)
 			until not AutoStart.Enabled
