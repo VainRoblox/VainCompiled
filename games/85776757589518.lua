@@ -1,556 +1,788 @@
-local run = function(func) func() end
-local cloneref = cloneref or function(obj) return obj end
+--[[
+	Dungeon Quest, ported from the VainV6 client.
 
+	This replaces an earlier implementation here that was written without access to the
+	game's internals and guessed at most of them. Everything below is built on paths
+	verified against the place dump, and the difference is not stylistic:
+
+	  - enemies are models under an 'enemyFolder', not "anything with health"
+	  - being in a dungeon is lplr.peaceful being false, not "enemies are visible"
+	  - a swing is the equipped weapon Accessory's RemoteEvent plus remotes.weaponUsed,
+	    not a simulated mouse click
+	  - abilities carry a real cooldown value, so they can be cast the moment it clears
+	    rather than by pressing keys and hoping
+	  - a run is over at workspace.dungeonProgress == 'bossKilled' or
+	    dungeon.bossRoom.dungeonFinished, by that exact path
+	  - boss attacks are telegraphed over a BridgeNet2 'precastHitbox' bridge, so they
+	    can be stepped out of before they land, for every boss, without naming any
+
+	The helpers are re-exported at the end for the modules that stayed - AutoKill,
+	Godmode and WeaponReach - so there is one implementation of each.
+]]
+
+-- Dungeon Quest (universe 9931749389) — Vain modules.
+-- Remotes verified from the place dump: ReplicatedStorage.remotes.*
+-- Combat: weapon Accessory RemoteEvent + weaponUsed; abilities via abilityUsed(slot, child).
+
+local run = function(func)
+	local ok, err = pcall(func)
+	if not ok then
+		local vain = shared.vain
+		if vain and vain.CreateNotification then
+			vain:CreateNotification('Vain DQ', 'Module failed to load: ' .. tostring(err), 5, 'alert')
+		end
+	end
+end
+
+local cloneref = cloneref or function(o) return o end
 local playersService = cloneref(game:GetService('Players'))
-local inputService = cloneref(game:GetService('UserInputService'))
-local runService = cloneref(game:GetService('RunService'))
--- Used as somewhere to park the character during a reparent, so it is never seen
--- rootless - see Godmode.
 local replicatedStorage = cloneref(game:GetService('ReplicatedStorage'))
-local collectionService = cloneref(game:GetService('CollectionService'))
-
-local gameCamera = workspace.CurrentCamera
 local lplr = playersService.LocalPlayer
 local vain = shared.vain
-local entitylib = vain.Libraries.entity
-local targetinfo = vain.Libraries.targetinfo
 
-local function notif(...)
-	return vain:CreateNotification(...)
+-- Guarded remote lookup so a missing/renamed remote can never error a module.
+local remotesFolder = replicatedStorage:FindFirstChild('remotes')
+if not remotesFolder then
+	pcall(function() remotesFolder = replicatedStorage:WaitForChild('remotes', 10) end)
+end
+local function remote(name)
+	return remotesFolder and remotesFolder:FindFirstChild(name)
 end
 
--- entitylib only registers players on its own - NPCs exist in its model but nothing
--- puts them there unless a game's base does it. In a dungeon crawler the enemies are
--- the entire point, so without this every module that can target NPCs has nothing to
--- work with here.
---
--- Detection is deliberately structural rather than name based: a model holding a
--- Humanoid, with health, that is not somebody's character. Matching on names would
--- need a list of every enemy type and would break with each content update.
-local tracked = {}
-
-local function isEnemy(model)
-	if not model:IsA('Model') then return false end
-	if playersService:GetPlayerFromCharacter(model) then return false end
-	if model == lplr.Character then return false end
-
-	local humanoid = model:FindFirstChildOfClass('Humanoid')
-	if not (humanoid and humanoid.Health > 0) then return false end
-
-	-- Humanoid.RootPart rather than a child named HumanoidRootPart: the name is a
-	-- convention for player characters, and an NPC rigged any other way has a root
-	-- without carrying that name. Requiring the name rejected enemies that were
-	-- perfectly usable, which left nothing to farm.
-	return humanoid.RootPart ~= nil
+-- True only while actually inside a dungeon (not town/lobby, not mid-cast).
+local function inCombat()
+	local char = lplr.Character
+	local peaceful = lplr:FindFirstChild('peaceful')
+	if not (char and peaceful and peaceful.Value == false) then return false, char end
+	local busy = char:FindFirstChild('busyCasting')
+	if busy and busy.Value ~= false then return false, char end
+	return true, char
 end
 
-local function addEnemy(model)
-	if tracked[model] or not isEnemy(model) then return end
-	tracked[model] = true
-	-- No player and no team function, so entitylib marks it NPC and targetable.
-	entitylib.addEntity(model, nil, nil)
-end
-
-local function removeEnemy(model)
-	if not tracked[model] then return end
-	tracked[model] = nil
-	entitylib.removeEntity(model)
-end
-
-run(function()
-	for _, model in workspace:GetDescendants() do
-		task.spawn(addEnemy, model)
-	end
-
-	vain:Clean(workspace.DescendantAdded:Connect(function(obj)
-		-- A model is usually parented before its Humanoid arrives, so react to the
-		-- Humanoid rather than the model and check upward from there.
-		if obj:IsA('Humanoid') and obj.Parent then
-			task.spawn(addEnemy, obj.Parent)
+-- Shared enemy targeting: nearest live mob under an 'enemyFolder' (cached), plus a
+-- helper to turn the character to face it. DQ weapon swings and abilities fire in
+-- the character's LOOK direction, so facing the enemy is what makes them connect.
+local _enemyParts, _enemyScan = {}, 0
+local function scanEnemyParts()
+	_enemyParts = {}
+	pcall(function()
+		for _, d in workspace:GetDescendants() do
+			if d:IsA('Humanoid') and d.Health > 0 then
+				local m = d.Parent
+				if m and m:IsA('Model') and not playersService:GetPlayerFromCharacter(m) and m:FindFirstAncestor('enemyFolder') then
+					local part = m.PrimaryPart or m:FindFirstChild('HumanoidRootPart') or m:FindFirstChildWhichIsA('BasePart')
+					if part then table.insert(_enemyParts, part) end
+				end
+			end
 		end
-	end))
-
-	vain:Clean(workspace.DescendantRemoving:Connect(function(obj)
-		if tracked[obj] then
-			removeEnemy(obj)
-		end
-	end))
-
-	vain:Clean(function()
-		for model in tracked do
-			entitylib.removeEntity(model)
-		end
-		table.clear(tracked)
 	end)
+	_enemyScan = os.clock()
+end
+local function nearestEnemyPart(pos)
+	if os.clock() - _enemyScan > 1 or #_enemyParts == 0 then scanEnemyParts() end
+	local best, bestDist
+	for i = #_enemyParts, 1, -1 do
+		local part = _enemyParts[i]
+		if not (part and part.Parent) then
+			table.remove(_enemyParts, i)
+		else
+			local dist = (part.Position - pos).Magnitude
+			if not bestDist or dist < bestDist then best, bestDist = part, dist end
+		end
+	end
+	return best
+end
+-- rotate the character to face the nearest enemy (horizontal), staying in place.
+local function faceNearest()
+	local char = lplr.Character
+	local hrp = char and char:FindFirstChild('HumanoidRootPart')
+	if not hrp then return end
+	local part = nearestEnemyPart(hrp.Position)
+	if part and (part.Position - hrp.Position).Magnitude > 0.5 then
+		-- horizontal only: a Humanoid is force-kept upright, so PITCHING the RootPart
+		-- just makes it fight our CFrame every frame (the Y-axis jitter). Keep it level.
+		hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(part.Position.X, hrp.Position.Y, part.Position.Z))
+	end
+end
+
+-- A simple toggle that fires a no-arg remote on a loop (server ignores it when
+-- the action isn't valid, so this is safe to leave running).
+local function looper(category, name, tooltip, remoteName, interval, gate)
+	run(function()
+		local Module
+		Module = category:CreateModule({
+			Name = name,
+			Tooltip = tooltip,
+			Function = function(callback)
+				if not callback then return end
+				repeat
+					pcall(function()
+						if gate and not gate() then return end
+						local r = remote(remoteName)
+						if r then r:FireServer() end
+					end)
+					task.wait(interval)
+				until not Module.Enabled
+			end,
+		})
+	end)
+end
+
+-- ── Auto Attack ──────────────────────────────────────────────────────────────
+run(function()
+	local AutoAttack, AttackDelay
+	AutoAttack = vain.Categories.Blatant:CreateModule({
+		Name = 'Auto Attack',
+		Tooltip = 'Automatically swings your equipped weapon while in a dungeon.',
+		Function = function(callback)
+			if not callback then return end
+			setupDodge()
+			local weaponUsed = remote('weaponUsed')
+			repeat
+				pcall(function()
+					local ok, char = inCombat()
+					if not ok then return end
+					faceNearest() -- point at the enemy so the swing lands
+					local weapon
+					for _, c in char:GetChildren() do
+						if c:IsA('Accessory') and c:FindFirstChild('Weapon') then weapon = c break end
+					end
+					if not weapon then return end
+					local rem = weapon:FindFirstChildOfClass('RemoteEvent')
+					if rem then rem:FireServer() end
+					if weaponUsed then weaponUsed:FireServer() end
+				end)
+				task.wait(AttackDelay.Value)
+			until not AutoAttack.Enabled
+		end,
+	})
+	AttackDelay = AutoAttack:CreateSlider({
+		Name = 'Attack Delay', Min = 0, Max = 1, Default = 0.12, Decimal = 100, Suffix = 's',
+		Tooltip = 'Delay between swings. Lower is faster; too low may be throttled server-side.',
+	})
 end)
 
--- Shared between Godmode and AutoFarm. Godmode hides the part the game tracks you by,
--- which also stops your own attacks landing, since the server checks that same position
--- when you swing. So AutoFarm asks for the part to be put back for a moment, waits to be
--- told it has arrived, attacks, and Godmode hides it again.
+-- ── Auto Skill ───────────────────────────────────────────────────────────────
+run(function()
+	local AutoSkill
+	AutoSkill = vain.Categories.Blatant:CreateModule({
+		Name = 'Auto Skill',
+		Tooltip = 'Casts your Q and E abilities the instant they come off cooldown.',
+		Function = function(callback)
+			if not callback then return end
+			local abilityUsed = remote('abilityUsed')
+			repeat
+				pcall(function()
+					local ok = inCombat()
+					if not (ok and abilityUsed) then return end
+					faceNearest() -- point at the enemy so directional abilities go the right way
+					for _, slot in { 'q', 'e' } do
+						for _, child in lplr.Backpack:GetChildren() do
+							if child:FindFirstChild('abilitySlot') and child.abilitySlot.Value == slot then
+								local cd = child:FindFirstChild('cooldown')
+								if not (cd and cd.Value > 0) then -- not on cooldown
+									local le = child:FindFirstChild('localEvent')
+									if le then le:Fire() end
+									abilityUsed:FireServer(slot, child)
+								end
+								break
+							end
+						end
+					end
+				end)
+				task.wait(0.1)
+			until not AutoSkill.Enabled
+		end,
+	})
+end)
 
--- Shared combat helpers.
---
--- These started inside AutoFarm and moved here when a second module needed them. Keeping
--- one copy matters more than it sounds: the ability keys took several attempts to get
--- right, and a duplicated set is one that quietly drifts out of step with the other.
+-- ── Dungeon flow ───────────────────────────────────────────────────────
+-- Auto Start Dungeon / Auto Ready Up / Auto Boss Raid are lobby actions -> they
+-- live in the lobby file (games/77649408247578.lua).
 
-local candidates = {}
-local nextScan = 0
-local nextAbility = 0
-local abilityIndex = 1
-
-local virtualInput = cloneref(game:GetService('VirtualInputManager'))
-
--- The game's actual ability keys, rather than a spread of guesses. The number row is
--- Roblox's backpack hotbar, so pressing those unequips the weapon rather than casting.
-local ABILITY_KEYS = {
-	Enum.KeyCode.Q,
-	Enum.KeyCode.E
-}
-
-local HEALTH_KEYS = {'Health', 'HP', 'CurrentHealth', 'health'}
-
--- Finds enemies without going through entitylib.
---
--- entitylib only builds an entity when a model has a Humanoid - addEntity waits for one
--- and gives up silently without it. The boss has one, ordinary enemies here evidently do
--- not, which is exactly why the farm worked on the boss and ignored everything else. No
--- amount of widening the base's detection fixes that, because the library itself cannot
--- represent them, so this looks for them directly.
-local function rootOf(model)
-	if model.PrimaryPart then return model.PrimaryPart end
-	for _, name in {'HumanoidRootPart', 'Torso', 'Root', 'UpperTorso', 'Head'} do
-		local part = model:FindFirstChild(name)
-		if part and part:IsA('BasePart') then return part end
-	end
-	return model:FindFirstChildWhichIsA('BasePart')
+-- Shared "the run is over" check: the game itself reads bossRoom.dungeonFinished
+-- (a BoolValue) as its completion flag, so we do exactly the same. It is only true
+-- once the final boss is dead / the run has actually ended, never mid-run.
+local function dungeonOver()
+	-- mirror the game's own isRunFinished(): boss raids flip workspace.dungeonProgress
+	-- to "bossKilled"; normal dungeons flip workspace.dungeon.bossRoom.dungeonFinished.
+	-- Must be the EXACT path - a recursive bossRoom search hit a wrong room reading true
+	-- (that was the 'replays/lobbies immediately' bug).
+	local dp = workspace:FindFirstChild('dungeonProgress')
+	if dp and dp:IsA('StringValue') and dp.Value == 'bossKilled' then return true end
+	local dungeon = workspace:FindFirstChild('dungeon')
+	local bossRoom = dungeon and dungeon:FindFirstChild('bossRoom')
+	local df = bossRoom and bossRoom:FindFirstChild('dungeonFinished')
+	return df ~= nil and df:IsA('BoolValue') and df.Value == true
 end
 
--- Something has to say "this is a thing with health", or every crate and door in the
--- dungeon becomes a target.
-local function healthOf(model)
-	local humanoid = model:FindFirstChildOfClass('Humanoid')
-	if humanoid then return humanoid.Health end
+-- ── Auto Return to Lobby ──────────────────────────────────────────────────
+run(function()
+	local AutoReturn
+	AutoReturn = vain.Categories.Utility:CreateModule({
+		Name = 'Auto Return to Lobby',
+		Tooltip = 'Returns to the lobby, but ONLY once the run is actually over (boss defeated / run finished) - never mid-dungeon.',
+		Function = function(callback)
+			if not callback then return end
+			repeat
+				pcall(function()
+					if not dungeonOver() then return end
+					local r = remote('ReturnToLobbyEvent')
+					if r then r:FireServer() end
+				end)
+				task.wait(1)
+			until not AutoReturn.Enabled
+		end,
+	})
+end)
 
-	for _, key in HEALTH_KEYS do
-		local attr = model:GetAttribute(key)
-		if type(attr) == 'number' then return attr end
+-- ── Auto Replay ──────────────────────────────────────────────────────────────────
+-- Clicking Replay is a TWO-step popup: the Replay button opens a 'ReplayConfirmation'
+-- dialog, then its confirm(Yes) button actually replays. That Replay button also
+-- works mid-run, so we only click it once dungeonOver() is true (clicking it mid-run
+-- was the 'restarts immediately' bug). Step 2 just answers the Yes popup.
+run(function()
+	local AutoReplay
+	AutoReplay = vain.Categories.Blatant:CreateModule({
+		Name = 'Auto Replay',
+		Tooltip = 'When the run is over (final boss defeated) it clicks Replay and confirms the Yes popup so a fresh run starts. Does nothing mid-dungeon.',
+		Function = function(callback)
+			if not callback then return end
+			repeat
+				local acted = false
+				pcall(function()
+					if not firesignal then return end
+					if not dungeonOver() then return end -- gate FIRST; nothing fires mid-run
+					local pg = lplr:FindFirstChild('PlayerGui')
+					if not pg then return end
+					-- ReplayConfirmation is pre-cloned at dungeon start (Enabled=false) and its
+					-- confirm(Yes) button is wired straight to doReplay(), so once the run is over we
+					-- fire that Yes directly (no need to open the dialog first).
+					local confirm = pg:FindFirstChild('ReplayConfirmation')
+					local yesHolder = confirm and confirm:FindFirstChild('confirm', true)
+					local yes = yesHolder and yesHolder:FindFirstChildWhichIsA('GuiButton', true)
+					if yes then firesignal(yes.MouseButton1Click) acted = true return end
+					-- fallback: open the confirm via the options-menu Replay button
+					local btn = pg:FindFirstChild('ReplayDungeonButton', true)
+					if btn and not btn:IsA('GuiButton') then btn = btn:FindFirstChildWhichIsA('GuiButton', true) end
+					if btn and btn:IsA('GuiButton') then firesignal(btn.MouseButton1Click) acted = true end
+				end)
+				task.wait(acted and 2.5 or 0.5)
+			until not AutoReplay.Enabled
+		end,
+	})
+end)
 
-		local value = model:FindFirstChild(key)
-		if value and value:IsA('ValueBase') and type(value.Value) == 'number' then
-			return value.Value
+-- ── Auto Start (begin the run) ─────────────────────────────────────────
+-- Loading into a dungeon the game shows a READY button, then the host a big green
+-- START button - both are ScreenGuis cloned into PlayerGui named 'readyButton' /
+-- 'startButton' (the label reads 'Start', not exactly 'START', so we match by the
+-- GUI name, not the text). We firesignal every button inside them (runs whatever click
+-- handler the game wired) and also fire the readyUp/start remotes. They vanish once the
+-- run begins, so it stops on its own; the server ignores host-only actions for others.
+run(function()
+	local AutoStart
+	local function onScreen(inst)
+		local node = inst
+		while node and node ~= game do
+			if node:IsA('GuiObject') and node.Visible == false then return false end
+			if node:IsA('LayerCollector') then return node.Enabled ~= false end
+			node = node.Parent
+		end
+		return false
+	end
+	-- firesignal every visible button inside a named ScreenGui in PlayerGui.
+	local function clickGui(pg, name)
+		local gui = pg:FindFirstChild(name)
+		if not gui then return false end
+		local fired = false
+		for _, g in gui:GetDescendants() do
+			if g:IsA('GuiButton') and onScreen(g) then
+				pcall(function() firesignal(g.MouseButton1Click) end)
+				pcall(function() firesignal(g.Activated) end)
+				fired = true
+			end
+		end
+		return fired
+	end
+	AutoStart = vain.Categories.Blatant:CreateModule({
+		Name = 'Auto Start',
+		Tooltip = 'Auto-readies and clicks the in-dungeon START button the moment it appears so the run begins automatically. Stops itself once the run has started.',
+		Function = function(callback)
+			if not callback then return end
+			repeat
+				local acted = false
+				pcall(function()
+					if not firesignal then return end
+					local pg = lplr:FindFirstChild('PlayerGui')
+					if not pg then return end
+					-- ready up first (if the ready prompt shows), then start
+					if clickGui(pg, 'readyButton') then acted = true end
+					if clickGui(pg, 'startButton') then acted = true end
+					if acted then
+						-- fire the matching remotes too, in case the button's handler isn't on the click signal
+						local ru = remote('readyUp'); if ru then pcall(function() ru:FireServer() end) end
+						local sd = remote('startDungeon'); if sd then pcall(function() sd:FireServer() end) end
+						local sb = remote('startBossRaid'); if sb then pcall(function() sb:FireServer() end) end
+					end
+				end)
+				task.wait(acted and 1.5 or 0.5)
+			until not AutoStart.Enabled
+		end,
+	})
+end)
+
+-- ── Auto Farm (full dungeon clear) ───────────────────────────────────────────
+-- Finds the nearest live enemy, positions ABOVE it (so ground melee whiffs),
+-- and bursts it with weapon swing + both abilities. Safety: if HP drops below the
+-- threshold it floats high out of reach and waits to recover, so it never dies.
+-- When a room is clear it walks forward to trigger the next one.
+run(function()
+	local AutoFarm, SafeHP, RecoverHP, HoverHeight, EnemyOffset, FarmDelay, UseTeleport, HealSwap, DodgeAttacks, BossHeight
+
+	-- ── Boss detection + attack dodging ────────────────────────────────────
+	-- Every boss/enemy AREA attack is telegraphed to the client over a BridgeNet2
+	-- 'precastHitbox' bridge: Cube {cframe,size} or Circle {position,radius}, each with
+	-- a delayUntilAttack lead time. We attach a second listener to that same bridge,
+	-- remember each danger zone, and step out of it before it lands. This dodges EVERY
+	-- boss's telegraphed attacks without hardcoding a single boss.
+	local dangers = {}
+	local dodgeReady = false
+	local function setupDodge()
+		if dodgeReady then return end
+		dodgeReady = true
+		pcall(function()
+			local util = replicatedStorage:FindFirstChild('Utility')
+			local bn = util and util:FindFirstChild('BridgeNet2')
+			if not bn then return end
+			local BridgeNet2 = require(bn)
+			local bridge = BridgeNet2.ReferenceBridge('precastHitbox')
+			bridge:Connect(function(data)
+				if type(data) ~= 'table' then return end
+				local start = tonumber(data.startTime) or workspace:GetServerTimeNow()
+				local delay = tonumber(data.delayUntilAttack) or 0.3
+				local expire = start + delay + 0.4 -- stay clear until just after the hit resolves
+				if typeof(data.cframe) == 'CFrame' and typeof(data.size) == 'Vector3' then
+					table.insert(dangers, { kind = 'cube', cf = data.cframe, size = data.size, expire = expire })
+				elseif typeof(data.position) == 'Vector3' and tonumber(data.radius) then
+					table.insert(dangers, { kind = 'circle', pos = data.position, radius = tonumber(data.radius), expire = expire })
+				end
+			end)
+		end)
+	end
+
+	-- boss fight active? the bossRoom's fightingBoss flag is the game's own signal.
+	local function bossActive()
+		local dungeon = workspace:FindFirstChild('dungeon')
+		local bossRoom = dungeon and dungeon:FindFirstChild('bossRoom')
+		local fb = bossRoom and bossRoom:FindFirstChild('fightingBoss')
+		return fb ~= nil and fb:IsA('BoolValue') and fb.Value == true
+	end
+
+	-- is pos inside danger zone d (with a horizontal safety margin)?
+	local function inDanger(pos, d, margin)
+		if d.kind == 'circle' then
+			local dx, dz = pos.X - d.pos.X, pos.Z - d.pos.Z
+			return (dx * dx + dz * dz) <= (d.radius + margin) ^ 2
+		else
+			local lp = d.cf:PointToObjectSpace(pos)
+			local h = d.size * 0.5
+			return math.abs(lp.X) <= h.X + margin and math.abs(lp.Z) <= h.Z + margin
+				and math.abs(lp.Y) <= h.Y + 8
 		end
 	end
 
-	return nil
-end
-
--- Distinct from isEnemy above, which decides what gets registered with entitylib and so
--- insists on a Humanoid. This one decides what is worth attacking, and most enemies here
--- have no Humanoid at all - that difference is the whole reason the farm looks for them
--- itself.
-local function isFarmable(model)
-	if not model:IsA('Model') then return false end
-	if playersService:GetPlayerFromCharacter(model) then return false end
-	if model == lplr.Character then return false end
-
-	local health = healthOf(model)
-	return health ~= nil and health > 0 and rootOf(model) ~= nil
-end
-
--- Rebuilt on a timer rather than every pass: walking every descendant is far too much to
--- do several times a second, and enemies spawn once a room starts rather than
--- continuously, so a second-old list is fine.
-local function rescan()
-	if tick() < nextScan then return end
-	nextScan = tick() + 1
-
-	table.clear(candidates)
-	for _, model in workspace:GetDescendants() do
-		if isFarmable(model) then
-			table.insert(candidates, model)
+	-- nearest position OUTSIDE danger zone d (horizontal push-out).
+	local function safeSpot(pos, d, margin)
+		if d.kind == 'circle' then
+			local dir = Vector3.new(pos.X - d.pos.X, 0, pos.Z - d.pos.Z)
+			dir = dir.Magnitude > 0.1 and dir.Unit or Vector3.new(1, 0, 0)
+			return Vector3.new(d.pos.X, pos.Y, d.pos.Z) + dir * (d.radius + margin)
+		else
+			local lp = d.cf:PointToObjectSpace(pos)
+			local h = d.size * 0.5
+			local exitX = (h.X + margin) - math.abs(lp.X)
+			local exitZ = (h.Z + margin) - math.abs(lp.Z)
+			local nlp
+			if exitX <= exitZ then
+				nlp = Vector3.new((h.X + margin) * (lp.X >= 0 and 1 or -1), lp.Y, lp.Z)
+			else
+				nlp = Vector3.new(lp.X, lp.Y, (h.Z + margin) * (lp.Z >= 0 and 1 or -1))
+			end
+			return d.cf:PointToWorldSpace(nlp)
 		end
 	end
-end
 
-local function nearestEnemy()
-	if not entitylib.isAlive then return nil end
-	local origin = entitylib.character.RootPart.Position
-	local best, bestRoot, bestDist
+	-- purge expired zones; if we're standing in one, return where to step to (else nil).
+	local function dodgeTarget(pos)
+		local now = workspace:GetServerTimeNow()
+		for i = #dangers, 1, -1 do
+			if now > dangers[i].expire then table.remove(dangers, i) end
+		end
+		local margin = 5
+		for _, d in dangers do
+			if inDanger(pos, d, margin) then return safeSpot(pos, d, margin + 3) end
+		end
+		return nil
+	end
 
-	for _, model in candidates do
-		-- Re-checked rather than trusted: the list is up to a second old, and most of
-		-- what is on it is in the middle of being killed.
-		if model.Parent and isFarmable(model) then
-			local root = rootOf(model)
-			if root then
-				local dist = (root.Position - origin).Magnitude
-				if not bestDist or dist < bestDist then
-					best, bestRoot, bestDist = model, root, dist
+	-- storage items may store a field as a plain value or as {Value=x}.
+	local function fv(item, key)
+		local v = item[key]
+		if type(v) == 'table' and v.Value ~= nil then v = v.Value end
+		return v
+	end
+
+	local function equippedWeapon(char)
+		for _, c in char:GetChildren() do
+			if c:IsA('Accessory') and c:FindFirstChild('Weapon') then return c end
+		end
+	end
+	local function swing(char, weaponUsed)
+		local w = equippedWeapon(char)
+		if not w then return end
+		local rem = w:FindFirstChildOfClass('RemoteEvent')
+		if rem then rem:FireServer() end
+		if weaponUsed then weaponUsed:FireServer() end
+	end
+	local function castAbilities(abilityUsed)
+		for _, slot in { 'q', 'e' } do
+			for _, child in lplr.Backpack:GetChildren() do
+				if child:FindFirstChild('abilitySlot') and child.abilitySlot.Value == slot then
+					local cd = child:FindFirstChild('cooldown')
+					if not (cd and cd.Value > 0) then
+						local le = child:FindFirstChild('localEvent')
+						if le then le:Fire() end
+						if abilityUsed then abilityUsed:FireServer(slot, child) end
+					end
+					break
 				end
 			end
 		end
 	end
 
-	return best, bestRoot
-end
-
--- Nothing swings without something equipped, whatever the weapon is.
-local function equipWeapon()
-	local character = lplr.Character
-	if not character then return end
-	if character:FindFirstChildOfClass('Tool') then return end
-
-	local backpack = lplr:FindFirstChildOfClass('Backpack')
-	local spare = backpack and backpack:FindFirstChildOfClass('Tool')
-	local humanoid = character:FindFirstChildOfClass('Humanoid')
-	if spare and humanoid then
-		pcall(function()
-			humanoid:EquipTool(spare)
-		end)
+	-- cached list of enemy models (non-player Humanoids), refreshed periodically.
+	local enemyCache, lastScan = {}, 0
+	local function enemyPart(m)
+		return m.PrimaryPart or m:FindFirstChild('HumanoidRootPart') or m:FindFirstChild('Torso')
+			or m:FindFirstChild('UpperTorso') or m:FindFirstChildWhichIsA('BasePart')
 	end
-end
-
-local function swing()
-	local centre = gameCamera.ViewportSize / 2
-	pcall(function()
-		virtualInput:SendMouseButtonEvent(centre.X, centre.Y, 0, true, game, 1)
-		task.wait()
-		virtualInput:SendMouseButtonEvent(centre.X, centre.Y, 0, false, game, 1)
-	end)
-end
-
--- Still one key per pass rather than both at once: a game will generally drop all but the
--- first of a burst. With only two keys each comes round twice a second, which is faster
--- than either cooldown, so nothing is held up waiting its turn.
--- Pressed every pass, with no rate limit of its own.
---
--- There is no reading a cooldown from here, but there is no need to: pressing an ability
--- that is still cooling does nothing at all. So the way to cast the moment one comes back
--- is simply to keep asking, and the old quarter second gate only meant an ability could
--- sit ready for a quarter second doing nothing.
---
--- The two keys are still separated by a frame rather than sent together, because a game
--- will generally act on the first of a burst and drop the rest.
-local function useAbility()
-	for _, key in ABILITY_KEYS do
+	local function rescan()
+		enemyCache = {}
 		pcall(function()
-			virtualInput:SendKeyEvent(true, key, false, game)
-			task.wait()
-			virtualInput:SendKeyEvent(false, key, false, game)
-		end)
-	end
-end
-
-
--- Every live enemy, not just the closest. AutoKill uses this to find where several are
--- stood together, so one swing can catch more than one of them.
-local function allEnemies()
-	local list = {}
-	for _, model in candidates do
-		-- Re-checked rather than trusted: the list is up to a second old and most of what
-		-- is on it is in the middle of being killed.
-		if model.Parent and isFarmable(model) then
-			local root = rootOf(model)
-			if root then
-				table.insert(list, root)
+			for _, d in workspace:GetDescendants() do
+				if d:IsA('Humanoid') and d.Health > 0 then
+					local m = d.Parent
+					-- only real dungeon mobs: a Model living under an 'enemyFolder'
+					-- (NOT town NPCs, players, pets or decorations).
+					if m and m:IsA('Model') and enemyPart(m)
+						and not playersService:GetPlayerFromCharacter(m)
+						and m:FindFirstAncestor('enemyFolder') then
+						table.insert(enemyCache, m)
+					end
+				end
 			end
+		end)
+		lastScan = os.clock()
+	end
+	local function nearestEnemy(pos)
+		if os.clock() - lastScan > 1.5 or #enemyCache == 0 then rescan() end
+		local best, bestPart, bestDist
+		for i = #enemyCache, 1, -1 do
+			local m = enemyCache[i]
+			local hum = m and m.Parent and m:FindFirstChildOfClass('Humanoid')
+			local part = m and enemyPart(m)
+			if not (m and m.Parent and hum and hum.Health > 0 and part) then
+				table.remove(enemyCache, i)
+			else
+				local dist = (part.Position - pos).Magnitude
+				if not bestDist or dist < bestDist then best, bestPart, bestDist = m, part, dist end
+			end
+		end
+		return best, bestPart
+	end
+
+	-- Heal-swap: when HP is low, if the inventory has heal spell(s), save the current
+	-- loadout, switch to the best spell-power (mage) weapon + 1-2 heal spells, cast them
+	-- to full HP while floating safe, then restore the original loadout. Returns false
+	-- (so the caller falls back to float-and-regen) if there's no heal spell.
+	local function healSwap()
+		local getStorage, equip, abilityUsed = remote('reloadInvy'), remote('equipItem'), remote('abilityUsed')
+		if not (getStorage and equip and abilityUsed) then return false end
+		local storage = getStorage:InvokeServer()
+		if type(storage) ~= 'table' or type(storage.abilities) ~= 'table' then return false end
+
+		-- heal spells in inventory (detected by name, e.g. "Chain Heal" / "Universal Heal")
+		local heals = {}
+		for id, item in pairs(storage.abilities) do
+			if tostring(fv(item, 'name') or ''):lower():find('heal') then
+				table.insert(heals, tostring(id):sub(9))
+			end
+		end
+		if #heals == 0 then return false end
+
+		-- remember the current loadout (weapon + q/e abilities), whatever set it is
+		local savedWeapon, savedQ, savedE
+		if type(storage.weapons) == 'table' then
+			for id, item in pairs(storage.weapons) do
+				if item.equipped == true then savedWeapon = tostring(id):sub(8) break end
+			end
+		end
+		for id, item in pairs(storage.abilities) do
+			local eq = item.equipped
+			if type(eq) == 'table' then
+				if eq.q then savedQ = tostring(id):sub(9) end
+				if eq.e then savedE = tostring(id):sub(9) end
+			end
+		end
+
+		-- switch to the best spell-power weapon + the heal spell(s)
+		local bestW, bestSP
+		if type(storage.weapons) == 'table' then
+			for id, item in pairs(storage.weapons) do
+				local sp = tonumber(fv(item, 'spellPower')) or 0
+				if not bestSP or sp > bestSP then bestW, bestSP = tostring(id):sub(8), sp end
+			end
+		end
+		if bestW then pcall(function() equip:InvokeServer('weapon', bestW) end) end
+		pcall(function() equip:InvokeServer('ability', heals[1], 'q') end)
+		if #heals >= 2 then pcall(function() equip:InvokeServer('ability', heals[2], 'e') end) end
+		task.wait(0.4)
+
+		-- cast the heals until full HP (staying floated out of reach)
+		local t0 = os.clock()
+		while AutoFarm.Enabled and os.clock() - t0 < 12 do
+			local char = lplr.Character
+			local hum = char and char:FindFirstChildOfClass('Humanoid')
+			local hrp = char and char:FindFirstChild('HumanoidRootPart')
+			if not (hum and hrp) then break end
+			if hum.MaxHealth > 0 and hum.Health / hum.MaxHealth >= 0.98 then break end
+			hrp.CFrame = CFrame.new(hrp.Position.X, hrp.Position.Y + HoverHeight.Value, hrp.Position.Z)
+			for _, slot in { 'q', 'e' } do
+				for _, child in lplr.Backpack:GetChildren() do
+					if child:FindFirstChild('abilitySlot') and child.abilitySlot.Value == slot then
+						local cd = child:FindFirstChild('cooldown')
+						if not (cd and cd.Value > 0) then
+							local le = child:FindFirstChild('localEvent'); if le then le:Fire() end
+							pcall(function() abilityUsed:FireServer(slot, child) end)
+						end
+						break
+					end
+				end
+			end
+			task.wait(0.2)
+		end
+
+		-- restore the original loadout (mage or warrior — whatever it was)
+		if savedWeapon then pcall(function() equip:InvokeServer('weapon', savedWeapon) end) end
+		if savedQ then pcall(function() equip:InvokeServer('ability', savedQ, 'q') end) end
+		if savedE then pcall(function() equip:InvokeServer('ability', savedE, 'e') end) end
+		return true
+	end
+
+	AutoFarm = vain.Categories.Blatant:CreateModule({
+		Name = 'Auto Farm',
+		Tooltip = 'Clears the whole dungeon automatically: kills every enemy with your weapon + Q/E, and floats to safety to recover HP so you never die. Teleports onto enemies (may trip anti-cheat on some servers).',
+		Function = function(callback)
+			if not callback then return end
+			local weaponUsed = remote('weaponUsed')
+			local abilityUsed = remote('abilityUsed')
+			local retreating = false
+			repeat
+				pcall(function()
+					local char = lplr.Character
+					local hrp = char and char:FindFirstChild('HumanoidRootPart')
+					local hum = char and char:FindFirstChildOfClass('Humanoid')
+					if not (char and hrp and hum) then return end
+					local peaceful = lplr:FindFirstChild('peaceful')
+					if peaceful and peaceful.Value == true then return end -- in town/lobby, nothing to farm
+					
+					-- DODGE (top priority): if we're standing in a telegraphed attack, get out NOW.
+					if DodgeAttacks.Enabled then
+						local safe = dodgeTarget(hrp.Position)
+						if safe then
+							hum.PlatformStand = false
+							hrp.Anchored = false
+							hrp.CFrame = CFrame.new(safe)
+							hrp.AssemblyLinearVelocity = Vector3.zero
+							return
+						end
+					end
+
+					-- safety: drop into retreat below SafeHP, resume once RecoverHP reached
+					local hpFrac = hum.MaxHealth > 0 and hum.Health / hum.MaxHealth or 1
+					if hpFrac <= SafeHP.Value / 100 then retreating = true end
+					if retreating then
+						hum.PlatformStand = true
+						hrp.Anchored = false
+						hrp.CFrame = CFrame.new(hrp.Position.X, hrp.Position.Y + HoverHeight.Value, hrp.Position.Z)
+						hrp.AssemblyLinearVelocity = Vector3.zero
+						-- heal-swap first (heals to full + restores loadout); if it can't
+						-- (no heal spell owned) fall back to waiting for natural regen.
+						if HealSwap.Enabled and healSwap() then
+							retreating = false
+							hum.PlatformStand = false
+							hrp.Anchored = false
+							return
+						end
+						if hpFrac >= math.min(RecoverHP.Value / 100, 0.98) then
+							retreating = false
+							hum.PlatformStand = false
+							hrp.Anchored = false
+						end
+						return
+					end
+
+					local target, part = nearestEnemy(hrp.Position)
+					if target and part then
+						local busy = char:FindFirstChild('busyCasting')
+						if UseTeleport.Enabled then
+							-- hover beside the enemy and FACE it in full 3D (pitch on X AND Y so
+							-- swing + abilities travel INTO it, not over its head).
+							local ep = part.Position
+							local dir = (hrp.Position - ep) * Vector3.new(1, 0, 1)
+							dir = dir.Magnitude > 0.1 and dir.Unit or Vector3.new(0, 0, 1)
+							-- while a boss is being fought, hover higher (bosses have big ground attacks)
+							local height = bossActive() and BossHeight.Value or EnemyOffset.Value
+							local myPos = ep + dir * 4 + Vector3.new(0, height, 0)
+							hrp.Anchored = false
+							-- PlatformStand disables the Humanoid's auto-upright, so the pitched
+							-- look-at HOLDS instead of snapping back every frame (that snap-back
+							-- was the "Y axis is buggy" jitter). It is NOT anchoring, so the game
+							-- still sees us as a live target and combat works both ways.
+							hum.PlatformStand = true
+							hrp.CFrame = CFrame.lookAt(myPos, ep)
+							hrp.AssemblyLinearVelocity = Vector3.zero
+						else
+							hrp.Anchored = false
+							hum.PlatformStand = false
+							hum:Move((part.Position - hrp.Position) * Vector3.new(1, 0, 1))
+							faceNearest()
+						end
+						if not (busy and busy.Value ~= false) then
+							swing(char, weaponUsed)
+							castAbilities(abilityUsed)
+						end
+					else
+						-- room clear: unanchor and nudge forward to trigger the next room
+						hrp.Anchored = false
+						hum.PlatformStand = false
+						hum:Move(hrp.CFrame.LookVector * Vector3.new(1, 0, 1))
+					end
+				end)
+				task.wait(FarmDelay.Value)
+			until not AutoFarm.Enabled
+			pcall(function()
+				local ch = lplr.Character
+				local hum = ch and ch:FindFirstChildOfClass('Humanoid')
+				local hrp = ch and ch:FindFirstChild('HumanoidRootPart')
+				if hum then hum.PlatformStand = false end
+				if hrp then hrp.Anchored = false end -- never leave the character stuck anchored
+			end)
+		end,
+	})
+	SafeHP = AutoFarm:CreateSlider({ Name = 'Retreat below HP', Min = 5, Max = 90, Default = 55, Suffix = '%',
+		Tooltip = 'Anchor high out of reach and stop fighting when your HP drops below this. Raise it if you still die.' })
+	RecoverHP = AutoFarm:CreateSlider({ Name = 'Resume at HP', Min = 20, Max = 100, Default = 85, Suffix = '%',
+		Tooltip = 'Come back down and resume once HP recovers to this.' })
+	HoverHeight = AutoFarm:CreateSlider({ Name = 'Retreat Height', Min = 20, Max = 400, Default = 150, Suffix = ' studs',
+		Tooltip = 'How high to float above the map while recovering (out of enemy reach).' })
+	EnemyOffset = AutoFarm:CreateSlider({ Name = 'Attack Height', Min = 0, Max = 30, Default = 8, Suffix = ' studs',
+		Tooltip = 'Studs above each enemy. The character now pitches to aim DOWN at the enemy (held by PlatformStand), so you can hover safely up here and abilities still land. Lower it toward 0 if you want your short-range swing to connect too.' })
+	FarmDelay = AutoFarm:CreateSlider({ Name = 'Loop Delay', Min = 0, Max = 0.5, Default = 0.1, Decimal = 100, Suffix = 's',
+		Tooltip = 'Time between farm ticks (attack + reposition).' })
+	UseTeleport = AutoFarm:CreateToggle({ Name = 'Teleport to Enemies', Default = true,
+		Tooltip = 'On: instantly reposition onto each enemy (fast, may trip anti-cheat). Off: walk to them (slower, safer).' })
+	HealSwap = AutoFarm:CreateToggle({ Name = 'Heal Swap when low', Default = true,
+		Tooltip = 'When low, if you own a heal spell: swap to best spell-power weapon + 1-2 heals, heal to full, then restore your set. Requires the game to allow mid-run equipping.' })
+		DodgeAttacks = AutoFarm:CreateToggle({ Name = 'Dodge Attacks', Default = true,
+			Tooltip = "Reads the game's own attack telegraphs (the neon danger zones bosses/enemies cast) and steps you out before they hit. Works on every boss, no per-boss setup." })
+		BossHeight = AutoFarm:CreateSlider({ Name = 'Boss Attack Height', Min = 0, Max = 60, Default = 16, Suffix = ' studs',
+			Tooltip = 'Attack height used automatically while a boss is being fought - bosses have bigger ground attacks, so it hovers higher than the normal Attack Height. Combined with Dodge Attacks you should take little to no damage.' })
+end)
+
+--VAINEOF
+
+
+-- Shared attack helpers, for the modules kept alongside this file.
+--
+-- Auto Farm has its own copies of these as locals; they are duplicated here rather than
+-- lifted out of it, because that module is working and reaching into it to restructure
+-- it would risk that for no gain. Both follow the same verified path: the equipped
+-- weapon is an Accessory carrying a 'Weapon' child, its RemoteEvent is the swing, and
+-- abilities live in the Backpack with an 'abilitySlot' naming their key and a 'cooldown'
+-- that is above zero while they are unavailable.
+local function sharedWeapon(char)
+	for _, c in char:GetChildren() do
+		if c:IsA('Accessory') and c:FindFirstChild('Weapon') then return c end
+	end
+end
+
+local function sharedSwing()
+	local char = lplr.Character
+	if not char then return end
+	local weapon = sharedWeapon(char)
+	if not weapon then return end
+
+	local rem = weapon:FindFirstChildOfClass('RemoteEvent')
+	if rem then pcall(function() rem:FireServer() end) end
+	local used = remote('weaponUsed')
+	if used then pcall(function() used:FireServer() end) end
+end
+
+-- Cast only when the cooldown has actually cleared, which is what makes this fire the
+-- instant one comes back rather than pressing keys and hoping.
+local function sharedCastAbilities()
+	local abilityUsed = remote('abilityUsed')
+	if not abilityUsed then return end
+
+	for _, slot in {'q', 'e'} do
+		for _, child in lplr.Backpack:GetChildren() do
+			local marker = child:FindFirstChild('abilitySlot')
+			if marker and marker.Value == slot then
+				local cd = child:FindFirstChild('cooldown')
+				if not (cd and cd.Value > 0) then
+					local le = child:FindFirstChild('localEvent')
+					if le then pcall(function() le:Fire() end) end
+					pcall(function() abilityUsed:FireServer(slot, child) end)
+				end
+				break
+			end
+		end
+	end
+end
+
+-- Every live enemy part, for anything that needs the whole set rather than the closest.
+local function enemyParts()
+	if os.clock() - _enemyScan > 1 or #_enemyParts == 0 then scanEnemyParts() end
+	local list = {}
+	for _, part in _enemyParts do
+		if part and part.Parent then
+			table.insert(list, part)
 		end
 	end
 	return list
 end
 
--- Re-exported so the modules can share one implementation of each.
+-- Re-exported for the modules kept alongside this file.
 vain.Libraries.dungeonquest = {
-	isEnemy = isEnemy,
-	isFarmable = isFarmable,
-	tracked = tracked,
-	equipWeapon = equipWeapon,
-	swing = swing,
-	useAbility = useAbility,
-	findEnemy = nearestEnemy,
-	allEnemies = allEnemies,
-	rescan = rescan,
-	rootOf = rootOf,
+	remote = remote,
+	inCombat = inCombat,
+	faceNearest = faceNearest,
+	nearestEnemyPart = nearestEnemyPart,
+	enemyParts = enemyParts,
+	swing = sharedSwing,
+	castAbilities = sharedCastAbilities,
+	-- Set by Godmode, read by AutoKill: hiding the tracked root also stops your own
+	-- hits landing, so an attack has to ask for it back first.
 	combat = {
 		hidden = false,
-		-- Set by AutoFarm when it wants to attack.
 		wantAttack = 0,
-		-- Set by Godmode once the surfaced position has had time to replicate.
 		attackReady = false,
-		-- Set by AutoFarm the moment it sees something on course to hit you, so Godmode
-		-- can hide before it lands rather than after. AutoFarm already works this out for
-		-- dodging, so it costs nothing to share.
 		threat = 0
 	}
 }
 
-
-run(function()
-	local AutoFarm
-	local warned = false
-	local nextAbility = 0
-	local abilityIndex = 1
-	local candidates = {}
-	local nextScan = 0
-	local incoming = {}
-	local currentRoot
-	local autoRotate
-	local nextSwing = 0
-	
-	-- Swings are paced rather than thrown every pass.
-	--
-	-- Without this the module asked Godmode for an attack window on every single pass, so
-	-- the window never closed and the root never went back into hiding - Godmode was
-	-- surfaced permanently and protected nothing. Leaving gaps between swings is what gives
-	-- it somewhere to hide, and a weapon cannot swing faster than its own animation anyway,
-	-- so nothing is lost.
-	local SWING_INTERVAL = 0.6
-	
-	-- Dodging.
-	--
-	-- What counts as a projectile here is not something that can be looked up, so it is
-	-- recognised by behaviour instead: a loose part, not part of anybody's body, travelling
-	-- fast enough that it was fired rather than dropped. Anything matching is watched
-	-- briefly then forgotten, since projectiles do not live long and a stale list is worse
-	-- than none.
-	local PROJECTILE_SPEED = 25
-	local WATCH_FOR = 3
-	-- How close it has to be heading, and how far ahead to care. Reacting to everything on
-	-- the map would have you sidestepping shots that were never going to land.
-	local DODGE_RADIUS = 10
-	local LOOK_AHEAD = 1.5
-	local DODGE_DISTANCE = 14
-	
-	-- Where to sit relative to the enemy.
-	--
-	-- Overhead, and high enough that ground melee cannot reach you - being hit back was
-	-- killing runs. An earlier version blamed height for swings not landing, but attacks
-	-- were going through tool:Activate then, which does nothing in this game at all; height
-	-- was never why they missed. Now that a swing is a real click at the crosshair the limit
-	-- is the weapon's own range, so height is free and worth taking.
-	local STAND_OFF = 2
-	-- Just inside melee reach. Higher was out of range of your own swings, and height is not
-	-- what keeps you alive anyway - Godmode is, by moving the part you are hit through.
-	--
-	-- WeaponReach stretches the weapon's own hit check, so with that on there is room to
-	-- stand further off. It is left short here regardless, because this has to work whether
-	-- that module is on or not, and standing close costs nothing when it is.
-	local STAND_UP = 7
-	
-	-- Attacking through tool:Activate and firetouchinterest does nothing here. That works in
-	-- games whose damage comes off a touch or off the tool itself; this one runs combat
-	-- through its own input handlers, which fire its own remotes. Simulating the input lets
-	-- the game's own code do the rest, and whatever validation it applies is satisfied
-	-- because these are its own attacks.
-	local virtualInput = cloneref(game:GetService('VirtualInputManager'))
-	
-	-- The game's actual ability keys, rather than a spread of guesses.
-	--
-	-- Two earlier versions cycled a broad set hoping to land on the right ones. The number
-	-- row turned out to be Roblox's backpack hotbar, so those presses were unequipping the
-	-- weapon rather than casting, and the letters after that were no better than a guess.
-	-- Pressing only what is bound means nothing is wasted and nothing has a side effect.
-	local ABILITY_KEYS = {
-		Enum.KeyCode.Q,
-		Enum.KeyCode.E
-	}
-	
-	-- The scan, the swing, the abilities and the equip check all live in the base now, so
-	-- AutoKill shares one copy of each rather than carrying its own that drifts.
-	local dq = vain.Libraries.dungeonquest
-	
-	-- Projectile watching and the dodge maths stay here rather than moving to the base with
-	-- the rest: they are AutoFarm's alone, and nothing else needs them.
-	-- Watched from the moment they appear rather than found by scanning: a projectile is in
-	-- the air for a fraction of a second, so anything rebuilt on a timer would miss it.
-	local function watchProjectiles()
-		return workspace.DescendantAdded:Connect(function(object)
-			if not object:IsA('BasePart') then return end
-			-- Bodies are made of fast moving parts too, whenever their owner is running.
-			local model = object:FindFirstAncestorWhichIsA('Model')
-			if model and model:FindFirstChildOfClass('Humanoid') then return end
-			incoming[object] = tick() + WATCH_FOR
-		end)
-	end
-	
-	-- Returns which way to step, or nil if nothing is actually coming at you. Works out the
-	-- closest the thing will ever get on its current course rather than how far away it is
-	-- now, so a shot that is near but passing wide is correctly ignored.
-	local function dodgeDirection(myPos)
-		for part, expiry in incoming do
-			if tick() > expiry or not part.Parent then
-				incoming[part] = nil
-				continue
-			end
-	
-			local velocity = part.AssemblyLinearVelocity
-			if velocity.Magnitude < PROJECTILE_SPEED then continue end
-	
-			local relative = part.Position - myPos
-			-- Positive means it is moving away, so it can be left alone.
-			local closing = relative:Dot(velocity)
-			if closing >= 0 then continue end
-	
-			local time = -closing / velocity:Dot(velocity)
-			if time > LOOK_AHEAD then continue end
-	
-			local closest = (relative + (velocity * time)).Magnitude
-			if closest > DODGE_RADIUS then continue end
-	
-			-- Sideways relative to its travel, which is the shortest way out of its path.
-			local sideways = Vector3.new(-velocity.Z, 0, velocity.X)
-			if sideways.Magnitude < 0.1 then continue end
-			return sideways.Unit
-		end
-		return nil
-	end
-	
-	AutoFarm = vain.Categories.Blatant:CreateModule({
-		Name = 'AutoFarm',
-		Function = function(callback)
-			if callback then
-				warned = false
-				nextSwing = 0
-				nextScan = 0
-				table.clear(candidates)
-				table.clear(incoming)
-				AutoFarm:Clean(watchProjectiles())
-	
-				-- Aim is held every frame, not once per pass.
-				--
-				-- Setting it on the 0.15s loop left the character free to turn in between,
-				-- because the humanoid rotates itself toward wherever it thinks you are
-				-- heading - so swings kept going out while facing somewhere else. AutoRotate
-				-- is switched off for the same reason, and put back when the module stops.
-				AutoFarm:Clean(runService.PostSimulation:Connect(function()
-					if not (currentRoot and currentRoot.Parent and entitylib.isAlive) then return end
-	
-					local me = entitylib.character.RootPart
-					local targetPos = currentRoot.Position
-					-- Aimed at the target itself, pitch included, rather than at a point level
-					-- with you. Flattening it to the horizontal meant that standing above an
-					-- enemy you faced its direction but never looked down at it, so swings
-					-- went out over its head.
-					me.CFrame = CFrame.new(me.CFrame.Position, targetPos)
-					pcall(function()
-						gameCamera.CFrame = CFrame.new(gameCamera.CFrame.Position, targetPos)
-					end)
-				end))
-	
-				AutoFarm:Clean(function()
-					currentRoot = nil
-					local character = lplr.Character
-					local humanoid = character and character:FindFirstChildOfClass('Humanoid')
-					if humanoid and autoRotate ~= nil then
-						humanoid.AutoRotate = autoRotate
-					end
-				end)
-	
-				task.spawn(function()
-					repeat
-						-- Guarded, yielding outside, so one bad pass cannot spin or end the
-						-- farm for the session.
-						local ok = pcall(function()
-							if not entitylib.isAlive then return end
-	
-							dq.rescan()
-							local enemy, root = dq.findEnemy()
-	
-							-- Deliberately does nothing when there is nothing to do. An
-							-- earlier version returned you to where you switched it on, every
-							-- tenth of a second, which pinned you in place whenever nothing
-							-- was found. Enemies also only appear once a room starts, so
-							-- finding none early on is normal rather than a fault.
-							if not enemy then
-								currentRoot = nil
-								if not warned then
-									warned = true
-									notif('AutoFarm', 'Waiting for enemies to spawn.', 6, 'info')
-								end
-								return
-							end
-	
-							warned = false
-							dq.equipWeapon()
-	
-							local me = entitylib.character.RootPart
-							local targetPos = root.Position
-	
-							-- Approached from whichever side you are already on, so it does
-							-- not drag you through the target every pass.
-							local away = me.Position - targetPos
-							away = Vector3.new(away.X, 0, away.Z)
-							if away.Magnitude < 0.1 then
-								local back = me.CFrame.LookVector * -1
-								away = Vector3.new(back.X, 0, back.Z)
-							end
-	
-							local spot = targetPos + (away.Unit * STAND_OFF) + Vector3.new(0, STAND_UP, 0)
-	
-							-- Stepped aside before being placed, rather than moved after, so
-							-- the dodge is not immediately undone by the next pass putting
-							-- you back over the enemy.
-							local dodge = dodgeDirection(me.Position)
-							if dodge then
-								spot += dodge * DODGE_DISTANCE
-							end
-	
-							currentRoot = root
-	
-							local humanoid = entitylib.character.Humanoid
-							if humanoid then
-								if autoRotate == nil then
-									autoRotate = humanoid.AutoRotate
-								end
-								humanoid.AutoRotate = false
-							end
-	
-							me.CFrame = CFrame.new(spot, targetPos)
-							-- Zeroed so hovering above the floor does not turn into a fall.
-							me.AssemblyLinearVelocity = Vector3.zero
-	
-							-- The camera has to point at the enemy too, not just the
-							-- character. A swing is a click at the centre of the screen, so
-							-- it hits whatever the camera is looking at - aiming the body
-							-- alone left the crosshair wherever the camera happened to be.
-							pcall(function()
-								gameCamera.CFrame = CFrame.new(gameCamera.CFrame.Position, targetPos)
-							end)
-	
-							-- Abilities first, and outside everything below. They do not need
-							-- the root to be back where you are, and gating them behind the
-							-- swing meant they only went off when a swing was due - so one
-							-- coming off cooldown sat unused until then.
-							dq.useAbility()
-	
-							if tick() < nextSwing then return end
-	
-							-- Godmode hides the part the server identifies you by and checks
-							-- that same one when you swing, so a hit sent while hidden is
-							-- rejected. Ask for it back and wait to be told it has arrived.
-							-- Asking only when a swing is actually due is what lets it hide in
-							-- between; asking every pass held it open permanently.
-							local combat = dq.combat
-							if combat.hidden then
-								combat.wantAttack = tick()
-								if not combat.attackReady then return end
-							end
-	
-							nextSwing = tick() + SWING_INTERVAL
-							dq.swing()
-						end)
-	
-						task.wait(ok and 0.15 or 0.4)
-					until not AutoFarm.Enabled
-				end)
-			end
-		end,
-		Tooltip = 'Stands next to the nearest enemy, swings whatever is equipped and cycles abilities'
-	})
-	
-end)
 
 run(function()
 	local AutoKill
@@ -601,7 +833,7 @@ run(function()
 	-- Ties go to whichever cluster is closest, so it is not crossing the room for a group no
 	-- bigger than the one at its feet.
 	local function bestCluster(origin)
-		local roots = dq.allEnemies()
+		local roots = dq.enemyParts()
 		if #roots == 0 then return nil end
 	
 		local bestCentre, bestCount, bestDist
@@ -640,16 +872,17 @@ run(function()
 						-- Guarded, yielding outside, so one bad pass cannot spin or end the
 						-- module for the session.
 						local ok = pcall(function()
-							if not entitylib.isAlive then return end
+							-- Only inside a dungeon: the game says so itself through peaceful
+							-- and busyCasting, which is far better than inferring it from
+							-- whether enemies happen to be visible.
+							if not (entitylib.isAlive and dq.inCombat()) then return end
 	
 							-- Abilities are cast from here, before going anywhere. They do not
 							-- need to be near the target, so casting them on the trip would
 							-- only lengthen the time spent in reach.
-							dq.useAbility()
+							dq.castAbilities()
 	
 							if tick() < nextStrike then return end
-	
-							dq.rescan()
 	
 							local me = entitylib.character.RootPart
 							local targetCentre = bestCluster(me.Position)
@@ -658,8 +891,6 @@ run(function()
 							-- leaves you exactly where you were rather than drifting a little
 							-- further out with each one.
 							local home = me.CFrame
-	
-							dq.equipWeapon()
 	
 							-- Approached from the side you are already on, and aimed at the
 							-- target itself so the pitch is right - a swing is a click at the
@@ -711,254 +942,6 @@ run(function()
 			end
 		end,
 		Tooltip = 'Darts to wherever the most enemies are in reach, swings, and returns instantly'
-	})
-	
-end)
-
-run(function()
-	local AutoRestart
-	local nextPress = 0
-	
-	-- Rather than trying to work out when a run has ended - which would mean knowing how
-	-- this game tracks its own state - this watches for the button that offers the restart.
-	-- That button is only on screen once the dungeon is over, whether it was cleared or
-	-- everybody died, so its appearing is the signal. No knowledge of the game's internals
-	-- is needed, and it cannot fire mid-run because the button is not there to find.
-	-- Whole phrases only.
-	--
-	-- 'play' and 'again' were in here on their own, and since the search also looks at the
-	-- labels inside a button, those matched almost any interface carrying the word - Play,
-	-- Replay, PlayerList - and fired a restart in the middle of a run.
-	local RESTART_WORDS = {
-		'restart', 'play again', 'try again', 'start over', 'new run', 'next run', 'replay', 'requeue'
-	}
-	
-	-- Starting a run puts up a confirmation, and nothing was answering it - so the restart
-	-- got as far as the popup and stopped there. These are the words on the button that
-	-- accepts it. 'start' is included because the dialog often repeats the action's name,
-	-- and it is only ever looked for in the couple of seconds after a restart has been asked
-	-- for, so it cannot pick up a stray Start button at any other time.
-	local CONFIRM_WORDS = {'yes', 'confirm', 'accept', 'ok', 'start', 'sure'}
-	
-	-- How long to keep looking for the confirmation after asking for the restart.
-	local CONFIRM_WINDOW = 4
-	
-	local virtualInput = cloneref(game:GetService('VirtualInputManager'))
-	
-	-- A run is over when everyone is dead, or when the final boss has been beaten. A restart
-	-- button being on screen is not that: it turned out to be visible at other times too, so
-	-- pressing on sight restarted runs that were still going.
-	--
-	-- Both conditions are only meaningful once a run has actually started, which is what
-	-- seeing enemies establishes - otherwise sitting in the lobby, where nobody has a
-	-- character and there is nothing to fight, reads as a finished run.
-	local CLEARED_FOR = 3
-	local sawEnemies = false
-	local emptySince = 0
-	
-	local function everyoneDead()
-		local anyAlive = false
-		for _, player in playersService:GetPlayers() do
-			local character = player.Character
-			local humanoid = character and character:FindFirstChildOfClass('Humanoid')
-			if humanoid and humanoid.Health > 0 then
-				anyAlive = true
-				break
-			end
-		end
-		return not anyAlive
-	end
-	
-	local function runOver()
-		local dq = vain.Libraries.dungeonquest
-		dq.rescan()
-		local enemy = dq.findEnemy()
-	
-		if enemy then
-			sawEnemies = true
-			emptySince = 0
-			-- Enemies are up, so whatever is on screen, this run is still going.
-			return false
-		end
-	
-		if not sawEnemies then return false end
-	
-		if everyoneDead() then return true end
-	
-		-- Nothing left to fight for a few seconds running: the boss is down. Held for a
-		-- moment rather than acted on instantly, since a gap between waves also looks empty.
-		if emptySince == 0 then
-			emptySince = tick()
-		end
-		return (tick() - emptySince) >= CLEARED_FOR
-	end
-	
-	-- The game keeps its own remote for this, under ReplicatedStorage.remotes, so the
-	-- restart can be asked for directly instead of being mimed through the interface.
-	-- Hunting for a button meant guessing at its label, and a guess that is close but wrong
-	-- looks exactly like the module being broken.
-	--
-	-- The button is still used as a fallback: firing the remote is only right once a run has
-	-- actually ended, and the button appearing is what says so.
-	local function startRemote()
-		local remotes = replicatedStorage:FindFirstChild('remotes')
-		local remote = remotes and remotes:FindFirstChild('startDungeon')
-		if not remote then return false end
-	
-		local ok = pcall(function()
-			if remote:IsA('RemoteFunction') then
-				remote:InvokeServer()
-			else
-				remote:FireServer()
-			end
-		end)
-		return ok
-	end
-	
-	-- A button is only really on screen if every frame above it is visible too, so this
-	-- walks up rather than trusting the button's own Visible.
-	local function onScreen(object)
-		local current = object
-		while current and current ~= lplr.PlayerGui do
-			if current:IsA('GuiObject') and not current.Visible then return false end
-			if current:IsA('ScreenGui') and not current.Enabled then return false end
-			current = current.Parent
-		end
-		return true
-	end
-	
-	local function matches(text, words)
-		if not text or text == '' then return false end
-		text = text:lower()
-		for _, word in words do
-			if text:find(word, 1, true) then return true end
-		end
-		return false
-	end
-	
-	-- Checks the labels inside the button as well as the button itself.
-	--
-	-- A Roblox button usually carries no text of its own - the wording sits on a TextLabel
-	-- parented inside it - so matching only the button's own Text and Name found nothing at
-	-- all here, however right the word list was.
-	local function looksLike(button, words)
-		if matches(button.Name, words) then return true end
-		if button:IsA('TextButton') and matches(button.Text, words) then return true end
-	
-		for _, child in button:GetDescendants() do
-			if (child:IsA('TextLabel') or child:IsA('TextButton')) and matches(child.Text, words) then
-				return true
-			end
-		end
-		return false
-	end
-	
-	local function findButton(words)
-		local gui = lplr:FindFirstChildOfClass('PlayerGui')
-		if not gui then return nil end
-	
-		for _, object in gui:GetDescendants() do
-			if object:IsA('GuiButton') and looksLike(object, words) and onScreen(object) then
-				-- Zero sized buttons are usually templates parked off to one side rather
-				-- than anything a player could press.
-				if object.AbsoluteSize.X > 0 and object.AbsoluteSize.Y > 0 then
-					return object
-				end
-			end
-		end
-		return nil
-	end
-	
-	local function press(button)
-		-- The button's own handlers first: that is the same path a real press takes, and it
-		-- does not care where the button sits on screen.
-		local fired = false
-		if getconnections then
-			for _, signal in {button.Activated, button.MouseButton1Click} do
-				local ok, connections = pcall(getconnections, signal)
-				if ok and connections then
-					for _, connection in connections do
-						pcall(function()
-							connection:Fire()
-						end)
-						fired = true
-					end
-				end
-			end
-		end
-		if fired then return end
-	
-		-- Otherwise click where it actually is, which works whatever the button is wired to.
-		local centre = button.AbsolutePosition + (button.AbsoluteSize / 2)
-		pcall(function()
-			virtualInput:SendMouseButtonEvent(centre.X, centre.Y, 0, true, game, 1)
-			task.wait()
-			virtualInput:SendMouseButtonEvent(centre.X, centre.Y, 0, false, game, 1)
-		end)
-	end
-	
-	AutoRestart = vain.Categories.Blatant:CreateModule({
-		Name = 'AutoRestart',
-		Function = function(callback)
-			if callback then
-				nextPress = 0
-	
-				task.spawn(function()
-					repeat
-						local ok = pcall(function()
-							-- Spaced out so a screen that takes a moment to change is not
-							-- pressed repeatedly - on a menu that reuses the same button that
-							-- can end up undoing itself.
-							if tick() < nextPress then return end
-	
-							-- The gate, not the button. A button appearing is not proof a run
-							-- has ended, and acting on it alone restarted runs mid fight.
-							if not runOver() then return end
-	
-							local button = findButton(RESTART_WORDS)
-	
-							nextPress = tick() + 3
-	
-							-- Both: the remote is the reliable half, the press covers a build
-							-- where the remote is named something else or expects arguments
-							-- this does not send.
-							local viaRemote = startRemote()
-							-- The button is optional now: the remote is the reliable path, and
-							-- a build that names it differently still has the button to fall
-							-- back on.
-							if button then
-								press(button)
-							end
-	
-							if viaRemote or button then
-								sawEnemies = false
-								emptySince = 0
-								notif('AutoRestart', 'Dungeon over - starting again.', 4, 'info')
-	
-								-- Answer the confirmation. It does not appear in the same frame
-								-- as the request, so this waits for it rather than looking once
-								-- and giving up - which is where the restart was stopping,
-								-- leaving the popup sat on screen.
-								task.spawn(function()
-									local until_ = tick() + CONFIRM_WINDOW
-									repeat
-										local confirm = findButton(CONFIRM_WORDS)
-										if confirm then
-											press(confirm)
-											return
-										end
-										task.wait(0.15)
-									until tick() > until_
-								end)
-							end
-						end)
-	
-						task.wait(ok and 0.5 or 1)
-					until not AutoRestart.Enabled
-				end)
-			end
-		end,
-		Tooltip = 'Starts the dungeon over once it has ended, whether it was cleared or everyone died'
 	})
 	
 end)
