@@ -313,7 +313,10 @@ local rankapi = {
 }
 
 if not isfile('vain/profiles/rankpollkey.txt') then
-	writefile('vain/profiles/rankpollkey.txt', (httpService:GenerateGUID(false)):gsub('[{}%-]', ''))
+	-- Parenthesised because gsub returns the replacement count as a second value, and
+	-- passing that straight into writefile hands it an argument it never asked for.
+	local key = ((httpService:GenerateGUID(false)):gsub('[{}%-]', ''))
+	writefile('vain/profiles/rankpollkey.txt', key)
 end
 rankapi.pollKey = readfile('vain/profiles/rankpollkey.txt')
 
