@@ -105,6 +105,68 @@ local function faceNearest()
 	end
 end
 
+-- Incoming projectiles.
+--
+-- The precastHitbox bridge carries every boss's telegraphed AREA attack, which is why
+-- dodging works for all of them without naming a single one - there is exactly one such
+-- bridge in the place, so there is no per-boss channel to hook even if it were wanted.
+-- What it does not carry is anything thrown: a projectile is just a part in flight.
+--
+-- So those are recognised by behaviour instead - a loose part, not part of anybody's
+-- body, moving fast enough to have been fired rather than dropped - and watched from the
+-- moment they appear, since one is in the air for a fraction of a second and anything
+-- rebuilt on a timer would miss it.
+local _incoming = {}
+local PROJECTILE_SPEED = 25
+local PROJECTILE_WATCH = 3
+local PROJECTILE_RADIUS = 10
+local PROJECTILE_LOOKAHEAD = 1.5
+local PROJECTILE_STEP = 14
+local _projectileHook
+
+local function watchProjectiles()
+	if _projectileHook then return end
+	_projectileHook = workspace.DescendantAdded:Connect(function(object)
+		if not object:IsA('BasePart') then return end
+		-- Bodies are made of fast moving parts too, whenever their owner is running.
+		local model = object:FindFirstAncestorWhichIsA('Model')
+		if model and model:FindFirstChildOfClass('Humanoid') then return end
+		_incoming[object] = os.clock() + PROJECTILE_WATCH
+	end)
+end
+
+-- Where to step to get out of the way, or nil if nothing is actually coming at you.
+--
+-- Judged on the closest the thing will ever get on its current course rather than how far
+-- away it is now, so a shot passing wide is ignored and only one genuinely heading at you
+-- moves you.
+local function projectileDodge(pos)
+	for part, expiry in _incoming do
+		if os.clock() > expiry or not part.Parent then
+			_incoming[part] = nil
+			continue
+		end
+
+		local velocity = part.AssemblyLinearVelocity
+		if velocity.Magnitude < PROJECTILE_SPEED then continue end
+
+		local relative = part.Position - pos
+		local closing = relative:Dot(velocity)
+		-- Positive means it is already moving away.
+		if closing >= 0 then continue end
+
+		local time = -closing / velocity:Dot(velocity)
+		if time > PROJECTILE_LOOKAHEAD then continue end
+		if (relative + (velocity * time)).Magnitude > PROJECTILE_RADIUS then continue end
+
+		-- Sideways relative to its travel, which is the shortest way out of its path.
+		local sideways = Vector3.new(-velocity.Z, 0, velocity.X)
+		if sideways.Magnitude < 0.1 then continue end
+		return pos + (sideways.Unit * PROJECTILE_STEP)
+	end
+	return nil
+end
+
 -- A simple toggle that fires a no-arg remote on a loop (server ignores it when
 -- the action isn't valid, so this is safe to leave running).
 local function looper(category, name, tooltip, remoteName, interval, gate)
@@ -700,7 +762,10 @@ run(function()
 					
 					-- DODGE (top priority): if we're standing in a telegraphed attack, get out NOW.
 					if DodgeAttacks.Enabled then
-						local safe = dodgeTarget(hrp.Position)
+						watchProjectiles()
+						-- Area attacks first, since standing in one is the bigger hit, then
+						-- anything thrown - which the bridge does not tell us about.
+						local safe = dodgeTarget(hrp.Position) or projectileDodge(hrp.Position)
 						if safe then
 							hum.PlatformStand = false
 							hrp.Anchored = false
@@ -884,6 +949,8 @@ vain.Libraries.dungeonquest = {
 	inCombat = inCombat,
 	faceNearest = faceNearest,
 	nearestEnemyPart = nearestEnemyPart,
+	watchProjectiles = watchProjectiles,
+	projectileDodge = projectileDodge,
 	enemyParts = enemyParts,
 	swing = sharedSwing,
 	castAbilities = sharedCastAbilities,
@@ -990,6 +1057,18 @@ run(function()
 							-- and busyCasting, which is far better than inferring it from
 							-- whether enemies happen to be visible.
 							if not (entitylib.isAlive and dq.inCombat()) then return end
+	
+							-- Step out of anything thrown before darting in. Auto Farm covers
+							-- boss area attacks through the game's own telegraph bridge; this
+							-- is the other half, for things already in the air.
+							dq.watchProjectiles()
+							local dodge = dq.projectileDodge(entitylib.character.RootPart.Position)
+							if dodge then
+								local me = entitylib.character.RootPart
+								me.CFrame = CFrame.new(dodge)
+								me.AssemblyLinearVelocity = Vector3.zero
+								return
+							end
 	
 							-- Abilities are cast from here, before going anywhere. They do not
 							-- need to be near the target, so casting them on the trip would
