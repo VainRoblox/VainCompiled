@@ -757,6 +757,9 @@ run(function()
 						else
 							hrp.Anchored = false
 							hum.PlatformStand = false
+							-- Same reason as above: walking toward an enemy while still
+							-- carrying a throw means fighting it the whole way.
+							hrp.AssemblyLinearVelocity = Vector3.zero
 							hum:Move((part.Position - hrp.Position) * Vector3.new(1, 0, 1))
 							faceNearest()
 						end
@@ -768,6 +771,16 @@ run(function()
 						-- room clear: unanchor and nudge forward to trigger the next room
 						hrp.Anchored = false
 						hum.PlatformStand = false
+
+						-- Knockback is shed before nudging, and this is what stops the farm
+						-- running away with itself. Every other branch zeroes velocity;
+						-- this one did not, so being knocked while no enemy was in range
+						-- left the throw still carrying you - and since it carries you
+						-- further from the enemies, the next pass finds none either and
+						-- nudges again. That feedback is the "flies off and never comes
+						-- back" case: nothing was wrong with the teleport, there was just
+						-- nothing left to teleport to.
+						hrp.AssemblyLinearVelocity = Vector3.zero
 						hum:Move(hrp.CFrame.LookVector * Vector3.new(1, 0, 1))
 					end
 				end)
