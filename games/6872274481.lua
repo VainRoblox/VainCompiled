@@ -47,6 +47,8 @@ for old, new in {
 	['Break speed'] = 'Break Speed',
 	['Update rate'] = 'Update Rate',
 	['Limit to items'] = 'Limit to Items',
+	Quantity = 'Show Amount',
+	['Full Layers'] = 'Highlight Full Layers',
 	Camera = 'View Mode',
 	['Camera Mode'] = 'View Mode'
 } do
@@ -20956,14 +20958,14 @@ run(function()
 		Suffix = 'hz'
 	})
 	Quantity = BedPlates:CreateToggle({
-		Name = 'Quantity',
+		Name = 'Show Amount',
 		Tooltip = 'Shows how many of each block there are',
 		Function = refreshAll,
 		Default = true
 	})
 	FullLayers = BedPlates:CreateToggle({
-		Name = 'Full Layers',
-		Tooltip = 'Highlights blocks that cover a whole layer on their own',
+		Name = 'Highlight Full Layers',
+		Tooltip = 'Marks blocks that cover a whole layer on their own',
 		Function = function(callback)
 			if FullColor.Object then
 				FullColor.Object.Visible = callback
