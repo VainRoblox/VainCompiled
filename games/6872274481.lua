@@ -1076,8 +1076,25 @@ run(function()
 	-- gets broken, so this is what a target mode has to steer. Without one, the near side
 	-- wins unless it would cost substantially more to get through, which is the
 	-- difference between reaching around a thin wall and mining through a thick one.
-	local function pickEntry(exposed, maxRange, score, prefer)
+	local function pickEntry(exposed, maxRange, score, prefer, maxAngle)
 		local origin = entitylib.isAlive and entitylib.character.RootPart.Position
+		-- Only worth resolving when the cone is actually narrowed; a full half turn either
+		-- side takes in everything, which is what the setting sits at by default.
+		local camera = maxAngle and maxAngle < 180 and workspace.CurrentCamera or nil
+
+		-- Both limits on where a dig may start: how far you can reach, and how far off
+		-- the way you are looking it is allowed to be.
+		local function allowed(node, reach)
+			if maxRange and origin and reach > maxRange then return false end
+			if camera then
+				local dir = node - camera.CFrame.Position
+				if dir.Magnitude > 0 then
+					local facing = camera.CFrame.LookVector:Dot(dir.Unit)
+					if math.deg(math.acos(math.clamp(facing, -1, 1))) > maxAngle then return false end
+				end
+			end
+			return true
+		end
 
 		-- Carry on down the hole already started instead of shaving another block off the
 		-- outer face. prefer is the whole remaining route, nearest end first, and the
@@ -1087,7 +1104,7 @@ run(function()
 		-- the outer face - which is never the block at the back of the hole.
 		if prefer then
 			for _, node in prefer do
-				if exposed[node] and (not (maxRange and origin) or (node - origin).Magnitude <= maxRange) then
+				if exposed[node] and allowed(node, origin and (node - origin).Magnitude or 0) then
 					return node, exposed[node], -math.huge
 				end
 			end
@@ -1099,7 +1116,7 @@ run(function()
 
 		for node, cost in exposed do
 			local reach = origin and (node - origin).Magnitude or 0
-			if maxRange and origin and reach > maxRange then continue end
+			if not allowed(node, reach) then continue end
 
 			if score then
 				local key = score(node, cost, reach)
@@ -1130,11 +1147,11 @@ run(function()
 	-- directly - so a Self Break check on the target alone never prevented your own
 	-- blocks being destroyed on the way there. The flag is part of the cache entry
 	-- because the same target has two different cheapest routes depending on it.
-	local function calculatePath(target, blockpos, avoidOwn, maxRange, score, prefer)
+	local function calculatePath(target, blockpos, avoidOwn, maxRange, score, prefer, maxAngle)
 		avoidOwn = avoidOwn == true
 		local cached = cache[blockpos]
 		if cached and cached[4] == avoidOwn then
-			local pos, cost, key = pickEntry(cached[5], maxRange, score, prefer)
+			local pos, cost, key = pickEntry(cached[5], maxRange, score, prefer, maxAngle)
 			if pos then
 				return pos, cost, cached[3], key
 			end
@@ -1193,7 +1210,7 @@ run(function()
 			exposed
 		}
 
-		local pos, cost, key = pickEntry(exposed, maxRange, score, prefer)
+		local pos, cost, key = pickEntry(exposed, maxRange, score, prefer, maxAngle)
 		if pos then
 			return pos, cost, path, key
 		end
@@ -1278,13 +1295,14 @@ run(function()
 		return into
 	end
 
-	-- options: Range caps how far the block being broken may be, Score ranks the ways in,
-	-- Prefer is a route to carry on down, and Route is filled in with the one taken.
+	-- options: Range caps how far the block being broken may be, Angle how far off your
+	-- view it may sit, Score ranks the ways in, Prefer is a route to carry on down, and
+	-- Route is filled in with the one taken.
 	bedwars.breakBlock = function(block, effects, anim, customHealthbar, avoidOwn, autoTool, options)
 		if lplr:GetAttribute('DenyBlockBreak') or not entitylib.isAlive or InfiniteFly.Enabled then return end
 		options = options or {}
 		local maxRange = math.min(options.Range or 30, 30)
-		local entryScore, prefer = options.Score, options.Prefer
+		local entryScore, prefer, maxAngle = options.Score, options.Prefer, options.Angle
 		local cost, pos, target, path = math.huge
 		-- A bed covers several block positions, each with its own way in. They are
 		-- compared on whatever the target mode is ranking by, so the mode's pick is not
@@ -1292,7 +1310,7 @@ run(function()
 		local bestkey = math.huge
 
 		for _, v in containedPositions(block) do
-			local dpos, dcost, dpath, dkey = calculatePath(block, v * 3, avoidOwn, maxRange, entryScore, prefer)
+			local dpos, dcost, dpath, dkey = calculatePath(block, v * 3, avoidOwn, maxRange, entryScore, prefer, maxAngle)
 			dkey = dkey or dcost
 			if dpos and dkey < bestkey then
 				bestkey, cost, pos, target, path = dkey, dcost, dpos, v * 3, dpath
@@ -20999,6 +21017,7 @@ run(function()
 	local Range
 	local BreakSpeed
 	local UpdateRate
+	local Angle
 	local TargetMode
 	local ViewMode
 	local Custom
@@ -21344,6 +21363,7 @@ run(function()
 				end
 	
 				breakOptions.Range = Range.Value
+				breakOptions.Angle = Angle.Value
 				breakOptions.Score = entryScorers[TargetMode.Value]
 				-- Read on the way in and refilled on the way out, so the route carries from
 				-- one hit to the next. A break that never went out leaves it untouched.
@@ -21500,6 +21520,14 @@ run(function()
 		Default = 0.25,
 		Decimal = 100,
 		Suffix = 'seconds'
+	})
+	Angle = Nuker:CreateSlider({
+		Name = 'Angle',
+		Tooltip = 'How far from where you are looking a block may be\n180 breaks behind you too',
+		Min = 1,
+		Max = 180,
+		Default = 180,
+		Suffix = 'degrees'
 	})
 	UpdateRate = Nuker:CreateSlider({
 		Name = 'Update Rate',
