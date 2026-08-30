@@ -21412,18 +21412,22 @@ run(function()
 				breakOptions.Prefer = route
 				breakOptions.Route = route
 	
-				local target, path, endpos = bedwars.breakBlock(v, Effect.Enabled, Animation.Enabled, CustomHealth.Enabled and customHealthbar or nil, not SelfBreak.Enabled, AutoTool.Enabled, breakOptions)
+				local target, _, endpos = bedwars.breakBlock(v, Effect.Enabled, Animation.Enabled, CustomHealth.Enabled and customHealthbar or nil, not SelfBreak.Enabled, AutoTool.Enabled, breakOptions)
 				if not target then return end
 				broke = true
 	
-				if Effect.Enabled and path then
-					local currentnode = target
-					for _, part in parts do
-						part.Position = currentnode or Vector3.zero
-						if currentnode then
-							part.BoxHandleAdornment.Color3 = currentnode == endpos and Color3.new(1, 0.2, 0.2) or currentnode == target and Color3.new(0.2, 0.2, 1) or Color3.new(0.2, 1, 0.2)
+				-- Drawn from the route being followed rather than from a freshly worked out
+				-- one. Those are the same length but tie constantly, so the recomputed one
+				-- drifts between equally short alternatives on every hit - it was drawing a
+				-- detour while the blocks actually coming down ran perfectly straight.
+				if Effect.Enabled then
+					local from = table.find(route, target) or 1
+					for i, part in parts do
+						local pos = route[from + i - 1]
+						part.Position = pos or Vector3.zero
+						if pos then
+							part.BoxHandleAdornment.Color3 = pos == endpos and Color3.new(1, 0.2, 0.2) or pos == target and Color3.new(0.2, 0.2, 1) or Color3.new(0.2, 1, 0.2)
 						end
-						currentnode = path[currentnode]
 					end
 				end
 			end)
