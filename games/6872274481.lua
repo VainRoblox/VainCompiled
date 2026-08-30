@@ -20085,21 +20085,34 @@ local function hasEffect(effect)
 	return lplr.Character and lplr.Character:GetAttribute('StatusEffect_'..effect)
 end
 
--- Food is for when your health is going the wrong way. Health ticking back up is still a
--- change and still under the threshold, so answering it meant eating another apple part
--- way through the one already working, and a golden apple's regen would eat the lot.
--- Holding steady still counts: that is being hurt and not recovering.
-local function notRecovering()
+--[[
+	Food is only for the moment your health actually drops.
+
+	Anything else that runs this check would otherwise reach for an apple purely because
+	your health happened to be low at the time. Health ticking back up is a change, so
+	regenerating ate the rest of the stack part way through the apple already working; and
+	placing a block is an inventory change, so building while hurt started a consume on
+	every single block and left you unable to build at all.
+
+	The first look is allowed through, so switching this on while already hurt heals you
+	rather than waiting for the next hit.
+]]
+local function healthDropped()
 	local current = lplr.Character and lplr.Character:GetAttribute('Health')
 	if not current then return false end
 
 	local previous = lastHealth
 	lastHealth = current
-	return previous == nil or current <= previous
+	return previous == nil or current < previous
 end
 
 local function consumeCheck(attribute)
 	if not entitylib.isAlive then return end
+
+	-- Worked out up front rather than inside the food branch, so the reading stays current
+	-- even while food is switched off and there is no stale one to compare against later.
+	local healthEvent = (not attribute) or attribute:find('Health') ~= nil
+	local dropped = healthEvent and healthDropped()
 
 	if potions then
 		for _, potion in potions do
@@ -20114,7 +20127,7 @@ local function consumeCheck(attribute)
 		end
 	end
 
-	if Apple.Enabled and (not attribute or attribute:find('Health')) and notRecovering() then
+	if Apple.Enabled and healthEvent and dropped then
 		if (lplr.Character:GetAttribute('Health') / lplr.Character:GetAttribute('MaxHealth')) <= (Health.Value / 100) then
 			-- Golden apples come before plain ones, and only while their buff is not
 			-- already running - eating a second one on top of the first is wasted.
