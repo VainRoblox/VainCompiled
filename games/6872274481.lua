@@ -21352,11 +21352,25 @@ run(function()
 	-- answers are held for the length of one pass and dropped with the candidates.
 	local hitsCache = {}
 	
-	-- Where the last block to come down anywhere was, so a dig can follow the damage.
-	local lastBreak = nil
+	--[[
+		Cursor and Recently Hit are steered by hand rather than run on their own. Both name
+		a single block to dig from and nothing else is allowed, so pointing at nothing that
+		leads anywhere means nothing gets broken.
 	
-	local function cursorPosition()
-		return inputService.TouchEnabled and gameCamera.ViewportSize / 2 or inputService:GetMouseLocation()
+		Which block you are on comes from the game's own selector, so it agrees exactly with
+		what the game thinks you are pointing at, range and obstructions included.
+	]]
+	local BLOCK_SELECT = 1
+	local cursorTarget = nil
+	local manualHit = nil
+	
+	local function cursorBlock()
+		local ok, info = pcall(function()
+			return bedwars.BlockEngine:getBlockSelector():getMouseInfo(BLOCK_SELECT)
+		end)
+		local ref = ok and info and info.target and info.target.blockRef
+		local pos = ref and ref.blockPosition
+		return pos and (pos * 3) or nil
 	end
 	
 	local function blockHitsAt(node)
@@ -21403,18 +21417,21 @@ run(function()
 		Random = function(node)
 			return randomKey(node)
 		end,
+		-- Both of these answer for exactly one block and refuse the rest. Nothing under the
+		-- cursor, or nothing hit yet, means no way in is offered and so nothing is mined.
 		Cursor = function(node)
-			local screen, visible = gameCamera:WorldToViewportPoint(node)
-			if not visible then return math.huge end
-			return (cursorPosition() - Vector2.new(screen.X, screen.Y)).Magnitude
+			return (cursorTarget and node == cursorTarget) and 0 or nil
 		end,
-		-- Falls back to whatever is nearest until something has actually broken, so the mode
-		-- does nothing surprising at the start of a round.
-		['Recently Hit'] = function(node, _, reach)
-			if not lastBreak then return reach end
-			return (node - lastBreak).Magnitude
+		['Recently Hit'] = function(node)
+			return (manualHit and node == manualHit) and 0 or nil
 		end
 	}
+	
+	-- Cursor is re-aimed every pass, so moving off a block drops it straight away and it
+	-- keeps no route at all. Every other mode, Recently Hit included, keeps the route it
+	-- had: Recently Hit sees the tunnel through to the bed until you strike a different
+	-- block, and the rest are untouched.
+	local NO_ROUTE = {Cursor = true}
 	
 	-- What to go for is fixed: beds first, then whatever else is switched on, nearest of
 	-- each. Which block gets broken on the way in is the target mode's job, and that is
@@ -21465,7 +21482,9 @@ run(function()
 				breakOptions.Score = entryScorers[TargetMode.Value]
 				-- Read on the way in and refilled on the way out, so the route carries from
 				-- one hit to the next. A break that never went out leaves it untouched.
-				breakOptions.Prefer = route
+				-- Cursor keeps no route at all: you are aiming it, so the block you are on
+				-- wins over anything it was part way through.
+				breakOptions.Prefer = not NO_ROUTE[TargetMode.Value] and route or nil
 				breakOptions.Route = route
 	
 				local target, _, endpos = bedwars.breakBlock(v, Effect.Enabled, Animation.Enabled, CustomHealth.Enabled and customHealthbar or nil, not SelfBreak.Enabled, AutoTool.Enabled, breakOptions)
@@ -21519,9 +21538,19 @@ run(function()
 					table.insert(parts, part)
 				end
 	
-				Nuker:Clean(vainEvents.BreakBlockEvent.Event:Connect(function(data)
-					lastBreak = data.blockRef.blockPosition * 3
-				end))
+				-- onBreak is the game's own swing at a block. Nuker never goes through it - it
+				-- calls the damage remote straight out - so its own hits cannot move the block
+				-- you picked, which is the whole point of steering it by hand.
+				pcall(function()
+					Nuker:Clean(bedwars.BlockBreaker.onBreak:Connect(function()
+						local hit = cursorBlock()
+						if hit and hit ~= manualHit then
+							manualHit = hit
+							-- Struck somewhere new, so nothing part way through is carried over.
+							table.clear(tunnel)
+						end
+					end))
+				end)
 	
 				local beds = collection('bed', Nuker)
 				-- Teslas carry a real tag, so they are collected rather than name matched.
@@ -21547,6 +21576,7 @@ run(function()
 						end
 	
 						local localPosition = entitylib.character.RootPart.Position
+						cursorTarget = TargetMode.Value == 'Cursor' and cursorBlock() or nil
 						table.clear(candidates)
 						table.clear(hitsCache)
 						gather(Bed.Enabled and beds, RANK_BED, localPosition)
@@ -21567,7 +21597,7 @@ run(function()
 					end
 				until not Nuker.Enabled
 			else
-				lastBreak = nil
+				cursorTarget, manualHit = nil, nil
 				clearHealthbar()
 				table.clear(candidates)
 				table.clear(hitsCache)
@@ -21591,8 +21621,8 @@ run(function()
 		Tooltips = {
 			Smart = 'Nearest side in, unless it is much thicker',
 			Nearest = 'Closest block to you',
-			Cursor = 'Whatever is under your cursor',
-			['Recently Hit'] = 'Closest to the last block broken',
+			Cursor = 'Only what is under your cursor',
+			['Recently Hit'] = 'Digs on from the last block you hit',
 			Farthest = 'Furthest block still in range',
 			Health = 'Weakest block, your tool counted',
 			Shortest = 'Fewest blocks through to the bed',
