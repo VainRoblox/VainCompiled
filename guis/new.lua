@@ -28,6 +28,11 @@ local mainapi = {
 	RainbowSpeed = {Value = 1},
 	RainbowUpdateSpeed = {Value = 60},
 	RainbowTable = {},
+	-- Saved profiles are keyed by name, so renaming a module or a setting would drop
+	-- everything saved under the old key. Game files register the old name here and it
+	-- is only consulted when the saved name matches nothing, which keeps a rename in one
+	-- game from reaching into another that still uses that name.
+	Renames = {Modules = {}, Options = {}},
 	Scale = {Value = 1},
 	ThreadFix = setthreadidentity and true or false,
 	ToggleNotifications = {},
@@ -935,6 +940,12 @@ components = {
 			})
 		end)
 		slider:GetPropertyChangedSignal('Visible'):Connect(function()
+			-- Restoring a saved config flips these from a deferred thread that never carried the
+			-- executor identity, so every Instance touched here threw 'lacking capability
+			-- Plugin' until the identity was raised first, the same as Targets does.
+			if mainapi.ThreadFix then
+				setthreadidentity(8)
+			end
 			satSlider.Visible = expand.Rotation == 180 and slider.Visible
 			vibSlider.Visible = satSlider.Visible
 			opSlider.Visible = satSlider.Visible
@@ -1177,6 +1188,9 @@ components = {
 		}, children, api)
 		
 		fontdropdown.Object:GetPropertyChangedSignal('Visible'):Connect(function()
+			if mainapi.ThreadFix then
+				setthreadidentity(8)
+			end
 			fontbox.Object.Visible = fontdropdown.Object.Visible and fontdropdown.Value == 'Custom'
 		end)
 		
@@ -5512,7 +5526,7 @@ function mainapi:Load(skipgui, profile)
 		end
 
 		for i, v in savedata.Modules do
-			local object = self.Modules[i]
+			local object = self.Modules[i] or self.Modules[self.Renames.Modules[i] or '']
 			if not object then continue end
 			if object.Options and v.Options then
 				self:LoadOptions(object, v.Options)
@@ -5591,7 +5605,7 @@ end
 
 function mainapi:LoadOptions(object, savedoptions)
 	for i, v in savedoptions do
-		local option = object.Options[i]
+		local option = object.Options[i] or object.Options[self.Renames.Options[i] or '']
 		if not option then continue end
 		option:Load(v)
 	end

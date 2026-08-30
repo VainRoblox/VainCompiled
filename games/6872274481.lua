@@ -32,6 +32,27 @@ local lplr = playersService.LocalPlayer
 local assetfunction = getcustomasset
 
 local vain = shared.vain
+
+-- Profiles key everything by name, so a rename would otherwise silently reset whatever
+-- was saved under the old one. These are consulted only when the saved name matches
+-- nothing, so a name still in use by another game is never redirected.
+vain.Renames = vain.Renames or {Modules = {}, Options = {}}
+for old, new in {
+	Breaker = 'Nuker'
+} do
+	vain.Renames.Modules[old] = new
+end
+for old, new in {
+	['Break range'] = 'Break Range',
+	['Break speed'] = 'Break Speed',
+	['Update rate'] = 'Update Rate',
+	['Limit to items'] = 'Limit to Items',
+	Camera = 'View Mode',
+	['Camera Mode'] = 'View Mode'
+} do
+	vain.Renames.Options[old] = new
+end
+
 local entitylib = vain.Libraries.entity
 local targetinfo = vain.Libraries.targetinfo
 local sessioninfo = vain.Libraries.sessioninfo
@@ -1016,9 +1037,16 @@ run(function()
 		Pathfinding using a luau version of dijkstra's algorithm
 		Source: https://stackoverflow.com/questions/39355587/speeding-up-dijkstras-algorithm-to-solve-a-3d-maze
 	]]
-	local function calculatePath(target, blockpos)
-		if cache[blockpos] then
-			return unpack(cache[blockpos])
+	-- avoidOwn routes the tunnel around blocks you placed yourself. The path is what
+	-- actually gets broken - breakBlock digs along it rather than hitting the target
+	-- directly - so a Self Break check on the target alone never prevented your own
+	-- blocks being destroyed on the way there. The flag is part of the cache entry
+	-- because the same target has two different cheapest routes depending on it.
+	local function calculatePath(target, blockpos, avoidOwn)
+		avoidOwn = avoidOwn == true
+		local cached = cache[blockpos]
+		if cached and cached[4] == avoidOwn then
+			return cached[1], cached[2], cached[3]
 		end
 		local visited, unvisited, distances, air, path = {}, {{0, blockpos}}, {[blockpos] = 0}, {}, {}
 
@@ -1033,7 +1061,8 @@ run(function()
 				if visited[side] then continue end
 
 				local block = getPlacedBlock(side)
-				if not block or block:GetAttribute('NoBreak') or block == target then
+				if not block or block:GetAttribute('NoBreak') or block == target
+					or (avoidOwn and block:GetAttribute('PlacedByUserId') == lplr.UserId) then
 					if not block then
 						air[node[2]] = true
 					end
@@ -1060,7 +1089,8 @@ run(function()
 			cache[blockpos] = {
 				pos,
 				cost,
-				path
+				path,
+				avoidOwn
 			}
 			return pos, cost, path
 		end
@@ -1073,13 +1103,34 @@ run(function()
 		end
 	end
 
-	bedwars.breakBlock = function(block, effects, anim, customHealthbar)
-		if lplr:GetAttribute('DenyBlockBreak') or not entitylib.isAlive or InfiniteFly.Enabled then return end
+	-- Every position a block occupies, so multi-part blocks are pathed to correctly.
+	local function containedPositions(block)
 		local handler = bedwars.BlockController:getHandlerRegistry():getHandler(block.Name)
+		return handler and handler:getContainedPositions(block) or {block.Position / 3}
+	end
+
+	-- Total hits needed to tunnel to a block, block strength included. Backs Nuker's
+	-- Shortest target mode; the result comes out of the same cache the break itself
+	-- uses, so asking for it costs nothing once the route has been walked.
+	bedwars.getBlockPathCost = function(block, avoidOwn)
+		local cost = math.huge
+		for _, v in containedPositions(block) do
+			local dpos, dcost = calculatePath(block, v * 3, avoidOwn)
+			if dpos and dcost < cost then
+				cost = dcost
+			end
+		end
+		return cost
+	end
+	bedwars.getBlockHealth = getBlockHealth
+	bedwars.getBlockHits = getBlockHits
+
+	bedwars.breakBlock = function(block, effects, anim, customHealthbar, avoidOwn)
+		if lplr:GetAttribute('DenyBlockBreak') or not entitylib.isAlive or InfiniteFly.Enabled then return end
 		local cost, pos, target, path = math.huge
 
-		for _, v in (handler and handler:getContainedPositions(block) or {block.Position / 3}) do
-			local dpos, dcost, dpath = calculatePath(block, v * 3)
+		for _, v in containedPositions(block) do
+			local dpos, dcost, dpath = calculatePath(block, v * 3, avoidOwn)
 			if dpos and dcost < cost then
 				cost, pos, target, path = dcost, dpos, v * 3, dpath
 			end
@@ -1089,6 +1140,9 @@ run(function()
 			if (entitylib.character.RootPart.Position - pos).Magnitude > 30 then return end
 			local dblock, dpos = getPlacedBlock(pos)
 			if not dblock then return end
+			-- The route is meant to avoid these already; this catches the case where the
+			-- target itself is one of your own blocks.
+			if avoidOwn and dblock:GetAttribute('PlacedByUserId') == lplr.UserId then return end
 
 			if (workspace:GetServerTimeNow() - bedwars.SwordController.lastAttack) > 0.4 then
 				local breaktype = bedwars.ItemMeta[dblock.Name].block.breakType
@@ -1115,21 +1169,35 @@ run(function()
 					end
 
 					if effects then
-						local blockdmg = (blockhealthbar.blockHealth - (result == 'destroyed' and 0 or getBlockHealth(dblock, dpos)))
-						customHealthbar = customHealthbar or bedwars.BlockBreaker.updateHealthbar
-						customHealthbar(bedwars.BlockBreaker, {blockPosition = dpos}, blockhealthbar.blockHealth, dblock:GetAttribute('MaxHealth'), blockdmg, dblock)
-						blockhealthbar.blockHealth = math.max(blockhealthbar.blockHealth - blockdmg, 0)
+						-- BlockBreakController builds a fresh blockBreaker (and with it the
+						-- BlockHealthbar that actually draws the bar) when it re-enables, so
+						-- the reference captured at load goes stale and the game's own
+						-- healthbar quietly stops appearing. Resolve it live instead.
+						local breaker = bedwars.Knit.Controllers.BlockBreakController.blockBreaker or bedwars.BlockBreaker
+						local meta = bedwars.ItemMeta[dblock.Name]
+						-- BlockHealthbar:show compares maxHealth against 0, so a nil one
+						-- throws inside the promise and takes the whole break down with it.
+						local maxhealth = dblock:GetAttribute('MaxHealth') or (meta and meta.block and meta.block.health) or 10
+						local prehealth = blockhealthbar.blockHealth or maxhealth
+						local blockdmg = prehealth - (result == 'destroyed' and 0 or (getBlockHealth(dblock, dpos) or 0))
+						pcall(customHealthbar or breaker.updateHealthbar, breaker, {blockPosition = dpos}, prehealth, maxhealth, blockdmg, dblock)
+						blockhealthbar.blockHealth = math.max(prehealth - blockdmg, 0)
 
 						if blockhealthbar.blockHealth <= 0 then
-							bedwars.BlockBreaker.breakEffect:playBreak(dblock.Name, dpos, lplr)
-							-- healthbarMaid is gone from BlockBreaker in current builds, and
-							-- throwing here rejects the DamageBlock promise and aborts the break.
-							if bedwars.BlockBreaker.healthbarMaid then
-								bedwars.BlockBreaker.healthbarMaid:DoCleaning()
-							end
+							breaker.breakEffect:playBreak(dblock.Name, dpos, lplr)
+							-- The maid moved onto the BlockHealthbar object; destroy() is what
+							-- cleans it there. Throwing here rejects the DamageBlock promise
+							-- and aborts the break, so both routes are guarded.
+							pcall(function()
+								if breaker.blockHealthbar then
+									breaker.blockHealthbar:destroy()
+								elseif breaker.healthbarMaid then
+									breaker.healthbarMaid:DoCleaning()
+								end
+							end)
 							blockhealthbar.breakingBlockPosition = Vector3.zero
 						else
-							bedwars.BlockBreaker.breakEffect:playHit(dblock.Name, dpos, lplr)
+							breaker.breakEffect:playHit(dblock.Name, dpos, lplr)
 						end
 					end
 
@@ -3996,7 +4064,7 @@ run(function()
 	local Range
 	local HitChance
 	local OtherProjectiles
-	local Camera
+	local ViewMode
 	local InstantCharge
 	local ChargeSpeed
 	local SilentBeam
@@ -4030,13 +4098,13 @@ run(function()
 	-- First person puts the camera inside your own head, so the gap between the camera and
 	-- the head is what separates the two views. Shiftlock still counts as third person here,
 	-- which matches what you see on screen.
-	local function cameraAllowed()
-		if Camera.Value == 'Both' then return true end
+	local function viewAllowed()
+		if ViewMode.Value == 'Both' then return true end
 		local head = entitylib.character and entitylib.character.Head
 		if not head then return true end
 	
 		local firstperson = (gameCamera.CFrame.Position - head.Position).Magnitude <= 1
-		return firstperson == (Camera.Value == 'First Person')
+		return firstperson == (ViewMode.Value == 'First Person')
 	end
 	
 	-- Whichever of the two is closer to your cursor right now.
@@ -4112,7 +4180,7 @@ run(function()
 		-- projectile that actually leaves. Handing the arc straight back leaves it pointing
 		-- wherever your crosshair points, so only the shot itself is corrected.
 		if SilentBeam.Enabled and worldmeta then return nil end
-		if not cameraAllowed() then return nil end
+		if not viewAllowed() then return nil end
 	
 		if (not OtherProjectiles.Enabled) and not projmeta.projectile:find('arrow') then
 			return nil
@@ -4291,14 +4359,14 @@ run(function()
 		table.insert(methods, v)
 	end
 	
-	Camera = ProjectileAimbot:CreateDropdown({
-		Name = 'Camera',
+	ViewMode = ProjectileAimbot:CreateDropdown({
+		Name = 'View Mode',
 		Tooltip = 'Which camera view this aims in',
 		List = {'Both', 'First Person', 'Third Person'},
 		Tooltips = {
 			Both = 'Aims in either view',
-			['First Person'] = 'Only aims while the camera is in your head',
-			['Third Person'] = 'Only aims while the camera is behind you'
+			['First Person'] = 'Only while the camera is in your head',
+			['Third Person'] = 'Only while the camera is behind you'
 		}
 	})
 	Sort = ProjectileAimbot:CreateDropdown({
@@ -4440,7 +4508,7 @@ run(function()
 	local Range
 	local List
 	local OtherProjectiles
-	local Camera
+	local ViewMode
 	local rayCheck = RaycastParams.new()
 	rayCheck.FilterType = Enum.RaycastFilterType.Include
 	local mapfolder
@@ -4476,13 +4544,13 @@ run(function()
 	-- First person puts the camera inside your own head, so the gap between the camera and
 	-- the head is what separates the two views. Shiftlock still counts as third person here,
 	-- which matches what you see on screen.
-	local function cameraAllowed()
-		if Camera.Value == 'Both' then return true end
+	local function viewAllowed()
+		if ViewMode.Value == 'Both' then return true end
 		local head = entitylib.character and entitylib.character.Head
 		if not head then return true end
 	
 		local firstperson = (gameCamera.CFrame.Position - head.Position).Magnitude <= 1
-		return firstperson == (Camera.Value == 'First Person')
+		return firstperson == (ViewMode.Value == 'First Person')
 	end
 	
 	local function getAmmo(check)
@@ -4524,7 +4592,7 @@ run(function()
 					-- coroutine outright, leaving the module switched on but permanently dead.
 					-- The wait stays outside so a repeating error cannot spin the CPU.
 					local ok = pcall(function()
-						if (workspace:GetServerTimeNow() - bedwars.SwordController.lastAttack) > 0.5 and cameraAllowed() then
+						if (workspace:GetServerTimeNow() - bedwars.SwordController.lastAttack) > 0.5 and viewAllowed() then
 							local ent = entitylib.EntityPosition({
 								Part = 'RootPart',
 								Range = Range.Value,
@@ -4598,14 +4666,14 @@ run(function()
 		Walls = true,
 		Tooltip = 'Which entities this module is allowed to target'
 	})
-	Camera = ProjectileAura:CreateDropdown({
-		Name = 'Camera',
+	ViewMode = ProjectileAura:CreateDropdown({
+		Name = 'View Mode',
 		Tooltip = 'Which camera view this shoots in',
 		List = {'Both', 'First Person', 'Third Person'},
 		Tooltips = {
 			Both = 'Shoots in either view',
-			['First Person'] = 'Only shoots while the camera is in your head',
-			['Third Person'] = 'Only shoots while the camera is behind you'
+			['First Person'] = 'Only while the camera is in your head',
+			['Third Person'] = 'Only while the camera is behind you'
 		}
 	})
 	List = ProjectileAura:CreateTextList({
@@ -8558,13 +8626,13 @@ local lplr = playersService.LocalPlayer
 
 	ViewMode = AimAssist:CreateDropdown({
 		Name = 'View Mode',
-		List = {'First Person', 'Third Person', 'Both'},
+		List = {'Both', 'First Person', 'Third Person'},
 		Default = 'Both',
-		Tooltip = 'Only aim in first person, third person, or always',
-		ItemTooltips = {
-			['First Person'] = 'Assist only activates in first-person camera mode',
-			['Third Person'] = 'Assist only activates in third-person camera mode',
-			Both = 'Assist activates in both camera modes',
+		Tooltip = 'Which camera view this aims in',
+		Tooltips = {
+			Both = 'Aims in either view',
+			['First Person'] = 'Only while the camera is in your head',
+			['Third Person'] = 'Only while the camera is behind you'
 		},
 	})
 
@@ -15689,16 +15757,16 @@ kitRun(function()
     })
     
     SwitchMode = Gingerbread:CreateDropdown({
-        Name = 'Camera Mode',
+        Name = 'View Mode',
         List = {'Both', 'First Person', 'Third Person'},
         Default = 'Both',
         Visible = false,
-        ItemTooltips = {
-            Both = 'Module works in both first-person and third-person camera modes',
-            ['First Person'] = 'Module only activates in first-person camera mode',
-            ['Third Person'] = 'Module only activates in third-person camera mode',
+        Tooltips = {
+            Both = 'Works in either view',
+            ['First Person'] = 'Only while the camera is in your head',
+            ['Third Person'] = 'Only while the camera is behind you'
         },
-        Tooltip = 'Which camera mode to work in'
+        Tooltip = 'Which camera view this works in'
     })
 end)
 
@@ -20577,37 +20645,64 @@ run(function()
 end)
 
 run(function()
-	local Breaker
+	local Nuker
 	local Range
 	local BreakSpeed
 	local UpdateRate
+	local TargetMode
+	local ViewMode
 	local Custom
 	local Bed
 	local LuckyBlock
 	local IronOre
+	local Tesla
 	local Effect
 	local CustomHealth = {}
 	local Animation
 	local SelfBreak
 	local InstantBreak
 	local LimitItem
-	local Tesla
-	local customlist, parts = {}, {}
+	local customlist, parts, candidates = {}, {}, {}
 	
-	-- iron_ore, tesla and tesla_trap are ItemType names, not CollectionService tags -
-	-- 'iron-ore' was never a tag the game applies, so that collection was always empty and
-	-- ores were never broken. They are ordinary blocks carrying the 'block' tag, named by
-	-- their item type, so they are matched by name out of that collection like any custom
-	-- entry. Teslas were not covered at all before.
-	-- Every setting here is created after CreateModule returns, so all three can still be
+	-- Ranks used by the Priority target mode, in the order the categories were tried
+	-- before target modes existed.
+	local RANK_BED = 1
+	local RANK_CUSTOM = 2
+	local RANK_ORE = 3
+	local RANK_LUCKY = 4
+	local RANK_TESLA = 5
+	
+	-- Walking a dig route is the only expensive thing in here, so Shortest only asks for
+	-- one from the closest few candidates; the rest sort behind them on distance.
+	local PATH_LIMIT = 12
+	
+	local function blockMeta(name)
+		local meta = bedwars.ItemMeta[name]
+		return meta and meta.block
+	end
+	
+	-- Only 4 of the 14 lucky block types carry the 'LuckyBlock' collection tag - purple,
+	-- halloween, flying, glitched and the rest never get it - so collecting by that tag
+	-- found nothing in most modes and the toggle looked dead. Every one of them does have
+	-- a luckyBlock table on its block meta, which is what the game itself tests.
+	local function isLuckyBlock(name)
+		local meta = blockMeta(name)
+		return (meta and meta.luckyBlock) ~= nil
+	end
+	
+	-- iron_ore is the item you collect; the thing standing in the world is
+	-- iron_ore_mesh_block. Both are accepted in case a mode places either.
+	local function isIronOre(name)
+		return name == 'iron_ore' or name == 'iron_ore_mesh_block'
+	end
+	
+	-- Every setting here is created after CreateModule returns, so all of them can still be
 	-- nil while this file is executing, and the module can be switched on inside that
 	-- window when the GUI restores a saved config.
 	local function wantedBlock(name)
 		if Custom and Custom.ListEnabled and table.find(Custom.ListEnabled, name) then return true end
-		-- iron_ore is the item you collect; the thing standing in the world is
-		-- iron_ore_mesh_block. Matching only the former found nothing, which is why ores
-		-- were still being skipped. Both are accepted in case a mode places either.
-		if IronOre and IronOre.Enabled and (name == 'iron_ore' or name == 'iron_ore_mesh_block') then return true end
+		if IronOre and IronOre.Enabled and isIronOre(name) then return true end
+		if LuckyBlock and LuckyBlock.Enabled and isLuckyBlock(name) then return true end
 		return false
 	end
 	
@@ -20623,155 +20718,272 @@ run(function()
 		end
 	end
 	
-	local function customHealthbar(self, blockRef, health, maxHealth, changeHealth, block)
-		if block:GetAttribute('NoHealthbar') then return end
-	
-		-- The game no longer puts healthbarMaid / healthbarProgressRef on BlockBreaker.
-		-- This runs inside the DamageBlock promise, so indexing a nil one turned every
-		-- break into an unhandled rejection that aborted the whole sequence - which is
-		-- why only beds still broke: they carry NoHealthbar and return above, never
-		-- reaching this. Fall back to the game's own healthbar instead.
-		if not (self.healthbarMaid and self.healthbarProgressRef) then return end
-		if not self.healthbarPart or not self.healthbarBlockRef or self.healthbarBlockRef.blockPosition ~= blockRef.blockPosition then
-			self.healthbarMaid:DoCleaning()
-			self.healthbarBlockRef = blockRef
-			local create = bedwars.Roact.createElement
-			local percent = math.clamp(health / maxHealth, 0, 1)
-			local cleanCheck = true
-			local part = Instance.new('Part')
-			part.Size = Vector3.one
-			part.CFrame = CFrame.new(bedwars.BlockController:getWorldPosition(blockRef.blockPosition))
-			part.Transparency = 1
-			part.Anchored = true
-			part.CanCollide = false
-			part.Parent = workspace
-			self.healthbarPart = part
-			bedwars.QueryUtil:setQueryIgnored(self.healthbarPart, true)
-	
-			local mounted = bedwars.Roact.mount(create('BillboardGui', {
-				Size = UDim2.fromOffset(249, 102),
-				StudsOffset = Vector3.new(0, 2.5, 0),
-				Adornee = part,
-				MaxDistance = 40,
-				AlwaysOnTop = true
-			}, {
-				create('Frame', {
-					Size = UDim2.fromOffset(160, 50),
-					Position = UDim2.fromOffset(44, 32),
-					BackgroundColor3 = Color3.new(),
-					BackgroundTransparency = 0.5
-				}, {
-					create('UICorner', {CornerRadius = UDim.new(0, 5)}),
-					create('ImageLabel', {
-						Size = UDim2.new(1, 89, 1, 52),
-						Position = UDim2.fromOffset(-48, -31),
-						BackgroundTransparency = 1,
-						Image = getcustomasset('vain/assets/new/blur.png'),
-						ScaleType = Enum.ScaleType.Slice,
-						SliceCenter = Rect.new(52, 31, 261, 502)
-					}),
-					create('TextLabel', {
-						Size = UDim2.fromOffset(145, 14),
-						Position = UDim2.fromOffset(13, 12),
-						BackgroundTransparency = 1,
-						Text = bedwars.ItemMeta[block.Name].displayName or block.Name,
-						TextXAlignment = Enum.TextXAlignment.Left,
-						TextYAlignment = Enum.TextYAlignment.Top,
-						TextColor3 = Color3.new(),
-						TextScaled = true,
-						Font = Enum.Font.Arial
-					}),
-					create('TextLabel', {
-						Size = UDim2.fromOffset(145, 14),
-						Position = UDim2.fromOffset(12, 11),
-						BackgroundTransparency = 1,
-						Text = bedwars.ItemMeta[block.Name].displayName or block.Name,
-						TextXAlignment = Enum.TextXAlignment.Left,
-						TextYAlignment = Enum.TextYAlignment.Top,
-						TextColor3 = color.Dark(uipallet.Text, 0.16),
-						TextScaled = true,
-						Font = Enum.Font.Arial
-					}),
-					create('Frame', {
-						Size = UDim2.fromOffset(138, 4),
-						Position = UDim2.fromOffset(12, 32),
-						BackgroundColor3 = uipallet.Main
-					}, {
-						create('UICorner', {CornerRadius = UDim.new(1, 0)}),
-						create('Frame', {
-							[bedwars.Roact.Ref] = self.healthbarProgressRef,
-							Size = UDim2.fromScale(percent, 1),
-							BackgroundColor3 = Color3.fromHSV(math.clamp(percent / 2.5, 0, 1), 0.89, 0.75)
-						}, {create('UICorner', {CornerRadius = UDim.new(1, 0)})})
-					})
-				})
-			}), part)
-	
-			self.healthbarMaid:GiveTask(function()
-				cleanCheck = false
-				self.healthbarBlockRef = nil
-				bedwars.Roact.unmount(mounted)
-				if self.healthbarPart then
-					self.healthbarPart:Destroy()
-				end
-				self.healthbarPart = nil
-			end)
-	
-			bedwars.RuntimeLib.Promise.delay(5):andThen(function()
-				if cleanCheck then
-					self.healthbarMaid:DoCleaning()
-				end
-			end)
-		end
-	
-		local newpercent = math.clamp((health - changeHealth) / maxHealth, 0, 1)
-		tweenService:Create(self.healthbarProgressRef:getValue(), TweenInfo.new(0.3), {
-			Size = UDim2.fromScale(newpercent, 1), BackgroundColor3 = Color3.fromHSV(math.clamp(newpercent / 2.5, 0, 1), 0.89, 0.75)
-		}):Play()
+	local function customRank(name)
+		if Custom and Custom.ListEnabled and table.find(Custom.ListEnabled, name) then return RANK_CUSTOM end
+		if isLuckyBlock(name) then return RANK_LUCKY end
+		return RANK_ORE
 	end
 	
-	local hit = 0
+	-- First person puts the camera inside your own head, so the gap between the camera and
+	-- the head is what separates the two views. Shiftlock still counts as third person here,
+	-- which matches what you see on screen.
+	local function viewAllowed()
+		if not ViewMode or ViewMode.Value == 'Both' then return true end
+		local head = entitylib.character and entitylib.character.Head
+		if not head then return true end
 	
-	local function attemptBreak(tab, localPosition)
-		if not tab then return end
-		for _, v in tab do
+		local firstperson = (gameCamera.CFrame.Position - head.Position).Magnitude <= 1
+		return firstperson == (ViewMode.Value == 'First Person')
+	end
+	
+	--[[
+		The healthbar owns everything it draws. It used to borrow BlockBreaker's
+		healthbarMaid and healthbarProgressRef, which current builds moved onto a separate
+		BlockHealthbar object - so the nil check at the top returned early every single
+		time and the custom bar never appeared at all.
+	]]
+	local healthbar = {token = 0}
+	
+	local function clearHealthbar()
+		healthbar.token += 1
+		if healthbar.mounted then
+			pcall(bedwars.Roact.unmount, healthbar.mounted)
+		end
+		if healthbar.part then
+			pcall(function()
+				healthbar.part:Destroy()
+			end)
+		end
+		healthbar.mounted, healthbar.part, healthbar.progress, healthbar.position = nil, nil, nil, nil
+	end
+	
+	local function mountHealthbar(blockRef, health, maxHealth, block)
+		local create = bedwars.Roact.createElement
+		local percent = math.clamp(health / maxHealth, 0, 1)
+		local meta = bedwars.ItemMeta[block.Name]
+		local name = (meta and meta.displayName) or block.Name
+	
+		local part = Instance.new('Part')
+		part.Size = Vector3.one
+		part.CFrame = CFrame.new(bedwars.BlockController:getWorldPosition(blockRef.blockPosition))
+		part.Transparency = 1
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanQuery = false
+		part.Parent = workspace
+		pcall(function()
+			bedwars.QueryUtil:setQueryIgnored(part, true)
+		end)
+	
+		healthbar.part = part
+		healthbar.position = blockRef.blockPosition
+		healthbar.progress = bedwars.Roact.createRef()
+	
+		healthbar.mounted = bedwars.Roact.mount(create('BillboardGui', {
+			Size = UDim2.fromOffset(249, 102),
+			StudsOffset = Vector3.new(0, 2.5, 0),
+			Adornee = part,
+			MaxDistance = 40,
+			AlwaysOnTop = true
+		}, {
+			create('Frame', {
+				Size = UDim2.fromOffset(160, 50),
+				Position = UDim2.fromOffset(44, 32),
+				BackgroundColor3 = Color3.new(),
+				BackgroundTransparency = 0.5
+			}, {
+				create('UICorner', {CornerRadius = UDim.new(0, 5)}),
+				create('ImageLabel', {
+					Size = UDim2.new(1, 89, 1, 52),
+					Position = UDim2.fromOffset(-48, -31),
+					BackgroundTransparency = 1,
+					Image = getcustomasset('vain/assets/new/blur.png'),
+					ScaleType = Enum.ScaleType.Slice,
+					SliceCenter = Rect.new(52, 31, 261, 502)
+				}),
+				create('TextLabel', {
+					Size = UDim2.fromOffset(145, 14),
+					Position = UDim2.fromOffset(13, 12),
+					BackgroundTransparency = 1,
+					Text = name,
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextYAlignment = Enum.TextYAlignment.Top,
+					TextColor3 = Color3.new(),
+					TextScaled = true,
+					Font = Enum.Font.Arial
+				}),
+				create('TextLabel', {
+					Size = UDim2.fromOffset(145, 14),
+					Position = UDim2.fromOffset(12, 11),
+					BackgroundTransparency = 1,
+					Text = name,
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextYAlignment = Enum.TextYAlignment.Top,
+					TextColor3 = color.Dark(uipallet.Text, 0.16),
+					TextScaled = true,
+					Font = Enum.Font.Arial
+				}),
+				create('Frame', {
+					Size = UDim2.fromOffset(138, 4),
+					Position = UDim2.fromOffset(12, 32),
+					BackgroundColor3 = uipallet.Main
+				}, {
+					create('UICorner', {CornerRadius = UDim.new(1, 0)}),
+					create('Frame', {
+						[bedwars.Roact.Ref] = healthbar.progress,
+						Size = UDim2.fromScale(percent, 1),
+						BackgroundColor3 = Color3.fromHSV(math.clamp(percent / 2.5, 0, 1), 0.89, 0.75)
+					}, {create('UICorner', {CornerRadius = UDim.new(1, 0)})})
+				})
+			})
+		}), part)
+	end
+	
+	local function customHealthbar(_, blockRef, health, maxHealth, changeHealth, block)
+		if block:GetAttribute('NoHealthbar') or not maxHealth or maxHealth <= 0 then return end
+	
+		if not healthbar.part or healthbar.position ~= blockRef.blockPosition then
+			clearHealthbar()
+			mountHealthbar(blockRef, health, maxHealth, block)
+		end
+	
+		local progress = healthbar.progress and healthbar.progress:getValue()
+		if not progress then return end
+	
+		local newpercent = math.clamp((health - changeHealth) / maxHealth, 0, 1)
+		tweenService:Create(progress, TweenInfo.new(0.3), {
+			Size = UDim2.fromScale(newpercent, 1), BackgroundColor3 = Color3.fromHSV(math.clamp(newpercent / 2.5, 0, 1), 0.89, 0.75)
+		}):Play()
+	
+		-- The token makes the delayed cleanup drop itself when a newer hit has already
+		-- claimed the bar, so it can never take down the bar for the block you moved on to.
+		healthbar.token += 1
+		local token = healthbar.token
+		task.delay(5, function()
+			if healthbar.token == token then
+				clearHealthbar()
+			end
+		end)
+	end
+	
+	local function gather(list, rank, localPosition)
+		if not list then return end
+		for _, v in list do
 			if not v or not v.Parent then continue end
-			if (v.Position - localPosition).Magnitude < Range.Value then
-				local ok, isBreakable = pcall(function()
-					return bedwars.BlockController:isBlockBreakable({blockPosition = v.Position / 3}, lplr)
-				end)
-				if not ok or not isBreakable then continue end
+			-- A block that is a model rather than a part has no Position at all, and one
+			-- bad entry used to abort the whole pass before anything got broken.
+			local ok, pos = pcall(function()
+				return v.Position
+			end)
+			if not ok or not pos then continue end
 	
-				if not SelfBreak.Enabled and v:GetAttribute('PlacedByUserId') == lplr.UserId then continue end
-				if (v:GetAttribute('BedShieldEndTime') or 0) > workspace:GetServerTimeNow() then continue end
-				if LimitItem.Enabled and not (store.hand.tool and bedwars.ItemMeta[store.hand.tool.Name].breakBlock) then continue end
+			local dist = (pos - localPosition).Magnitude
+			if dist >= Range.Value then continue end
 	
-				hit += 1
-				local ok2 = pcall(function()
-					local target, path, endpos = bedwars.breakBlock(v, Effect.Enabled, Animation.Enabled, CustomHealth.Enabled and customHealthbar or nil, InstantBreak.Enabled)
-					if path then
-						local currentnode = target
-						for _, part in parts do
-							part.Position = currentnode or Vector3.zero
-							if currentnode then
-								part.BoxHandleAdornment.Color3 = currentnode == endpos and Color3.new(1, 0.2, 0.2) or currentnode == target and Color3.new(0.2, 0.2, 1) or Color3.new(0.2, 1, 0.2)
-							end
-							currentnode = path[currentnode]
+			table.insert(candidates, {
+				Block = v,
+				Position = pos,
+				Distance = dist,
+				Rank = rank or customRank(v.Name)
+			})
+		end
+	end
+	
+	local function blockHits(entry)
+		if not entry.Hits then
+			local ok, hits = pcall(bedwars.getBlockHits, entry.Block, entry.Position)
+			entry.Hits = (ok and hits) or math.huge
+		end
+		return entry.Hits
+	end
+	
+	local function pathCost(entry)
+		local ok, cost = pcall(bedwars.getBlockPathCost, entry.Block, not SelfBreak.Enabled)
+		return (ok and cost) or math.huge
+	end
+	
+	local function byDistance(a, b)
+		return a.Distance < b.Distance
+	end
+	
+	-- Every mode reduces to one number per candidate, so the sort itself can never throw
+	-- on a comparison it cannot make.
+	local function rankCandidates()
+		-- Nothing to order, and Shortest would walk a dig route for no reason.
+		if #candidates < 2 then return end
+		local mode = TargetMode and TargetMode.Value or 'Priority'
+	
+		if mode == 'Nearest' then
+			for _, entry in candidates do entry.Key = entry.Distance end
+		elseif mode == 'Farthest' then
+			for _, entry in candidates do entry.Key = -entry.Distance end
+		elseif mode == 'Health' then
+			for _, entry in candidates do entry.Key = blockHits(entry) end
+		elseif mode == 'Lowest' then
+			for _, entry in candidates do entry.Key = entry.Position.Y end
+		elseif mode == 'Highest' then
+			for _, entry in candidates do entry.Key = -entry.Position.Y end
+		elseif mode == 'Random' then
+			for _, entry in candidates do entry.Key = math.random() end
+		elseif mode == 'Shortest' then
+			table.sort(candidates, byDistance)
+			for i, entry in candidates do
+				entry.Key = i <= PATH_LIMIT and pathCost(entry) or math.huge
+			end
+		else
+			for _, entry in candidates do entry.Key = entry.Rank end
+		end
+	
+		table.sort(candidates, function(a, b)
+			if a.Key == b.Key then return a.Distance < b.Distance end
+			return a.Key < b.Key
+		end)
+	end
+	
+	local function attemptBreak()
+		for _, entry in candidates do
+			local v = entry.Block
+			if not v or not v.Parent then continue end
+	
+			local ok, isBreakable = pcall(function()
+				return bedwars.BlockController:isBlockBreakable({blockPosition = entry.Position / 3}, lplr)
+			end)
+			if not ok or not isBreakable then continue end
+	
+			if not SelfBreak.Enabled and v:GetAttribute('PlacedByUserId') == lplr.UserId then continue end
+			if (v:GetAttribute('BedShieldEndTime') or 0) > workspace:GetServerTimeNow() then continue end
+			if LimitItem.Enabled then
+				local held = store.hand.tool and bedwars.ItemMeta[store.hand.tool.Name]
+				if not (held and held.breakBlock) then continue end
+			end
+	
+			local ok2 = pcall(function()
+				-- Self Break has to reach the dig route, not just the target: breakBlock
+				-- tunnels towards a block rather than hitting it directly, so with the check
+				-- on the target alone every block on the way there got broken regardless.
+				local target, path, endpos = bedwars.breakBlock(v, Effect.Enabled, Animation.Enabled, CustomHealth.Enabled and customHealthbar or nil, not SelfBreak.Enabled)
+				if path then
+					local currentnode = target
+					for _, part in parts do
+						part.Position = currentnode or Vector3.zero
+						if currentnode then
+							part.BoxHandleAdornment.Color3 = currentnode == endpos and Color3.new(1, 0.2, 0.2) or currentnode == target and Color3.new(0.2, 0.2, 1) or Color3.new(0.2, 1, 0.2)
 						end
+						currentnode = path[currentnode]
 					end
-				end)
-				if ok2 then
-					task.wait(InstantBreak.Enabled and (store.damageBlockFail > tick() and 4.5 or 0) or BreakSpeed.Value)
-					return true
 				end
+			end)
+			if ok2 then
+				task.wait(InstantBreak.Enabled and (store.damageBlockFail > tick() and 4.5 or 0) or BreakSpeed.Value)
+				return true
 			end
 		end
 	
 		return false
 	end
 	
-	Breaker = vain.Categories.Minigames:CreateModule({
-		Name = 'Breaker',
+	Nuker = vain.Categories.Minigames:CreateModule({
+		Name = 'Nuker',
 		Function = function(callback)
 			if callback then
 				for _ = 1, 30 do
@@ -20791,13 +21003,13 @@ run(function()
 					table.insert(parts, part)
 				end
 	
-				local beds = collection('bed', Breaker)
-				local luckyblock = collection('LuckyBlock', Breaker)
+				local beds = collection('bed', Nuker)
 				-- Teslas carry a real tag, so they are collected rather than name matched.
-				-- 'tesla' and 'tesla_trap' are ItemType values, not tags - matching those found
-				-- nothing at all.
-				local teslas = collection('tesla-trap', Breaker)
-				customlist = collection('block', Breaker, function(tab, obj)
+				-- 'tesla' and 'tesla_trap' are ItemType values, not tags.
+				local teslas = collection('tesla-trap', Nuker)
+				-- Ore, lucky blocks and anything you list are ordinary blocks named by their
+				-- item type, so they come out of the one 'block' collection.
+				customlist = collection('block', Nuker, function(tab, obj)
 					if wantedBlock(obj.Name) then
 						table.insert(tab, obj)
 					end
@@ -20805,17 +21017,26 @@ run(function()
 	
 				repeat
 					local ok = pcall(function()
-						if entitylib.isAlive then
-							local localPosition = entitylib.character.RootPart.Position
+						if not entitylib.isAlive then return end
 	
-							if attemptBreak(Bed.Enabled and beds, localPosition) then return end
-							if attemptBreak(customlist, localPosition) then return end
-							if attemptBreak(LuckyBlock.Enabled and luckyblock, localPosition) then return end
-							if attemptBreak(Tesla.Enabled and teslas, localPosition) then return end
-	
+						if not viewAllowed() then
 							for _, v in parts do
 								v.Position = Vector3.zero
 							end
+							return
+						end
+	
+						local localPosition = entitylib.character.RootPart.Position
+						table.clear(candidates)
+						gather(Bed.Enabled and beds, RANK_BED, localPosition)
+						gather(customlist, nil, localPosition)
+						gather(Tesla.Enabled and teslas, RANK_TESLA, localPosition)
+						rankCandidates()
+	
+						if attemptBreak() then return end
+	
+						for _, v in parts do
+							v.Position = Vector3.zero
 						end
 					end)
 					if not ok then
@@ -20823,8 +21044,10 @@ run(function()
 					else
 						task.wait(1 / UpdateRate.Value)
 					end
-				until not Breaker.Enabled
+				until not Nuker.Enabled
 			else
+				clearHealthbar()
+				table.clear(candidates)
 				for _, v in parts do
 					v:ClearAllChildren()
 					v:Destroy()
@@ -20832,11 +21055,36 @@ run(function()
 				table.clear(parts)
 			end
 		end,
-		Tooltip = 'Break blocks around you automatically'
+		Tooltip = 'Breaks blocks around you automatically'
 	})
-	Range = Breaker:CreateSlider({
-		Name = 'Break range',
-		Tooltip = 'How far you can break blocks from, in studs',
+	TargetMode = Nuker:CreateDropdown({
+		Name = 'Target Mode',
+		Tooltip = 'Which block is broken first',
+		List = {'Priority', 'Nearest', 'Farthest', 'Health', 'Shortest', 'Lowest', 'Highest', 'Random'},
+		Tooltips = {
+			Priority = 'Beds, then your list, ore, lucky blocks, teslas',
+			Nearest = 'Closest block to you',
+			Farthest = 'Furthest block still in range',
+			Health = 'Fewest hits left, your tool counted',
+			Shortest = 'Cheapest way in, block strength counted',
+			Lowest = 'Lowest block first, cuts supports',
+			Highest = 'Highest block first',
+			Random = 'No fixed order'
+		}
+	})
+	ViewMode = Nuker:CreateDropdown({
+		Name = 'View Mode',
+		Tooltip = 'Which camera view this breaks in',
+		List = {'Both', 'First Person', 'Third Person'},
+		Tooltips = {
+			Both = 'Breaks in either view',
+			['First Person'] = 'Only while the camera is in your head',
+			['Third Person'] = 'Only while the camera is behind you'
+		}
+	})
+	Range = Nuker:CreateSlider({
+		Name = 'Break Range',
+		Tooltip = 'How far you can break blocks from\nThe game allows 18',
 		Min = 1,
 		Max = 30,
 		Default = 30,
@@ -20844,72 +21092,80 @@ run(function()
 			return val == 1 and 'stud' or 'studs'
 		end
 	})
-	BreakSpeed = Breaker:CreateSlider({
-		Name = 'Break speed',
-		Tooltip = 'How fast blocks are broken',
+	BreakSpeed = Nuker:CreateSlider({
+		Name = 'Break Speed',
+		Tooltip = 'Delay between blocks, lower is faster\nThe game uses 0.3',
 		Min = 0,
 		Max = 0.3,
 		Default = 0.25,
 		Decimal = 100,
 		Suffix = 'seconds'
 	})
-	UpdateRate = Breaker:CreateSlider({
-		Name = 'Update rate',
-		Tooltip = 'How many times per second blocks are re-checked\nLower costs less performance',
+	UpdateRate = Nuker:CreateSlider({
+		Name = 'Update Rate',
+		Tooltip = 'How often blocks are re-checked\nLower costs less performance',
 		Min = 1,
 		Max = 120,
 		Default = 60,
 		Suffix = 'hz'
 	})
-	Custom = Breaker:CreateTextList({
+	Custom = Nuker:CreateTextList({
 		Name = 'Custom',
 		Tooltip = 'Extra block names to break',
 		Function = rebuildList
 	})
-	Bed = Breaker:CreateToggle({
+	Bed = Nuker:CreateToggle({
 		Name = 'Break Bed',
 		Tooltip = 'Breaks beds',
 		Default = true
 	})
-	LuckyBlock = Breaker:CreateToggle({
+	LuckyBlock = Nuker:CreateToggle({
 		Name = 'Break Lucky Block',
-		Tooltip = 'Breaks lucky blocks',
-		Default = true
+		Tooltip = 'Breaks every lucky block type',
+		Default = true,
+		Function = rebuildList
 	})
-	IronOre = Breaker:CreateToggle({
+	IronOre = Nuker:CreateToggle({
 		Name = 'Break Iron Ore',
 		Tooltip = 'Breaks iron ore',
 		Default = true,
 		Function = rebuildList
 	})
-	Tesla = Breaker:CreateToggle({
+	Tesla = Nuker:CreateToggle({
 		Name = 'Break Tesla',
 		Tooltip = 'Breaks tesla traps',
 		Default = true
 	})
-	Effect = Breaker:CreateToggle({
+	Effect = Nuker:CreateToggle({
 		Name = 'Show Healthbar & Effects',
 		Tooltip = 'Shows break progress and particles',
 		Function = function(callback)
 			if CustomHealth.Object then
 				CustomHealth.Object.Visible = callback
 			end
+			if not callback then
+				clearHealthbar()
+			end
 		end,
 		Default = true
 	})
-	CustomHealth = Breaker:CreateToggle({
+	CustomHealth = Nuker:CreateToggle({
 		Name = 'Custom Healthbar',
 		Tooltip = 'Uses the Vain healthbar instead of the game one',
+		Function = function()
+			clearHealthbar()
+		end,
 		Default = true,
 		Darker = true
 	})
-	Animation = Breaker:CreateToggle({Name = 'Animation', Tooltip = 'Plays the break animation'})
-	SelfBreak = Breaker:CreateToggle({Name = 'Self Break', Tooltip = 'Also breaks blocks placed by your own team'})
-	InstantBreak = Breaker:CreateToggle({Name = 'Instant Break', Tooltip = 'Breaks blocks in a single hit'})
-	LimitItem = Breaker:CreateToggle({
-		Name = 'Limit to items',
+	Animation = Nuker:CreateToggle({Name = 'Animation', Tooltip = 'Plays the break animation'})
+	SelfBreak = Nuker:CreateToggle({Name = 'Self Break', Tooltip = 'Also breaks blocks you placed yourself'})
+	InstantBreak = Nuker:CreateToggle({Name = 'Instant Break', Tooltip = 'Breaks blocks in a single hit'})
+	LimitItem = Nuker:CreateToggle({
+		Name = 'Limit to Items',
 		Tooltip = 'Only breaks when tools are held'
 	})
+	
 end)
 
 run(function()
