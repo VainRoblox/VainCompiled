@@ -1080,9 +1080,11 @@ run(function()
 	-- difference between reaching around a thin wall and mining through a thick one.
 	local function pickEntry(exposed, maxRange, score, prefer, maxAngle)
 		local origin = entitylib.isAlive and entitylib.character.RootPart.Position
-		-- Only worth resolving when the cone is actually narrowed; a full half turn either
-		-- side takes in everything, which is what the setting sits at by default.
-		local camera = maxAngle and maxAngle < 180 and workspace.CurrentCamera or nil
+		-- The setting is the width of the cone, so half of it is the most a block may sit
+		-- off the way you are looking. A full turn takes in everything and is not worth
+		-- resolving the camera for.
+		local halfAngle = maxAngle and (maxAngle / 2)
+		local camera = halfAngle and halfAngle < 180 and workspace.CurrentCamera or nil
 
 		-- Both limits on where a dig may start: how far you can reach, and how far off
 		-- the way you are looking it is allowed to be.
@@ -1092,7 +1094,7 @@ run(function()
 				local dir = node - camera.CFrame.Position
 				if dir.Magnitude > 0 then
 					local facing = camera.CFrame.LookVector:Dot(dir.Unit)
-					if math.deg(math.acos(math.clamp(facing, -1, 1))) > maxAngle then return false end
+					if math.deg(math.acos(math.clamp(facing, -1, 1))) > halfAngle then return false end
 				end
 			end
 			return true
@@ -21525,10 +21527,10 @@ run(function()
 	})
 	Angle = Nuker:CreateSlider({
 		Name = 'Angle',
-		Tooltip = 'How far from where you are looking a block may be\n180 breaks behind you too',
+		Tooltip = 'How wide a cone in front of you blocks break in\n360 breaks behind you too',
 		Min = 1,
-		Max = 180,
-		Default = 180,
+		Max = 360,
+		Default = 90,
 		Suffix = 'degrees'
 	})
 	UpdateRate = Nuker:CreateSlider({
