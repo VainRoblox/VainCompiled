@@ -1095,7 +1095,45 @@ run(function()
 	-- gets broken, so this is what a target mode has to steer. Without one, the near side
 	-- wins unless it would cost substantially more to get through, which is the
 	-- difference between reaching around a thin wall and mining through a thick one.
-	local function pickEntry(exposed, maxRange, score, prefer, maxAngle)
+	-- How much open air is enough to call a gap part of the world rather than a pocket
+	-- sealed inside a build. A pocket is a handful of cells; anything that keeps going
+	-- this far has escaped.
+	local POCKET_LIMIT = 30
+
+	local function escapesToOpenAir(start, memo)
+		local cached = memo[start]
+		if cached ~= nil then return cached end
+
+		local seen, frontier, count, escaped = {[start] = true}, {start}, 1, false
+
+		while #frontier > 0 and not escaped do
+			local nextfrontier = {}
+			for _, pos in frontier do
+				for _, side in sides do
+					local at = pos + side
+					if seen[at] or getPlacedBlock(at) then continue end
+					seen[at] = true
+
+					count += 1
+					if count >= POCKET_LIMIT then
+						escaped = true
+						break
+					end
+					table.insert(nextfrontier, at)
+				end
+				if escaped then break end
+			end
+			frontier = nextfrontier
+		end
+
+		-- Every cell reached shares the verdict; they are all the same body of air.
+		for pos in seen do
+			memo[pos] = escaped
+		end
+		return escaped
+	end
+
+	local function pickEntry(exposed, maxRange, score, prefer, maxAngle, skipPockets)
 		local origin = entitylib.isAlive and entitylib.character.RootPart.Position
 		-- The setting is the width of the cone, so half of it is the most a block may sit
 		-- off the way you are looking. A full turn takes in everything and is not worth
@@ -1103,10 +1141,27 @@ run(function()
 		local halfAngle = maxAngle and (maxAngle / 2)
 		local camera = halfAngle and halfAngle < 180 and workspace.CurrentCamera or nil
 
-		-- Both limits on where a dig may start: how far you can reach, and how far off
-		-- the way you are looking it is allowed to be.
+		-- Air that cannot be escaped from is a gap sealed inside the build. Breaking into
+		-- one opens nothing - the outer layers are still standing, so it is not a way in
+		-- at all, it just looks like blocks going missing out of the middle of a wall.
+		local pockets = skipPockets and {} or nil
+
+		local function opensOutwards(node)
+			if not pockets then return true end
+			for _, side in sides do
+				local at = node + side
+				if not getPlacedBlock(at) and escapesToOpenAir(at, pockets) then
+					return true
+				end
+			end
+			return false
+		end
+
+		-- Every limit on where a dig may start: how far you can reach, how far off the way
+		-- you are looking it is allowed to be, and whether it is a way in at all.
 		local function allowed(node, reach)
 			if maxRange and origin and reach > maxRange then return false end
+			if not opensOutwards(node) then return false end
 			if camera then
 				local dir = node - camera.CFrame.Position
 				if dir.Magnitude > 0 then
@@ -1188,11 +1243,11 @@ run(function()
 	-- directly - so a Self Break check on the target alone never prevented your own
 	-- blocks being destroyed on the way there. The flag is part of the cache entry
 	-- because the same target has two different cheapest routes depending on it.
-	local function calculatePath(target, blockpos, avoidOwn, maxRange, score, prefer, maxAngle)
+	local function calculatePath(target, blockpos, avoidOwn, maxRange, score, prefer, maxAngle, skipPockets)
 		avoidOwn = avoidOwn == true
 		local cached = cache[blockpos]
 		if cached and cached[4] == avoidOwn then
-			local pos, cost, key = pickEntry(cached[5], maxRange, score, prefer, maxAngle)
+			local pos, cost, key = pickEntry(cached[5], maxRange, score, prefer, maxAngle, skipPockets)
 			if pos then
 				return pos, cost, cached[3], key
 			end
@@ -1256,7 +1311,7 @@ run(function()
 			exposed
 		}
 
-		local pos, cost, key = pickEntry(exposed, maxRange, score, prefer, maxAngle)
+		local pos, cost, key = pickEntry(exposed, maxRange, score, prefer, maxAngle, skipPockets)
 		if pos then
 			return pos, cost, path, key
 		end
@@ -1342,13 +1397,15 @@ run(function()
 	end
 
 	-- options: Range caps how far the block being broken may be, Angle how far off your
-	-- view it may sit, Score ranks the ways in, Prefer is a route to carry on down, and
-	-- Route is filled in with the one taken.
+	-- view it may sit, SkipPockets refuses gaps sealed inside the build, Score ranks the
+	-- ways in, Prefer is a route to carry on down, and Route is filled in with the one
+	-- taken.
 	bedwars.breakBlock = function(block, effects, anim, customHealthbar, avoidOwn, autoTool, options)
 		if lplr:GetAttribute('DenyBlockBreak') or not entitylib.isAlive or InfiniteFly.Enabled then return end
 		options = options or {}
 		local maxRange = math.min(options.Range or 30, 30)
 		local entryScore, prefer, maxAngle = options.Score, options.Prefer, options.Angle
+		local skipPockets = options.SkipPockets
 		local cost, pos, target, path = math.huge
 		-- A bed covers several block positions, each with its own way in. They are
 		-- compared on whatever the target mode is ranking by, so the mode's pick is not
@@ -1356,7 +1413,7 @@ run(function()
 		local bestkey = math.huge
 
 		for _, v in containedPositions(block) do
-			local dpos, dcost, dpath, dkey = calculatePath(block, v * 3, avoidOwn, maxRange, entryScore, prefer, maxAngle)
+			local dpos, dcost, dpath, dkey = calculatePath(block, v * 3, avoidOwn, maxRange, entryScore, prefer, maxAngle, skipPockets)
 			dkey = dkey or dcost
 			if dpos and dkey < bestkey then
 				bestkey, cost, pos, target, path = dkey, dcost, dpos, v * 3, dpath
@@ -21292,6 +21349,7 @@ run(function()
 	local BreakSpeed
 	local UpdateRate
 	local Angle
+	local SkipPockets
 	local TargetMode
 	local ViewMode
 	local Custom
@@ -21673,6 +21731,7 @@ run(function()
 	
 				breakOptions.Range = Range.Value
 				breakOptions.Angle = Angle.Value
+				breakOptions.SkipPockets = SkipPockets.Enabled
 				breakOptions.Score = entryScorers[TargetMode.Value]
 				-- Read on the way in and refilled on the way out, so the route carries from
 				-- one hit to the next. A break that never went out leaves it untouched.
@@ -21922,6 +21981,11 @@ run(function()
 	Animation = Nuker:CreateToggle({Name = 'Animation', Tooltip = 'Plays the break animation'})
 	SelfBreak = Nuker:CreateToggle({Name = 'Self Break', Tooltip = 'Also breaks blocks you placed yourself'})
 	InstantBreak = Nuker:CreateToggle({Name = 'Instant Break', Tooltip = 'Breaks blocks in a single hit'})
+	SkipPockets = Nuker:CreateToggle({
+		Name = 'Ignore Air Pockets',
+		Tooltip = 'Never start a dig inside a sealed gap',
+		Default = true
+	})
 	AutoTool = Nuker:CreateToggle({
 		Name = 'Auto Tool',
 		Tooltip = 'Swaps to the best tool for each block',
