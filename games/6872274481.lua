@@ -1052,11 +1052,19 @@ run(function()
 	-- whole extra one.
 	local HIT_WEIGHT = 0.0001
 	local HIT_CAP = 100
+	-- Changing direction costs a touch more than carrying straight on. Routes of the
+	-- same length tie constantly and the winner was whichever got queued first, so a dig
+	-- would step up a block, run along, and step back down for no reason at all. Small
+	-- enough that a route can never turn into a longer one to avoid a corner.
+	local TURN_COST = 0.01
 
-	-- How many blocks longer than the shortest way in a target mode may still choose,
-	-- so it has a real choice of sides without being able to pick a way in that is not
-	-- part of the bed's defences at all.
-	local ENTRY_TOLERANCE = 2
+	-- How many blocks longer than the shortest way in a target mode may still choose.
+	-- Zero, so the dig is always as short as it can be and the mode decides between the
+	-- ways in that are equally short - a way in that is even one block worse is one whose
+	-- route has to bend to get there, which is what makes a dig step up and over for no
+	-- visible reason. Compared on whole blocks, since the weights below put a fraction on
+	-- top of every route and no two are ever exactly equal.
+	local ENTRY_TOLERANCE = 0
 
 	local function enqueue(queue, dist, node)
 		local low, high = 1, #queue + 1
@@ -1131,7 +1139,7 @@ run(function()
 				mincost = cost
 			end
 		end
-		local costlimit = mincost + ENTRY_TOLERANCE
+		local costlimit = math.floor(mincost) + ENTRY_TOLERANCE
 
 		local best, bestkey, bestcost = nil, math.huge, math.huge
 		local near, nearreach, nearcost = nil, math.huge, math.huge
@@ -1139,7 +1147,7 @@ run(function()
 
 		for node, cost in exposed do
 			local reach = origin and (node - origin).Magnitude or 0
-			if cost > costlimit or not allowed(node, reach) then continue end
+			if math.floor(cost) > costlimit or not allowed(node, reach) then continue end
 
 			if score then
 				local key = score(node, cost, reach)
@@ -1181,6 +1189,8 @@ run(function()
 			return
 		end
 		local visited, unvisited, distances, air, path = {}, {{0, blockpos}}, {[blockpos] = 0}, {}, {}
+		-- Which way each block was reached from, so carrying on that way can be preferred.
+		local heading = {}
 
 		for _ = 1, 10000 do
 			local node = unvisited[1]
@@ -1204,11 +1214,14 @@ run(function()
 					continue
 				end
 
-				local curdist = node[1] + 1 + (math.min(getBlockHits(block, side), HIT_CAP) * HIT_WEIGHT)
+				local facing = side - node[2]
+				local turn = (heading[node[2]] and heading[node[2]] ~= facing) and TURN_COST or 0
+				local curdist = node[1] + 1 + turn + (math.min(getBlockHits(block, side), HIT_CAP) * HIT_WEIGHT)
 				if curdist < (distances[side] or math.huge) then
 					enqueue(unvisited, curdist, side)
 					distances[side] = curdist
 					path[side] = node[2]
+					heading[side] = facing
 				end
 			end
 		end
@@ -1411,9 +1424,15 @@ run(function()
 				end
 			end)
 
+			-- Only replaced when this is a fresh dig, which is what bestkey being anything
+			-- other than the value pickEntry returns for a carried-on route tells us.
+			-- Refilling it on every hit let it drift: routes of the same length tie all the
+			-- time, each recompute can hand back a different one of them, and a dig that
+			-- started straight would bend partway through for no reason anyone could see.
+			--
 			-- Built here rather than by the caller because breakBlock yields above, and by
 			-- the time it returns the route may have been dropped from the cache.
-			if options.Route then
+			if options.Route and bestkey ~= -math.huge then
 				routeFrom(pos, path, options.Route)
 			end
 
