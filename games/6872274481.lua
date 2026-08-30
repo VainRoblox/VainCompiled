@@ -20792,15 +20792,19 @@ run(function()
 			for _, pos in frontier do
 				for _, side in sides do
 					local at = pos + side
-					if seen[at] then continue end
-					seen[at] = true
-	
 					local block = getPlacedBlock(at)
 					if not block then
-						-- Nothing here, so this layer has a way through it.
+						-- Nothing here, so this layer has a way through it. Checked before the
+						-- already-visited test on purpose: a gap next to two different layers
+						-- was being claimed by the nearer one and never counted against the
+						-- other, so a layer with a hole beside it still came out complete.
 						open[depth] = true
+						seen[at] = true
 						continue
 					end
+	
+					if seen[at] then continue end
+					seen[at] = true
 					if block == bed or block:GetAttribute('NoBreak') then continue end
 	
 					-- Still stepped through, so a wrap with ore embedded in it is followed all
@@ -20826,9 +20830,17 @@ run(function()
 			if #frontier == 0 or visited >= SCAN_LIMIT then break end
 		end
 	
+		-- A hole anywhere further in means the wrap has already been breached, so nothing
+		-- outside it is a complete layer either. Breaking blocks reshuffles which layer the
+		-- survivors land in, and a layer left holding two blocks of one kind would otherwise
+		-- report itself complete.
+		local breached = false
 		local full = {}
-		for depth, types in layers do
-			if open[depth] or mixed[depth] then continue end
+		for depth = 1, MAX_LAYERS do
+			local types = layers[depth]
+			if not types then break end
+			if open[depth] then breached = true end
+			if breached or mixed[depth] then continue end
 	
 			local only, kinds = nil, 0
 			for name in types do
@@ -21340,6 +21352,13 @@ run(function()
 	-- answers are held for the length of one pass and dropped with the candidates.
 	local hitsCache = {}
 	
+	-- Where the last block to come down anywhere was, so a dig can follow the damage.
+	local lastBreak = nil
+	
+	local function cursorPosition()
+		return inputService.TouchEnabled and gameCamera.ViewportSize / 2 or inputService:GetMouseLocation()
+	end
+	
 	local function blockHitsAt(node)
 		local cached = hitsCache[node]
 		if cached then return cached end
@@ -21383,6 +21402,17 @@ run(function()
 		end,
 		Random = function(node)
 			return randomKey(node)
+		end,
+		Cursor = function(node)
+			local screen, visible = gameCamera:WorldToViewportPoint(node)
+			if not visible then return math.huge end
+			return (cursorPosition() - Vector2.new(screen.X, screen.Y)).Magnitude
+		end,
+		-- Falls back to whatever is nearest until something has actually broken, so the mode
+		-- does nothing surprising at the start of a round.
+		['Recently Hit'] = function(node, _, reach)
+			if not lastBreak then return reach end
+			return (node - lastBreak).Magnitude
 		end
 	}
 	
@@ -21489,6 +21519,10 @@ run(function()
 					table.insert(parts, part)
 				end
 	
+				Nuker:Clean(vainEvents.BreakBlockEvent.Event:Connect(function(data)
+					lastBreak = data.blockRef.blockPosition * 3
+				end))
+	
 				local beds = collection('bed', Nuker)
 				-- Teslas carry a real tag, so they are collected rather than name matched.
 				-- 'tesla' and 'tesla_trap' are ItemType values, not tags.
@@ -21533,6 +21567,7 @@ run(function()
 					end
 				until not Nuker.Enabled
 			else
+				lastBreak = nil
 				clearHealthbar()
 				table.clear(candidates)
 				table.clear(hitsCache)
@@ -21552,10 +21587,12 @@ run(function()
 		Function = function()
 			table.clear(tunnel)
 		end,
-		List = {'Smart', 'Nearest', 'Farthest', 'Health', 'Shortest', 'Lowest', 'Highest', 'Random'},
+		List = {'Smart', 'Nearest', 'Cursor', 'Recently Hit', 'Farthest', 'Health', 'Shortest', 'Lowest', 'Highest', 'Random'},
 		Tooltips = {
 			Smart = 'Nearest side in, unless it is much thicker',
 			Nearest = 'Closest block to you',
+			Cursor = 'Whatever is under your cursor',
+			['Recently Hit'] = 'Closest to the last block broken',
 			Farthest = 'Furthest block still in range',
 			Health = 'Weakest block, your tool counted',
 			Shortest = 'Fewest blocks through to the bed',
