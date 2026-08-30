@@ -1037,6 +1037,24 @@ run(function()
 		Pathfinding using a luau version of dijkstra's algorithm
 		Source: https://stackoverflow.com/questions/39355587/speeding-up-dijkstras-algorithm-to-solve-a-3d-maze
 	]]
+	-- The queue was being read with next() and shifted off the front, which is first in
+	-- first out - it never took the cheapest block, so this was breadth first search
+	-- wearing Dijkstra's name. Blocks are kept in cost order instead, so the one coming
+	-- off the front really is the cheapest and marking it visited is safe.
+	local STEP_COST = 0.001
+
+	local function enqueue(queue, dist, node)
+		local low, high = 1, #queue + 1
+		while low < high do
+			local mid = (low + high) // 2
+			if queue[mid][1] > dist then
+				high = mid
+			else
+				low = mid + 1
+			end
+		end
+		table.insert(queue, low, {dist, node})
+	end
 	-- Which opening you can actually reach depends on where you stand, so it is chosen
 	-- per call rather than baked into the cache. Picking purely on cost was wrong twice
 	-- over: the cheapest opening could sit on the far side of a build, out of range, and
@@ -1117,9 +1135,12 @@ run(function()
 		local visited, unvisited, distances, air, path = {}, {{0, blockpos}}, {[blockpos] = 0}, {}, {}
 
 		for _ = 1, 10000 do
-			local _, node = next(unvisited)
+			local node = unvisited[1]
 			if not node then break end
 			table.remove(unvisited, 1)
+			-- Relaxing a block queues it again rather than moving it, so the same one can
+			-- come up twice; the first time is the cheap one.
+			if visited[node[2]] then continue end
 			visited[node[2]] = true
 
 			for _, side in sides do
@@ -1135,9 +1156,15 @@ run(function()
 					continue
 				end
 
-				local curdist = getBlockHits(block, side) + node[1]
+				-- Every step costs a hair extra on top of the hits. A wall is the same
+				-- block over and over, so routes tie constantly, and with nothing to
+				-- separate them the one that got queued first won - which is why a route
+				-- would run sideways across a face instead of straight in. The step cost
+				-- settles ties on length while staying far too small to beat a genuinely
+				-- cheaper way through.
+				local curdist = getBlockHits(block, side) + node[1] + STEP_COST
 				if curdist < (distances[side] or math.huge) then
-					table.insert(unvisited, {curdist, side})
+					enqueue(unvisited, curdist, side)
 					distances[side] = curdist
 					path[side] = node[2]
 				end
