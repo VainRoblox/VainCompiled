@@ -1053,6 +1053,11 @@ run(function()
 	local HIT_WEIGHT = 0.0001
 	local HIT_CAP = 100
 
+	-- How many blocks longer than the shortest way in a target mode may still choose,
+	-- so it has a real choice of sides without being able to pick a way in that is not
+	-- part of the bed's defences at all.
+	local ENTRY_TOLERANCE = 2
+
 	local function enqueue(queue, dist, node)
 		local low, high = 1, #queue + 1
 		while low < high do
@@ -1114,13 +1119,27 @@ run(function()
 			end
 		end
 
+		-- A target mode chooses where on the outer defence layer to start, so that is all
+		-- it may choose from. The flood reaches every opening in whatever the bed happens
+		-- to be attached to, and on a large build the one nearest you can sit eight blocks
+		-- of tunnelling from the bed while another is one block away - picking that is how
+		-- a dig ended up running the length of a wall to get anywhere. Only the ways in
+		-- that are about as short as the shortest are offered up.
+		local mincost = math.huge
+		for node, cost in exposed do
+			if cost < mincost and allowed(node, origin and (node - origin).Magnitude or 0) then
+				mincost = cost
+			end
+		end
+		local costlimit = mincost + ENTRY_TOLERANCE
+
 		local best, bestkey, bestcost = nil, math.huge, math.huge
 		local near, nearreach, nearcost = nil, math.huge, math.huge
 		local cheap, cheapcost = nil, math.huge
 
 		for node, cost in exposed do
 			local reach = origin and (node - origin).Magnitude or 0
-			if not allowed(node, reach) then continue end
+			if cost > costlimit or not allowed(node, reach) then continue end
 
 			if score then
 				local key = score(node, cost, reach)
