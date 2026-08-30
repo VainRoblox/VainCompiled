@@ -1053,13 +1053,18 @@ run(function()
 	local function pickEntry(exposed, maxRange, score, prefer)
 		local origin = entitylib.isAlive and entitylib.character.RootPart.Position
 
-		-- Carry on through the hole already started instead of shaving another block off
-		-- the outer face. The block behind the one being broken is deeper, so it is
-		-- further away and scores worse on most modes even though it is the whole point
-		-- of having dug the first one. It only becomes an opening once that first block
-		-- is gone, so until then this falls straight through to the scoring below.
-		if prefer and exposed[prefer] and (not (maxRange and origin) or (prefer - origin).Magnitude <= maxRange) then
-			return prefer, exposed[prefer], -math.huge
+		-- Carry on down the hole already started instead of shaving another block off the
+		-- outer face. prefer is the whole remaining route, nearest end first, and the
+		-- first block of it still standing wins outright. Only naming the next block was
+		-- not enough: while that one is being broken the one after it is still buried, so
+		-- there was nothing to prefer and the scoring below picked whatever sat closest on
+		-- the outer face - which is never the block at the back of the hole.
+		if prefer then
+			for _, node in prefer do
+				if exposed[node] and (not (maxRange and origin) or (node - origin).Magnitude <= maxRange) then
+					return node, exposed[node], -math.huge
+				end
+			end
 		end
 
 		local best, bestkey, bestcost = nil, math.huge, math.huge
@@ -1216,8 +1221,22 @@ run(function()
 
 	-- autoTool: nil keeps the old behaviour of only swapping while no sword swing is in
 	-- flight, true always swaps to the right tool, false leaves your hand alone.
+	-- The remaining blocks between an opening and the target, nearest end first.
+	local ROUTE_LIMIT = 32
+
+	local function routeFrom(pos, path, into)
+		table.clear(into)
+		local node = pos
+		for _ = 1, ROUTE_LIMIT do
+			if not node then break end
+			table.insert(into, node)
+			node = path[node]
+		end
+		return into
+	end
+
 	-- options: Range caps how far the block being broken may be, Score ranks the ways in,
-	-- Prefer names one to carry on with.
+	-- Prefer is a route to carry on down, and Route is filled in with the one taken.
 	bedwars.breakBlock = function(block, effects, anim, customHealthbar, avoidOwn, autoTool, options)
 		if lplr:GetAttribute('DenyBlockBreak') or not entitylib.isAlive or InfiniteFly.Enabled then return end
 		options = options or {}
@@ -1307,6 +1326,12 @@ run(function()
 					end
 				end
 			end)
+
+			-- Built here rather than by the caller because breakBlock yields above, and by
+			-- the time it returns the route may have been dropped from the cache.
+			if options.Route then
+				routeFrom(pos, path, options.Route)
+			end
 
 			-- Returned whether or not effects are on. Without this a target that could not
 			-- be reached was indistinguishable from a hit that landed, so the caller kept
@@ -1408,7 +1433,9 @@ run(function()
 			}
 			for i, v in cache do
 				if ((data.blockRef.blockPosition * 3) - v[1]).Magnitude <= 30 then
-					table.clear(v[3])
+					-- The route table is handed out by breakBlock, which yields before it
+					-- returns - emptying it here left the caller holding an empty route and
+					-- no way to carry on down the hole it had started.
 					table.clear(v)
 					cache[i] = nil
 				end
@@ -20763,9 +20790,9 @@ run(function()
 	local AutoTool
 	local customlist, parts, candidates = {}, {}, {}
 	
-	-- The block one step further in for each thing being dug towards, so a started hole is
-	-- carried on through rather than abandoned for whatever the mode ranks best on the
-	-- outer face. Reused rather than rebuilt so breakBlock is handed the same table.
+	-- The route into each thing being dug towards, nearest end first, so a started hole is
+	-- carried on down rather than abandoned for whatever the mode ranks best on the outer
+	-- face. One table per target, handed straight to breakBlock and refilled by it.
 	local tunnel = {}
 	local breakOptions = {}
 	
@@ -21089,17 +21116,22 @@ run(function()
 				-- Self Break has to reach the dig route, not just the target: breakBlock
 				-- tunnels towards a block rather than hitting it directly, so with the check
 				-- on the target alone every block on the way there got broken regardless.
+				local route = tunnel[v]
+				if not route then
+					route = {}
+					tunnel[v] = route
+				end
+	
 				breakOptions.Range = Range.Value
 				breakOptions.Score = entryScorers[TargetMode.Value]
-				breakOptions.Prefer = tunnel[v]
+				-- Read on the way in and refilled on the way out, so the route carries from
+				-- one hit to the next. A break that never went out leaves it untouched.
+				breakOptions.Prefer = route
+				breakOptions.Route = route
 	
 				local target, path, endpos = bedwars.breakBlock(v, Effect.Enabled, Animation.Enabled, CustomHealth.Enabled and customHealthbar or nil, not SelfBreak.Enabled, AutoTool.Enabled, breakOptions)
 				if not target then return end
 				broke = true
-				-- path maps each block to the one nearer the target, so this is the next step
-				-- inwards. It is only reachable once the block being hit is gone, which is
-				-- exactly when it should be taken.
-				tunnel[v] = path and path[target] or nil
 	
 				if Effect.Enabled and path then
 					local currentnode = target
