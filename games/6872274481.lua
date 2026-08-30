@@ -20672,69 +20672,72 @@ run(function()
 	local Quantity
 	local FullLayers
 	local FullColor = {}
+	local UpdateRate
 	local Reference = {}
+	local Signature = {}
 	local Folder = Instance.new('Folder')
 	Folder.Parent = vain.gui
 	
-	-- How deep a wrap is worth reporting on. Past this the layers stop being defences.
-	local MAX_LAYERS = 4
+	-- How deep a wrap is worth reporting on, and a ceiling on how much can be walked in
+	-- one go so a huge base cannot stall a refresh.
+	local MAX_LAYERS = 6
+	local SCAN_LIMIT = 1200
 	
 	--[[
-		The same walk outwards along each face that already decides which blocks to show,
-		keeping two more things while it is there: how many of each block it passed, and
-		what each layer is made of. Step i away from the bed is layer i, so a layer counts
-		as complete when everything at that step is the same block and no direction ran out
-		into open air before reaching it.
+		Walks outwards from the bed one layer at a time and reports what is around it: how
+		many of each block, and what each layer is made of.
+	
+		Following the six faces out from the bed the way the old scan did can only ever meet
+		one block per direction per step, so every layer came back as about eight however
+		many blocks were really in it. This walks the whole shell instead.
+	
+		Unbreakable blocks are stepped over rather than counted, which is what keeps the walk
+		out of the island the bed is standing on - it is solid, so it is not a hole in the
+		layer either, it just is not part of anybody's defence.
 	]]
-	local function scanSide(self, start, found, open)
-		for _, side in sides do
-			for i = 1, 15 do
-				local pos = start + (side * i)
-				local block = getPlacedBlock(pos)
-				if not block then
-					-- Nothing here, so this layer and everything past it has a way in.
-					for depth = i, MAX_LAYERS do
-						open[depth] = true
-					end
-					break
-				end
-				if block == self then break end
-	
-				-- A bed covers two positions, so the same block can be one step from one half
-				-- and two from the other. It belongs to the nearer layer, and counts once.
-				local prev = found[pos]
-				if not prev or i < prev.Depth then
-					found[pos] = {Block = block, Depth = i}
-				end
-			end
-		end
-	end
-	
 	local function scanBed(bed)
-		local names, counts, layers, found, open = {}, {}, {}, {}, {}
-		for depth = 1, MAX_LAYERS do
-			layers[depth] = {}
-		end
+		local names, counts, layers, open = {}, {}, {}, {}
+		local seen, frontier, visited = {}, {}, 0
 	
 		-- Straight off the block handler rather than assuming which way the bed lies, so a
 		-- rotated one is walked from both of its halves like any other.
 		for _, v in bedwars.getContainedPositions(bed) do
-			scanSide(bed, v * 3, found, open)
+			local pos = v * 3
+			seen[pos] = true
+			table.insert(frontier, pos)
 		end
 	
-		for _, entry in found do
-			local block = entry.Block
-			if block:GetAttribute('NoBreak') then continue end
+		for depth = 1, MAX_LAYERS do
+			local nextfrontier, types = {}, {}
+			layers[depth] = types
 	
-			if not table.find(names, block.Name) then
-				table.insert(names, block.Name)
-			end
-			counts[block.Name] = (counts[block.Name] or 0) + 1
+			for _, pos in frontier do
+				for _, side in sides do
+					local at = pos + side
+					if seen[at] then continue end
+					seen[at] = true
 	
-			if entry.Depth <= MAX_LAYERS then
-				local types = layers[entry.Depth]
-				types[block.Name] = (types[block.Name] or 0) + 1
+					local block = getPlacedBlock(at)
+					if not block then
+						-- Nothing here, so this layer has a way through it.
+						open[depth] = true
+						continue
+					end
+					if block == bed or block:GetAttribute('NoBreak') then continue end
+	
+					if not table.find(names, block.Name) then
+						table.insert(names, block.Name)
+					end
+					counts[block.Name] = (counts[block.Name] or 0) + 1
+					types[block.Name] = (types[block.Name] or 0) + 1
+	
+					visited += 1
+					table.insert(nextfrontier, at)
+				end
 			end
+	
+			frontier = nextfrontier
+			if #frontier == 0 or visited >= SCAN_LIMIT then break end
 		end
 	
 		local full = {}
@@ -20754,14 +20757,21 @@ run(function()
 		return names, counts, full
 	end
 	
+	-- What the plate would look like, as a string. Re-checking is cheap but tearing down
+	-- and rebuilding every icon is not, so with a refresh running on a timer the drawing
+	-- only happens when this comes out different from last time.
+	local function signature(order, counts, full)
+		local parts = {}
+		for _, name in order do
+			table.insert(parts, name .. 'x' .. counts[name] .. (full[name] and '!' or ''))
+		end
+		table.insert(parts, tostring(Quantity and Quantity.Enabled) .. tostring(FullLayers and FullLayers.Enabled))
+		table.insert(parts, string.format('%.3f %.3f %.3f %.3f', FullColor.Hue or 0, FullColor.Sat or 0, FullColor.Value or 0, FullColor.Opacity or 0))
+		return table.concat(parts, '|')
+	end
+	
 	local function refreshAdornee(v)
 		if not v.Adornee then return end
-	
-		for _, obj in v.Frame:GetChildren() do
-			if obj.Name == 'Block' then
-				obj:Destroy()
-			end
-		end
 	
 		local order, counts, full = scanBed(v.Adornee)
 		-- Toughest first. A block the metadata has never heard of sorts last rather than
@@ -20774,6 +20784,16 @@ run(function()
 			return health(a) > health(b)
 		end)
 		v.Enabled = #order > 0
+	
+		local sig = signature(order, counts, full)
+		if Signature[v] == sig then return end
+		Signature[v] = sig
+	
+		for _, obj in v.Frame:GetChildren() do
+			if obj.Name == 'Block' then
+				obj:Destroy()
+			end
+		end
 	
 		local showfull = FullLayers and FullLayers.Enabled
 		local showcount = Quantity and Quantity.Enabled
@@ -20882,17 +20902,40 @@ run(function()
 				BedPlates:Clean(collectionService:GetInstanceAddedSignal('bed'):Connect(Added))
 				BedPlates:Clean(collectionService:GetInstanceRemovedSignal('bed'):Connect(function(v)
 					if Reference[v] then
+						Signature[Reference[v]] = nil
 						Reference[v]:Destroy()
 						Reference[v]:ClearAllChildren()
 						Reference[v] = nil
 					end
 				end))
+	
+				-- The block events only report what the server tells us about, and a layer
+				-- that quietly stopped being complete is exactly the thing you want to notice.
+				-- Guarded so one bad pass cannot kill the loop, with the wait outside so a
+				-- repeating error cannot spin the CPU.
+				task.spawn(function()
+					repeat
+						local ok = pcall(refreshAll)
+						-- The slider may not exist yet if a saved config switched this on while the
+						-- file was still running, and an error out here would end the loop for good.
+						task.wait(ok and UpdateRate and (1 / UpdateRate.Value) or 0.5)
+					until not BedPlates.Enabled
+				end)
 			else
 				table.clear(Reference)
+				table.clear(Signature)
 				Folder:ClearAllChildren()
 			end
 		end,
 		Tooltip = 'Displays blocks over the bed'
+	})
+	UpdateRate = BedPlates:CreateSlider({
+		Name = 'Update Rate',
+		Tooltip = 'How often the plates are re-checked\nLower costs less performance',
+		Min = 1,
+		Max = 60,
+		Default = 10,
+		Suffix = 'hz'
 	})
 	Quantity = BedPlates:CreateToggle({
 		Name = 'Quantity',
