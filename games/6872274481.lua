@@ -20798,20 +20798,27 @@ run(function()
 			blockimage.Parent = holder
 	
 			if showcount then
-				-- Two labels offset by a pixel: the dark one behind reads as an outline, which
-				-- is what keeps a number legible against whatever block is behind it.
-				for i, shade in {Color3.new(), color.Dark(uipallet.Text, 0.16)} do
-					local amount = Instance.new('TextLabel')
-					amount.Size = UDim2.fromOffset(30, 12)
-					amount.Position = UDim2.fromOffset(i - 2, 19)
-					amount.BackgroundTransparency = 1
-					amount.Text = tostring(counts[block])
-					amount.TextXAlignment = Enum.TextXAlignment.Right
-					amount.TextColor3 = shade
-					amount.TextSize = 12
-					amount.FontFace = uipallet.FontSemiBold
-					amount.Parent = holder
-				end
+				-- Across the whole icon rather than tucked into a corner: at the size these
+				-- plates are drawn on screen, anything smaller cannot be read at a glance.
+				-- White on a dark outline so it stands off whatever block is behind it.
+				local amount = Instance.new('TextLabel')
+				amount.Size = UDim2.fromScale(1, 1)
+				amount.BackgroundTransparency = 1
+				amount.Text = tostring(counts[block])
+				amount.TextColor3 = Color3.new(1, 1, 1)
+				amount.TextScaled = true
+				amount.FontFace = uipallet.FontSemiBold
+				amount.ZIndex = 2
+				amount.Parent = holder
+				local outline = Instance.new('UIStroke')
+				outline.Color = Color3.new()
+				outline.Thickness = 2
+				outline.Parent = amount
+				-- Keeps a two digit count off the edges of the icon.
+				local padding = Instance.new('UIPadding')
+				padding.PaddingTop = UDim.new(0, 3)
+				padding.PaddingBottom = UDim.new(0, 3)
+				padding.Parent = amount
 			end
 		end
 	end
