@@ -20743,6 +20743,17 @@ run(function()
 	local MAX_LAYERS = 6
 	local SCAN_LIMIT = 1200
 	
+	-- Ore is part of the map that happens to be sitting against somebody's wrap, not
+	-- something they built to defend it. It is walked past rather than counted, so a bed
+	-- that touches a generator does not pick up a stray icon reading 1.
+	local IGNORED = {
+		iron_ore = true,
+		iron_ore_mesh_block = true,
+		diamond_ore = true,
+		emerald_ore = true,
+		crystal_ore = true
+	}
+	
 	--[[
 		Walks outwards from the bed one layer at a time and reports what is around it: how
 		many of each block, and what each layer is made of.
@@ -20785,11 +20796,15 @@ run(function()
 					end
 					if block == bed or block:GetAttribute('NoBreak') then continue end
 	
-					if not table.find(names, block.Name) then
-						table.insert(names, block.Name)
+					-- Still stepped through, so a wrap with ore embedded in it is followed all
+					-- the way round, and still solid, so it does not read as a hole either.
+					if not IGNORED[block.Name] then
+						if not table.find(names, block.Name) then
+							table.insert(names, block.Name)
+						end
+						counts[block.Name] = (counts[block.Name] or 0) + 1
+						types[block.Name] = (types[block.Name] or 0) + 1
 					end
-					counts[block.Name] = (counts[block.Name] or 0) + 1
-					types[block.Name] = (types[block.Name] or 0) + 1
 	
 					visited += 1
 					table.insert(nextfrontier, at)
