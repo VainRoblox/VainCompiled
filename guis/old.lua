@@ -127,6 +127,14 @@ end
 local function addTooltip(gui, text)
 	if not text then return end
 
+	-- A tooltip may be given as a function when what it says depends on something that
+	-- changes while the client runs, such as a rebindable game keybind.
+	local function resolve()
+		if type(text) ~= 'function' then return text end
+		local ok, res = pcall(text)
+		return (ok and type(res) == 'string') and res or ''
+	end
+
 	local function tooltipMoved(x, y)
 		local right = x + 16 + tooltip.Size.X.Offset > (scale.Scale * 1920)
 		tooltip.Position = UDim2.fromOffset((right and x - (tooltip.Size.X.Offset * scale.Scale) - 16 or x + 16) / scale.Scale, ((y + 11) - (tooltip.Size.Y.Offset / 2)) / scale.Scale)
@@ -134,9 +142,10 @@ local function addTooltip(gui, text)
 	end
 
 	gui.MouseEnter:Connect(function(x, y)
-		local tooltipSize = getfontsize(text, tooltip.TextSize, uipallet.Font)
+		local current = resolve()
+		local tooltipSize = getfontsize(current, tooltip.TextSize, uipallet.Font)
 		tooltip.Size = UDim2.fromOffset(tooltipSize.X + 10, tooltipSize.Y + 6)
-		tooltip.Text = text
+		tooltip.Text = current
 		tooltipMoved(x, y)
 	end)
 	gui.MouseMoved:Connect(tooltipMoved)
