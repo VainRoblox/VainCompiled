@@ -1050,8 +1050,18 @@ run(function()
 	-- gets broken, so this is what a target mode has to steer. Without one, the near side
 	-- wins unless it would cost substantially more to get through, which is the
 	-- difference between reaching around a thin wall and mining through a thick one.
-	local function pickEntry(exposed, maxRange, score)
+	local function pickEntry(exposed, maxRange, score, prefer)
 		local origin = entitylib.isAlive and entitylib.character.RootPart.Position
+
+		-- Carry on through the hole already started instead of shaving another block off
+		-- the outer face. The block behind the one being broken is deeper, so it is
+		-- further away and scores worse on most modes even though it is the whole point
+		-- of having dug the first one. It only becomes an opening once that first block
+		-- is gone, so until then this falls straight through to the scoring below.
+		if prefer and exposed[prefer] and (not (maxRange and origin) or (prefer - origin).Magnitude <= maxRange) then
+			return prefer, exposed[prefer], -math.huge
+		end
+
 		local best, bestkey, bestcost = nil, math.huge, math.huge
 		local near, nearreach, nearcost = nil, math.huge, math.huge
 		local cheap, cheapcost = nil, math.huge
@@ -1089,11 +1099,11 @@ run(function()
 	-- directly - so a Self Break check on the target alone never prevented your own
 	-- blocks being destroyed on the way there. The flag is part of the cache entry
 	-- because the same target has two different cheapest routes depending on it.
-	local function calculatePath(target, blockpos, avoidOwn, maxRange, score)
+	local function calculatePath(target, blockpos, avoidOwn, maxRange, score, prefer)
 		avoidOwn = avoidOwn == true
 		local cached = cache[blockpos]
 		if cached and cached[4] == avoidOwn then
-			local pos, cost, key = pickEntry(cached[5], maxRange, score)
+			local pos, cost, key = pickEntry(cached[5], maxRange, score, prefer)
 			if pos then
 				return pos, cost, cached[3], key
 			end
@@ -1149,7 +1159,7 @@ run(function()
 			exposed
 		}
 
-		local pos, cost, key = pickEntry(exposed, maxRange, score)
+		local pos, cost, key = pickEntry(exposed, maxRange, score, prefer)
 		if pos then
 			return pos, cost, path, key
 		end
@@ -1206,9 +1216,13 @@ run(function()
 
 	-- autoTool: nil keeps the old behaviour of only swapping while no sword swing is in
 	-- flight, true always swaps to the right tool, false leaves your hand alone.
-	bedwars.breakBlock = function(block, effects, anim, customHealthbar, avoidOwn, autoTool, maxRange, entryScore)
+	-- options: Range caps how far the block being broken may be, Score ranks the ways in,
+	-- Prefer names one to carry on with.
+	bedwars.breakBlock = function(block, effects, anim, customHealthbar, avoidOwn, autoTool, options)
 		if lplr:GetAttribute('DenyBlockBreak') or not entitylib.isAlive or InfiniteFly.Enabled then return end
-		maxRange = math.min(maxRange or 30, 30)
+		options = options or {}
+		local maxRange = math.min(options.Range or 30, 30)
+		local entryScore, prefer = options.Score, options.Prefer
 		local cost, pos, target, path = math.huge
 		-- A bed covers several block positions, each with its own way in. They are
 		-- compared on whatever the target mode is ranking by, so the mode's pick is not
@@ -1216,7 +1230,7 @@ run(function()
 		local bestkey = math.huge
 
 		for _, v in containedPositions(block) do
-			local dpos, dcost, dpath, dkey = calculatePath(block, v * 3, avoidOwn, maxRange, entryScore)
+			local dpos, dcost, dpath, dkey = calculatePath(block, v * 3, avoidOwn, maxRange, entryScore, prefer)
 			dkey = dkey or dcost
 			if dpos and dkey < bestkey then
 				bestkey, cost, pos, target, path = dkey, dcost, dpos, v * 3, dpath
@@ -20749,6 +20763,12 @@ run(function()
 	local AutoTool
 	local customlist, parts, candidates = {}, {}, {}
 	
+	-- The block one step further in for each thing being dug towards, so a started hole is
+	-- carried on through rather than abandoned for whatever the mode ranks best on the
+	-- outer face. Reused rather than rebuilt so breakBlock is handed the same table.
+	local tunnel = {}
+	local breakOptions = {}
+	
 	-- Ranks used by the Priority target mode, in the order the categories were tried
 	-- before target modes existed.
 	local RANK_BED = 1
@@ -21069,9 +21089,17 @@ run(function()
 				-- Self Break has to reach the dig route, not just the target: breakBlock
 				-- tunnels towards a block rather than hitting it directly, so with the check
 				-- on the target alone every block on the way there got broken regardless.
-				local target, path, endpos = bedwars.breakBlock(v, Effect.Enabled, Animation.Enabled, CustomHealth.Enabled and customHealthbar or nil, not SelfBreak.Enabled, AutoTool.Enabled, Range.Value, entryScorers[TargetMode.Value])
+				breakOptions.Range = Range.Value
+				breakOptions.Score = entryScorers[TargetMode.Value]
+				breakOptions.Prefer = tunnel[v]
+	
+				local target, path, endpos = bedwars.breakBlock(v, Effect.Enabled, Animation.Enabled, CustomHealth.Enabled and customHealthbar or nil, not SelfBreak.Enabled, AutoTool.Enabled, breakOptions)
 				if not target then return end
 				broke = true
+				-- path maps each block to the one nearer the target, so this is the next step
+				-- inwards. It is only reachable once the block being hit is gone, which is
+				-- exactly when it should be taken.
+				tunnel[v] = path and path[target] or nil
 	
 				if Effect.Enabled and path then
 					local currentnode = target
@@ -21163,6 +21191,7 @@ run(function()
 				clearHealthbar()
 				table.clear(candidates)
 				table.clear(hitsCache)
+				table.clear(tunnel)
 				for _, v in parts do
 					v:ClearAllChildren()
 					v:Destroy()
@@ -21174,7 +21203,10 @@ run(function()
 	})
 	TargetMode = Nuker:CreateDropdown({
 		Name = 'Target Mode',
-		Tooltip = 'Which block is broken first, measured from you',
+		Tooltip = 'Where the way in starts, measured from you',
+		Function = function()
+			table.clear(tunnel)
+		end,
 		List = {'Smart', 'Nearest', 'Farthest', 'Health', 'Shortest', 'Lowest', 'Highest', 'Random'},
 		Tooltips = {
 			Smart = 'Nearest side in, unless it is much thicker',
