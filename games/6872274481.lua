@@ -1214,6 +1214,7 @@ run(function()
 
 	bedwars.getBlockHealth = getBlockHealth
 	bedwars.getPlacedBlock = getPlacedBlock
+	bedwars.getContainedPositions = containedPositions
 
 	-- First person puts the camera inside your own head. The head is looked up live and
 	-- the gap is given a little room: a cached head goes stale across a respawn and then
@@ -20668,44 +20669,156 @@ run(function()
 	local BedPlates
 	local Background
 	local Color = {}
+	local Quantity
+	local FullLayers
+	local FullColor = {}
 	local Reference = {}
 	local Folder = Instance.new('Folder')
 	Folder.Parent = vain.gui
 	
-	local function scanSide(self, start, tab)
+	-- How deep a wrap is worth reporting on. Past this the layers stop being defences.
+	local MAX_LAYERS = 4
+	
+	--[[
+		The same walk outwards along each face that already decides which blocks to show,
+		keeping two more things while it is there: how many of each block it passed, and
+		what each layer is made of. Step i away from the bed is layer i, so a layer counts
+		as complete when everything at that step is the same block and no direction ran out
+		into open air before reaching it.
+	]]
+	local function scanSide(self, start, found, open)
 		for _, side in sides do
 			for i = 1, 15 do
-				local block = getPlacedBlock(start + (side * i))
-				if not block or block == self then break end
-				if not block:GetAttribute('NoBreak') and not table.find(tab, block.Name) then
-					table.insert(tab, block.Name)
+				local pos = start + (side * i)
+				local block = getPlacedBlock(pos)
+				if not block then
+					-- Nothing here, so this layer and everything past it has a way in.
+					for depth = i, MAX_LAYERS do
+						open[depth] = true
+					end
+					break
+				end
+				if block == self then break end
+	
+				-- A bed covers two positions, so the same block can be one step from one half
+				-- and two from the other. It belongs to the nearer layer, and counts once.
+				local prev = found[pos]
+				if not prev or i < prev.Depth then
+					found[pos] = {Block = block, Depth = i}
 				end
 			end
 		end
 	end
 	
+	local function scanBed(bed)
+		local names, counts, layers, found, open = {}, {}, {}, {}, {}
+		for depth = 1, MAX_LAYERS do
+			layers[depth] = {}
+		end
+	
+		-- Straight off the block handler rather than assuming which way the bed lies, so a
+		-- rotated one is walked from both of its halves like any other.
+		for _, v in bedwars.getContainedPositions(bed) do
+			scanSide(bed, v * 3, found, open)
+		end
+	
+		for _, entry in found do
+			local block = entry.Block
+			if block:GetAttribute('NoBreak') then continue end
+	
+			if not table.find(names, block.Name) then
+				table.insert(names, block.Name)
+			end
+			counts[block.Name] = (counts[block.Name] or 0) + 1
+	
+			if entry.Depth <= MAX_LAYERS then
+				local types = layers[entry.Depth]
+				types[block.Name] = (types[block.Name] or 0) + 1
+			end
+		end
+	
+		local full = {}
+		for depth, types in layers do
+			if open[depth] then continue end
+	
+			local only, kinds = nil, 0
+			for name in types do
+				only = name
+				kinds += 1
+			end
+			if kinds == 1 then
+				full[only] = true
+			end
+		end
+	
+		return names, counts, full
+	end
+	
 	local function refreshAdornee(v)
+		if not v.Adornee then return end
+	
 		for _, obj in v.Frame:GetChildren() do
-			if obj:IsA('ImageLabel') and obj.Name ~= 'Blur' then
+			if obj.Name == 'Block' then
 				obj:Destroy()
 			end
 		end
 	
-		local start = v.Adornee.Position
-		local alreadygot = {}
-		scanSide(v.Adornee, start, alreadygot)
-		scanSide(v.Adornee, start + Vector3.new(0, 0, 3), alreadygot)
-		table.sort(alreadygot, function(a, b)
-			return (bedwars.ItemMeta[a].block and bedwars.ItemMeta[a].block.health or 0) > (bedwars.ItemMeta[b].block and bedwars.ItemMeta[b].block.health or 0)
+		local order, counts, full = scanBed(v.Adornee)
+		-- Toughest first. A block the metadata has never heard of sorts last rather than
+		-- throwing, which would take every plate down with it.
+		local function health(name)
+			local meta = bedwars.ItemMeta[name]
+			return (meta and meta.block and meta.block.health) or 0
+		end
+		table.sort(order, function(a, b)
+			return health(a) > health(b)
 		end)
-		v.Enabled = #alreadygot > 0
+		v.Enabled = #order > 0
 	
-		for _, block in alreadygot do
+		local showfull = FullLayers and FullLayers.Enabled
+		local showcount = Quantity and Quantity.Enabled
+	
+		for _, block in order do
+			local complete = showfull and full[block]
+	
+			local holder = Instance.new('Frame')
+			holder.Name = 'Block'
+			holder.Size = UDim2.fromOffset(32, 32)
+			holder.BackgroundColor3 = Color3.fromHSV(FullColor.Hue or 0, FullColor.Sat or 0, FullColor.Value or 1)
+			holder.BackgroundTransparency = complete and (1 - (FullColor.Opacity or 1)) or 1
+			holder.Parent = v.Frame
+			local holdercorner = Instance.new('UICorner')
+			holdercorner.CornerRadius = UDim.new(0, 4)
+			holdercorner.Parent = holder
+	
 			local blockimage = Instance.new('ImageLabel')
-			blockimage.Size = UDim2.fromOffset(32, 32)
+			blockimage.Size = UDim2.fromScale(1, 1)
 			blockimage.BackgroundTransparency = 1
 			blockimage.Image = bedwars.getIcon({itemType = block}, true)
-			blockimage.Parent = v.Frame
+			blockimage.Parent = holder
+	
+			if showcount then
+				-- Two labels offset by a pixel: the dark one behind reads as an outline, which
+				-- is what keeps a number legible against whatever block is behind it.
+				for i, shade in {Color3.new(), color.Dark(uipallet.Text, 0.16)} do
+					local amount = Instance.new('TextLabel')
+					amount.Size = UDim2.fromOffset(30, 12)
+					amount.Position = UDim2.fromOffset(i - 2, 19)
+					amount.BackgroundTransparency = 1
+					amount.Text = tostring(counts[block])
+					amount.TextXAlignment = Enum.TextXAlignment.Right
+					amount.TextColor3 = shade
+					amount.TextSize = 12
+					amount.FontFace = uipallet.FontSemiBold
+					amount.Parent = holder
+				end
+			end
+		end
+	end
+	
+	local function refreshAll()
+		for _, v in Reference do
+			refreshAdornee(v)
 		end
 	end
 	
@@ -20754,8 +20867,8 @@ run(function()
 		Name = 'BedPlates',
 		Function = function(callback)
 			if callback then
-				for _, v in collectionService:GetTagged('bed') do 
-					task.spawn(Added, v) 
+				for _, v in collectionService:GetTagged('bed') do
+					task.spawn(Added, v)
 				end
 				BedPlates:Clean(vainEvents.PlaceBlockEvent.Event:Connect(refreshNear))
 				BedPlates:Clean(vainEvents.BreakBlockEvent.Event:Connect(refreshNear))
@@ -20774,12 +20887,39 @@ run(function()
 		end,
 		Tooltip = 'Displays blocks over the bed'
 	})
+	Quantity = BedPlates:CreateToggle({
+		Name = 'Quantity',
+		Tooltip = 'Shows how many of each block there are',
+		Function = refreshAll,
+		Default = true
+	})
+	FullLayers = BedPlates:CreateToggle({
+		Name = 'Full Layers',
+		Tooltip = 'Highlights blocks that cover a whole layer on their own',
+		Function = function(callback)
+			if FullColor.Object then
+				FullColor.Object.Visible = callback
+			end
+			refreshAll()
+		end,
+		Default = true
+	})
+	FullColor = BedPlates:CreateColorSlider({
+		Name = 'Full Layer Color',
+		Tooltip = 'Color of the full layer highlight',
+		DefaultHue = 0.33,
+		DefaultSat = 0.75,
+		DefaultValue = 1,
+		DefaultOpacity = 0.6,
+		Function = refreshAll,
+		Darker = true
+	})
 	Background = BedPlates:CreateToggle({
 		Name = 'Background',
 		Tooltip = 'Draws a background behind the text',
 		Function = function(callback)
-			if Color.Object then 
-				Color.Object.Visible = callback 
+			if Color.Object then
+				Color.Object.Visible = callback
 			end
 			for _, v in Reference do
 				v.Frame.BackgroundTransparency = 1 - (callback and Color.Opacity or 0)
@@ -20801,6 +20941,7 @@ run(function()
 		end,
 		Darker = true
 	})
+	
 end)
 
 run(function()
