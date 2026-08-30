@@ -1041,7 +1041,15 @@ run(function()
 	-- first out - it never took the cheapest block, so this was breadth first search
 	-- wearing Dijkstra's name. Blocks are kept in cost order instead, so the one coming
 	-- off the front really is the cheapest and marking it visited is safe.
-	local STEP_COST = 0.001
+	--
+	-- A route costs one per block. It used to cost the hits needed to break each one,
+	-- which optimises for damage rather than digging: four soft blocks beat one tough
+	-- one, so routes wandered off diagonally through whatever was cheapest instead of
+	-- going in. Toughness is kept only to separate routes of the same length, weighted
+	-- and capped so that however many blocks a route crosses it can never add up to a
+	-- whole extra one.
+	local HIT_WEIGHT = 0.0001
+	local HIT_CAP = 100
 
 	local function enqueue(queue, dist, node)
 		local low, high = 1, #queue + 1
@@ -1156,13 +1164,7 @@ run(function()
 					continue
 				end
 
-				-- Every step costs a hair extra on top of the hits. A wall is the same
-				-- block over and over, so routes tie constantly, and with nothing to
-				-- separate them the one that got queued first won - which is why a route
-				-- would run sideways across a face instead of straight in. The step cost
-				-- settles ties on length while staying far too small to beat a genuinely
-				-- cheaper way through.
-				local curdist = getBlockHits(block, side) + node[1] + STEP_COST
+				local curdist = node[1] + 1 + (math.min(getBlockHits(block, side), HIT_CAP) * HIT_WEIGHT)
 				if curdist < (distances[side] or math.huge) then
 					enqueue(unvisited, curdist, side)
 					distances[side] = curdist
@@ -1212,6 +1214,19 @@ run(function()
 
 	bedwars.getBlockHealth = getBlockHealth
 	bedwars.getPlacedBlock = getPlacedBlock
+
+	-- First person puts the camera inside your own head. The head is looked up live and
+	-- the gap is given a little room: a cached head goes stale across a respawn and then
+	-- reports a huge gap forever, and the walk animation moves the head enough that too
+	-- tight a threshold reads as third person mid-stride - which is what let a
+	-- third-person-only module run while you were in first and walking.
+	bedwars.isFirstPerson = function()
+		local char = lplr.Character
+		local head = char and char:FindFirstChild('Head')
+		local camera = workspace.CurrentCamera or gameCamera
+		if not head or not camera then return false end
+		return (camera.CFrame.Position - head.Position).Magnitude < 1.5
+	end
 	bedwars.getBlockHits = getBlockHits
 
 	-- Mirrors what the AutoTool module does for a manual break: select the hotbar slot
@@ -4252,11 +4267,7 @@ run(function()
 	-- which matches what you see on screen.
 	local function viewAllowed()
 		if ViewMode.Value == 'Both' then return true end
-		local head = entitylib.character and entitylib.character.Head
-		if not head then return true end
-	
-		local firstperson = (gameCamera.CFrame.Position - head.Position).Magnitude <= 1
-		return firstperson == (ViewMode.Value == 'First Person')
+		return bedwars.isFirstPerson() == (ViewMode.Value == 'First Person')
 	end
 	
 	-- Whichever of the two is closer to your cursor right now.
@@ -4698,11 +4709,7 @@ run(function()
 	-- which matches what you see on screen.
 	local function viewAllowed()
 		if ViewMode.Value == 'Both' then return true end
-		local head = entitylib.character and entitylib.character.Head
-		if not head then return true end
-	
-		local firstperson = (gameCamera.CFrame.Position - head.Position).Magnitude <= 1
-		return firstperson == (ViewMode.Value == 'First Person')
+		return bedwars.isFirstPerson() == (ViewMode.Value == 'First Person')
 	end
 	
 	local function getAmmo(check)
@@ -20895,11 +20902,7 @@ run(function()
 	-- which matches what you see on screen.
 	local function viewAllowed()
 		if not ViewMode or ViewMode.Value == 'Both' then return true end
-		local head = entitylib.character and entitylib.character.Head
-		if not head then return true end
-	
-		local firstperson = (gameCamera.CFrame.Position - head.Position).Magnitude <= 1
-		return firstperson == (ViewMode.Value == 'First Person')
+		return bedwars.isFirstPerson() == (ViewMode.Value == 'First Person')
 	end
 	
 	--[[
