@@ -6640,6 +6640,7 @@ end)
 
 run(function()
 	local AntiRender
+	local OnlyRanked
 	
 	-- The game's own match state for the end-of-round scoreboard, which is the moment the
 	-- next lobby is being set up and a kit change still takes.
@@ -6647,8 +6648,7 @@ run(function()
 	local NONE = 'none'
 	
 	--[[
-		Swaps you onto the none kit once a round is over, so the round you join next reports
-		no kit at all.
+		Swaps you onto the none kit, so the round you join next reports no kit at all.
 	
 		This is the same call the kit shop's Equip button makes, not a display trick: the
 		server is told, and it is the server that tells everyone else what you are running.
@@ -6661,10 +6661,56 @@ run(function()
 		return ok and result and true or false
 	end
 	
+	--[[
+		Ranked is the only mode that calls a round off for want of players, and the only one
+		where what kit you are on is worth hiding in the first place.
+	
+		Matched on the queue's name rather than a list of queue types, the same way the other
+		modules pick a mode out, so a ranked playlist that does not exist yet is covered
+		without a list to keep up to date.
+	]]
+	local function ranked()
+		return (store.queueType or ''):find('ranked') ~= nil
+	end
+	
+	-- Says which way the swap went either way. Silence would be worse than a notification
+	-- here: a failed swap looks exactly like a successful one right up until the next round
+	-- starts and your kit is on show.
+	local function unequip()
+		if OnlyRanked.Enabled and not ranked() then return end
+	
+		-- Read before the swap, since this is what is being changed away from. Empty means
+		-- you are already on none and there is nothing to do - which is also what makes it
+		-- safe for the event and the state below to both fire.
+		local worn = store.equippedKit
+		if worn == '' then return end
+	
+		if activate(NONE) then
+			notif('AntiRender', 'Unequipped '..worn, 3)
+		else
+			notif('AntiRender', 'Could not unequip '..worn, 3)
+		end
+	end
+	
 	AntiRender = vain.Categories.Utility:CreateModule({
 		Name = 'AntiRender',
 		Function = function(callback)
 			if not callback then return end
+	
+			--[[
+				The round ending is announced by this before the state catches up, and the
+				announcement carries whether it was called off rather than played out - which
+				ranked does when too few players load in.
+	
+				Watched as well as the state below, not instead of it. A cancelled round is
+				over in a hurry and the client can be on its way back to the lobby inside the
+				half second the poll waits, so the poll alone could miss the only chance to
+				swap. Swapping twice costs nothing, since the second one finds you already on
+				no kit and stops.
+			]]
+			AntiRender:Clean(vainEvents.MatchEndEvent.Event:Connect(function()
+				task.spawn(unequip)
+			end))
 	
 			-- Deliberately nil rather than the current state, so switching this on while a
 			-- round is already over acts straight away instead of waiting for the one after.
@@ -6674,18 +6720,7 @@ run(function()
 	
 				if state ~= last then
 					if state == POST then
-						-- Read before the swap, since store.equippedKit is what it is being
-						-- changed away from. Empty means you were already on none.
-						local worn = store.equippedKit
-						if worn ~= '' then
-							if activate(NONE) then
-								notif('AntiRender', 'Unequipped '..worn, 3)
-							else
-								-- Worth saying out loud rather than failing quietly: the round
-								-- you join next would still be showing your kit.
-								notif('AntiRender', 'Could not unequip '..worn, 3)
-							end
-						end
+						unequip()
 					end
 	
 					last = state
@@ -6695,6 +6730,11 @@ run(function()
 			until not AntiRender.Enabled
 		end,
 		Tooltip = 'Unequips your kit when a round ends'
+	})
+	OnlyRanked = AntiRender:CreateToggle({
+		Name = 'Only Ranked',
+		Tooltip = 'Only runs while in a ranked queue',
+		Default = true
 	})
 	
 end)
@@ -19106,63 +19146,134 @@ end)
 
 run(function()
 	local AutoSuffocate
+	local Targets
 	local Range
+	local Walls
+	local Speed
 	local LimitItem
 	
-	local function fixPosition(pos)
-		return bedwars.BlockController:getBlockPosition(pos) * 3
+	-- The game throws away any placement sent inside half its own interval, so nothing
+	-- quicker than this is worth sending.
+	local PLACE_CPS = 12
+	local MIN_SPEED = 1 / PLACE_CPS
+	
+	-- The four ways out at head height, in block units rather than studs.
+	local SIDES = {
+		Vector3.new(1, 0, 0),
+		Vector3.new(-1, 0, 0),
+		Vector3.new(0, 0, 1),
+		Vector3.new(0, 0, -1)
+	}
+	local DOWN = Vector3.new(0, 1, 0)
+	
+	--[[
+		Which block cell a world position sits in, and the middle of a cell in world terms.
+	
+		Kept apart on purpose. Stepping to a neighbour by adding studs to a world position and
+		snapping afterwards does not work: a block is three studs, so adding two lands back
+		inside the cell you started from about a third of the time. Every one of those reads
+		as an open side, because the cell the target is standing in is of course empty - which
+		is why a boxed in player kept coming back as not boxed in and nothing was ever placed.
+	
+		Stepping in cells and converting once at the end cannot land anywhere but the
+		neighbour.
+	]]
+	local function cellOf(pos)
+		return bedwars.BlockController:getBlockPosition(pos)
+	end
+	
+	local function worldOf(cell)
+		return cell * 3
+	end
+	
+	local function heldBlock()
+		if store.hand.toolType == 'block' and store.hand.tool then
+			return store.hand.tool.Name
+		end
+		return (not LimitItem.Enabled) and getWool() or nil
+	end
+	
+	-- The cells around an entity that are still open, and how boxed in it is.
+	local function openSides(ent)
+		local cell = cellOf(ent.RootPart.Position)
+		local open = {}
+	
+		for _, side in SIDES do
+			local at = worldOf(cell + side)
+			if not getPlacedBlock(at) then
+				table.insert(open, at)
+			end
+		end
+	
+		return open, cell
+	end
+	
+	local function suffocate(ent, item)
+		local open, cell = openSides(ent)
+		-- Walls is how many sides have to be shut for this to be worth doing, so the rest
+		-- are what may still be open.
+		if #open > (#SIDES - Walls.Value) then return false end
+	
+		-- The head first, since that is the one that actually does it. The remaining ways out
+		-- come after, so a target one wall short of boxed in gets shut in rather than ignored.
+		local targets = {worldOf(cellOf(ent.Head.Position))}
+		for _, v in open do
+			table.insert(targets, v)
+		end
+		table.insert(targets, worldOf(cell - DOWN))
+	
+		for _, pos in targets do
+			if not getPlacedBlock(pos) then
+				bedwars.placeBlock(pos, item)
+				return true
+			end
+		end
+	
+		return false
 	end
 	
 	AutoSuffocate = vain.Categories.World:CreateModule({
 		Name = 'AutoSuffocate',
 		Function = function(callback)
-			if callback then
-				repeat
-					local item = store.hand.toolType == 'block' and store.hand.tool.Name or not LimitItem.Enabled and getWool()
+			if not callback then return end
 	
-					if item then
-						local plrs = entitylib.AllPosition({
-							Part = 'RootPart',
-							Range = Range.Value,
-							Players = true
-						})
+			repeat
+				local item = heldBlock()
+				if item then
+					for _, ent in entitylib.AllPosition({
+						Part = 'RootPart',
+						Range = Range.Value,
+						Players = Targets.Players.Enabled,
+						NPCs = Targets.NPCs.Enabled,
+						Wallcheck = Targets.Walls.Enabled
+					}) do
+						if not AutoSuffocate.Enabled then break end
 	
-						for _, ent in plrs do
-							local needPlaced = {}
-	
-							for _, side in Enum.NormalId:GetEnumItems() do
-								side = Vector3.fromNormalId(side)
-								if side.Y ~= 0 then continue end
-	
-								side = fixPosition(ent.RootPart.Position + side * 2)
-								if not getPlacedBlock(side) then
-									table.insert(needPlaced, side)
-								end
-							end
-	
-							if #needPlaced < 3 then
-								table.insert(needPlaced, fixPosition(ent.Head.Position))
-								table.insert(needPlaced, fixPosition(ent.RootPart.Position - Vector3.new(0, 1, 0)))
-	
-								for _, pos in needPlaced do
-									if not getPlacedBlock(pos) then
-										task.spawn(bedwars.placeBlock, pos, item)
-										break
-									end
-								end
-							end
+						-- Placed one at a time and paced, rather than a spawned call per
+						-- target every pass. Several targets at once used to send several
+						-- placements in the same frame, and everything past the first was
+						-- thrown away for coming in under the game's own rate.
+						if suffocate(ent, item) then
+							task.wait(Speed.Value)
+							item = heldBlock()
+							if not item then break end
 						end
 					end
+				end
 	
-					task.wait(0.09)
-				until not AutoSuffocate.Enabled
-			end
+				task.wait(Speed.Value)
+			until not AutoSuffocate.Enabled
 		end,
-		Tooltip = 'Places blocks on nearby confined entities'
+		Tooltip = 'Traps nearby players by placing blocks on them'
+	})
+	Targets = AutoSuffocate:CreateTargets({
+		Players = true,
+		NPCs = true,
+		Tooltip = 'Which entities this module is allowed to target'
 	})
 	Range = AutoSuffocate:CreateSlider({
 		Name = 'Range',
-		Tooltip = 'How far this reaches, in studs',
+		Tooltip = 'How far this reaches, in studs\nDefault is 20',
 		Min = 1,
 		Max = 20,
 		Default = 20,
@@ -19170,11 +19281,28 @@ run(function()
 			return val == 1 and 'stud' or 'studs'
 		end
 	})
+	Walls = AutoSuffocate:CreateSlider({
+		Name = 'Walls',
+		Tooltip = 'Sides that must be shut before acting\nDefault is 3',
+		Min = 1,
+		Max = 4,
+		Default = 3
+	})
+	Speed = AutoSuffocate:CreateSlider({
+		Name = 'Speed',
+		Tooltip = 'Delay between blocks, lower is faster\nGame limit is 12 a second',
+		Min = MIN_SPEED,
+		Max = 1,
+		Default = 0.1,
+		Decimal = 100,
+		Suffix = 'seconds'
+	})
 	LimitItem = AutoSuffocate:CreateToggle({
 		Name = 'Limit to Items',
-		Tooltip = 'Only acts while holding a matching item',
+		Tooltip = 'Only acts while holding a block',
 		Default = true
 	})
+	
 end)
 
 run(function()
