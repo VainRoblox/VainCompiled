@@ -5277,20 +5277,20 @@ run(function()
 	local Background
 	local Color = {}
 	local ShowAmount
-	local Presets = {}
 	
-	-- The things worth knowing an enemy has. Ordered, so the icons always come out the same
-	-- way round rather than in whatever order the inventory happened to be in.
+	-- The things worth knowing an enemy has. Seeded straight into the item list, so they can
+	-- be switched off or removed there like anything else rather than being nine settings of
+	-- their own.
 	local PRESETS = {
-		{Name = 'Iron', Type = 'iron'},
-		{Name = 'Gold', Type = 'gold'},
-		{Name = 'Diamond', Type = 'diamond'},
-		{Name = 'Emerald', Type = 'emerald'},
-		{Name = 'Telepearl', Type = 'telepearl'},
-		{Name = 'Fireball', Type = 'fireball'},
-		{Name = 'TNT', Type = 'tnt'},
-		{Name = 'Obsidian', Type = 'obsidian'},
-		{Name = 'Golden Apple', Type = 'golden_apple'}
+		'iron',
+		'gold',
+		'diamond',
+		'emerald',
+		'telepearl',
+		'fireball',
+		'tnt',
+		'obsidian',
+		'golden_apple'
 	}
 	-- ent -> {Billboard = BillboardGui, Player = Player}
 	-- The player is kept alongside the billboard because the adornee is the root
@@ -5307,19 +5307,19 @@ run(function()
 		return setting ~= nil and setting.Enabled
 	end
 	
+	-- Which entry of the list an item matches, or nil for one that matches nothing. The
+	-- position is what orders the icons, so they come out in the order the list is in rather
+	-- than however the inventory happened to be arranged.
 	local function listed(itemType)
-		if not itemType then return false end
+		if not itemType then return nil end
+		if not (List and List.ListEnabled) then return nil end
 	
-		local preset = Presets[itemType]
-		if preset and preset.Enabled then return true end
-	
-		if List and List.ListEnabled then
-			if table.find(List.ListEnabled, itemType) then return true end
-			for _, v in List.ListEnabled do
-				if itemType:find(v) then return true end
+		for i, v in List.ListEnabled do
+			if itemType == v or itemType:find(v) then
+				return i
 			end
 		end
-		return false
+		return nil
 	end
 	
 	local function addIcon(frame, itemType, amount)
@@ -5332,14 +5332,22 @@ run(function()
 		if on(ShowAmount) and amount and amount > 1 then
 			local text = Instance.new('TextLabel')
 			text.Name = 'Amount'
-			text.Size = UDim2.fromOffset(16, 16)
-			text.Position = UDim2.fromOffset(16, 16)
+			-- A strip across the bottom of the icon rather than a fixed box in the corner,
+			-- with the text scaled to whatever is in it. Four digits at a fixed size ran
+			-- straight out of a sixteen pixel box and across the icon next to it, which is
+			-- what turned three stacks into one unreadable run of numbers.
+			text.Size = UDim2.new(1, 0, 0, 14)
+			text.Position = UDim2.new(0, 0, 1, -14)
 			text.BackgroundColor3 = Color3.new(0, 0, 0)
 			text.BackgroundTransparency = 0.3
 			text.TextColor3 = Color3.new(1, 1, 1)
-			text.TextSize = 12
+			text.TextScaled = true
 			text.Text = tostring(amount)
 			text.Parent = image
+			-- Scaling alone would blow a single digit up to the full height of the strip.
+			local size = Instance.new('UITextSizeConstraint')
+			size.MaxTextSize = 12
+			size.Parent = text
 			local corner = Instance.new('UICorner')
 			corner.CornerRadius = UDim.new(0, 2)
 			corner.Parent = text
@@ -5375,17 +5383,18 @@ run(function()
 			end
 		end
 	
-		local totals, extra = {}, {}
+		local totals, rank, order = {}, {}, {}
 	
 		local function count(item)
 			if type(item) ~= 'table' or not item.itemType then return end
-			if not listed(item.itemType) then return end
+	
+			local at = listed(item.itemType)
+			if not at then return end
 	
 			if not totals[item.itemType] then
 				totals[item.itemType] = 0
-				if not Presets[item.itemType] then
-					table.insert(extra, item.itemType)
-				end
+				rank[item.itemType] = at
+				table.insert(order, item.itemType)
 			end
 			totals[item.itemType] += tonumber(item.amount) or 1
 		end
@@ -5403,15 +5412,13 @@ run(function()
 			count(hand)
 		end
 	
-		-- Presets in their listed order, anything from the custom list after them.
+		table.sort(order, function(a, b)
+			if rank[a] == rank[b] then return a < b end
+			return rank[a] < rank[b]
+		end)
+	
 		local any = false
-		for _, preset in PRESETS do
-			if totals[preset.Type] then
-				addIcon(frame, preset.Type, totals[preset.Type])
-				any = true
-			end
-		end
-		for _, itemType in extra do
+		for _, itemType in order do
 			addIcon(frame, itemType, totals[itemType])
 			any = true
 		end
@@ -5499,7 +5506,8 @@ run(function()
 	})
 	List = InventoryESP:CreateTextList({
 		Name = 'Item',
-		Tooltip = 'Extra items to show, on top of the ones below',
+		Tooltip = 'Which items to show',
+		Default = PRESETS,
 		Function = function()
 			task.spawn(refreshAll)
 		end
@@ -5545,17 +5553,6 @@ run(function()
 			task.spawn(refreshAll)
 		end
 	})
-	for _, preset in PRESETS do
-		Presets[preset.Type] = InventoryESP:CreateToggle({
-			Name = preset.Name,
-			Tooltip = 'Shows '..preset.Name:lower(),
-			Default = true,
-			Darker = true,
-			Function = function()
-				task.spawn(refreshAll)
-			end
-		})
-	end
 	
 end)
 

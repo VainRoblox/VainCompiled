@@ -1801,8 +1801,11 @@ components = {
 	TextList = function(optionsettings, children, api)
 		local optionapi = {
 			Type = 'TextList',
-			List = optionsettings.Default or {},
-			ListEnabled = optionsettings.Default or {},
+			List = optionsettings.Default and table.clone(optionsettings.Default) or {},
+			-- Cloned, not shared. Both fields pointed at the same table, so switching a default
+			-- entry off removed it from the list it was toggled in and it vanished from the
+			-- dropdown for good.
+			ListEnabled = optionsettings.Default and table.clone(optionsettings.Default) or {},
 			Objects = {},
 			Window = {Visible = false},
 			Index = getTableSize(api.Options)
