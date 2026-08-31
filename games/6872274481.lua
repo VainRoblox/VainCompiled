@@ -19230,6 +19230,7 @@ run(function()
 	local Speed
 	local Layers
 	local Range
+	local Angle
 	local AutoPatch
 	local AutoBlock
 	local LimitItems
@@ -19386,6 +19387,27 @@ run(function()
 		return (entitylib.character.RootPart.Position - pos).Magnitude <= Range.Value
 	end
 	
+	--[[
+		Whether a cell sits within the cone you are looking down.
+	
+		The setting is the width of that cone, so half of it is the furthest off your view a
+		block may sit. A full turn takes in everything, and is not worth resolving the camera
+		for at all.
+	]]
+	local function inView(pos)
+		local half = Angle.Value / 2
+		if half >= 180 then return true end
+	
+		local camera = workspace.CurrentCamera
+		if not camera then return true end
+	
+		local dir = pos - camera.CFrame.Position
+		if dir.Magnitude == 0 then return true end
+	
+		local facing = camera.CFrame.LookVector:Dot(dir.Unit)
+		return math.deg(math.acos(math.clamp(facing, -1, 1))) <= half
+	end
+	
 	-- One sweep of the bed. Returns whether anything was built, so the caller can tell a
 	-- finished defence from one it never got near.
 	local function protect(bed)
@@ -19395,6 +19417,7 @@ run(function()
 			if not BedProtector.Enabled then break end
 			if getPlacedBlock(pos) then continue end
 			if not inReach(pos) then continue end
+			if not inView(pos) then continue end
 			if AutoPatch.Enabled and not isGap(pos) then continue end
 	
 			local item = chooseBlock()
@@ -19490,6 +19513,14 @@ run(function()
 		Suffix = function(val)
 			return val == 1 and 'stud' or 'studs'
 		end
+	})
+	Angle = BedProtector:CreateSlider({
+		Name = 'Angle',
+		Tooltip = 'How wide a cone in front of you blocks place in\n360 places behind you too',
+		Min = 1,
+		Max = 360,
+		Default = 360,
+		Suffix = 'degrees'
 	})
 	AutoPatch = BedProtector:CreateToggle({
 		Name = 'Auto Patch',
