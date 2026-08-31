@@ -19822,15 +19822,23 @@ run(function()
 			end
 		end
 	
-		for i, tool in sending do
+		for _, tool in sending do
 			if not AutoBank.Enabled then return end
 	
-			-- The first goes in the moment you are in reach; the delay sits between them, so
-			-- a full inventory is not emptied into the chest in a single frame.
-			if i > 1 and Delay and Delay.Value > 0 then
+			--[[
+				Waited before every item, the first one included.
+	
+				Sitting it only between items made the setting look like it did nothing, and
+				for once that was exactly right: the inventory holds one entry per resource
+				with an amount on it, not one per unit, so carrying nothing but iron is a run
+				of a single item and there is no between for the wait to sit in.
+	
+				Zero on the slider still banks the moment you are in reach.
+			]]
+			if Delay and Delay.Value > 0 then
 				task.wait(Delay.Value)
-				-- Walking off mid way through stops the rest, rather than carrying on posting
-				-- items to a chest you are no longer standing at.
+				-- Walking off part way through stops the rest, rather than carrying on
+				-- posting items to a chest you are no longer standing at.
 				if not nearestChest() then return end
 				if GuiCheck and GuiCheck.Enabled and not chestApp() then return end
 			end
