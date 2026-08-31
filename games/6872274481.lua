@@ -1435,6 +1435,10 @@ run(function()
 
 	-- autoTool: nil keeps the old behaviour of only swapping while no sword swing is in
 	-- flight, true always swaps to the right tool, false leaves your hand alone.
+	-- The swing currently playing on your character, so the next one replaces it rather
+	-- than stacking another track on top of one still running.
+	local swingtrack
+
 	-- The remaining blocks between an opening and the target, nearest end first.
 	local ROUTE_LIMIT = 32
 
@@ -1532,12 +1536,36 @@ run(function()
 						end
 					end
 
+					--[[
+						Matched to what the game plays when you break a block by hand.
+
+						The viewmodel animation asked for here was 15, FP_SWING_SWORD, when
+						breaking plays 14, FP_USE_ITEM - so a pickaxe has been swinging like
+						a sword all along, which is most of why it never looked right. Items
+						may override that, which is how the odd tool gets its own swing.
+
+						Nothing is cut off on a timer any more either. Waiting a fixed 0.3s
+						and then stopping the track meant every break speed under that
+						started the next swing on top of one still playing, and blocked the
+						promise this runs inside for the same 0.3s. The game does not stop
+						this animation by hand at all - it is left to finish.
+					]]
 					if anim then
-						local animation = bedwars.AnimationUtil:playAnimation(lplr, bedwars.BlockController:getAnimationController():getAssetId(1))
-						bedwars.ViewmodelController:playAnimation(15)
-						task.wait(0.3)
-						animation:Stop()
-						animation:Destroy()
+						pcall(function()
+							local held = store.hand.tool and bedwars.ItemMeta[store.hand.tool.Name]
+							local swing = (held and held.breakBlockSwingAnimationOverride) or bedwars.AnimationType.FP_USE_ITEM
+							bedwars.ViewmodelController:playAnimation(swing)
+						end)
+
+						-- The character swing is the half other players can see, so it stays
+						-- - one at a time, replaced rather than layered.
+						pcall(function()
+							if swingtrack then
+								swingtrack:Stop(0.1)
+								swingtrack:Destroy()
+							end
+							swingtrack = bedwars.AnimationUtil:playAnimation(lplr, bedwars.BlockController:getAnimationController():getAssetId(bedwars.AnimationType.SWORD_SWING))
+						end)
 					end
 				end
 			end)
