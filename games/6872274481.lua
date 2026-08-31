@@ -5332,25 +5332,29 @@ run(function()
 		if on(ShowAmount) and amount and amount > 1 then
 			local text = Instance.new('TextLabel')
 			text.Name = 'Amount'
-			-- A strip across the bottom of the icon rather than a fixed box in the corner,
-			-- with the text scaled to whatever is in it. Four digits at a fixed size ran
-			-- straight out of a sixteen pixel box and across the icon next to it, which is
-			-- what turned three stacks into one unreadable run of numbers.
-			text.Size = UDim2.new(1, 0, 0, 14)
-			text.Position = UDim2.new(0, 0, 1, -14)
-			text.BackgroundColor3 = Color3.new(0, 0, 0)
-			text.BackgroundTransparency = 0.3
+			-- Across the whole icon rather than a box tucked under it, and drawn the way the
+			-- bed plates draw theirs: white on a dark outline with nothing behind it. At the
+			-- size these sit on screen a boxed corner number is too small to read, and the
+			-- box hid as much of the icon as the number was worth.
+			text.Size = UDim2.fromScale(1, 1)
+			text.BackgroundTransparency = 1
+			text.Text = tostring(amount)
 			text.TextColor3 = Color3.new(1, 1, 1)
 			text.TextScaled = true
-			text.Text = tostring(amount)
+			text.FontFace = uipallet.FontSemiBold
+			text.ZIndex = 2
 			text.Parent = image
-			-- Scaling alone would blow a single digit up to the full height of the strip.
-			local size = Instance.new('UITextSizeConstraint')
-			size.MaxTextSize = 12
-			size.Parent = text
-			local corner = Instance.new('UICorner')
-			corner.CornerRadius = UDim.new(0, 2)
-			corner.Parent = text
+	
+			local outline = Instance.new('UIStroke')
+			outline.Color = Color3.new()
+			outline.Thickness = 2
+			outline.Parent = text
+	
+			-- Keeps a three digit count off the top and bottom edges of the icon.
+			local padding = Instance.new('UIPadding')
+			padding.PaddingTop = UDim.new(0, 3)
+			padding.PaddingBottom = UDim.new(0, 3)
+			padding.Parent = text
 		end
 	end
 	
