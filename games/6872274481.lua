@@ -19275,12 +19275,25 @@ run(function()
 		end
 	end
 	
+	--[[
+		TNT counts as a placeable block as far as the metadata goes, and a soft one at that,
+		so it would be reached for first by the weakest-first choice and fallen back to by the
+		strongest-first choice once everything else ran out - either way stacking explosives
+		against the bed this is supposed to be protecting.
+	
+		Matched on the name rather than a list of item types, so the siege and balloon variants
+		are covered by the same rule.
+	]]
+	local function explosive(itemType)
+		return itemType:find('tnt') ~= nil
+	end
+	
 	-- Everything placeable you are carrying, toughest first.
 	local function heldBlocks()
 		local blocks = {}
 		for _, item in store.inventory.inventory.items do
 			local meta = bedwars.ItemMeta[item.itemType]
-			if meta and meta.block then
+			if meta and meta.block and not explosive(item.itemType) then
 				table.insert(blocks, {Item = item, Health = meta.block.health or 0})
 			end
 		end
@@ -19313,6 +19326,9 @@ run(function()
 	
 	local function equip(item)
 		if not item.tool then return end
+		-- Already in hand, so there is nothing to switch. Doing it again for every single
+		-- placement was wasted work and a visible flicker.
+		if store.hand.tool == item.tool then return end
 	
 		for i, v in store.inventory.hotbar do
 			if v.item and v.item.itemType == item.itemType then
@@ -19420,13 +19436,25 @@ run(function()
 			if not inView(pos) then continue end
 			if AutoPatch.Enabled and not isGap(pos) then continue end
 	
+			--[[
+				Judged on what is already in your hand, before Auto Block touches it.
+	
+				Equipping first meant Auto Block satisfied this check itself, so the gate could
+				never fail and holding a sword still built. Asked first, the two settings read
+				the way they are worded: a sword out means nothing is built at all, while a
+				block out means building may start - and only then does Auto Block swap that
+				block for the one you asked for.
+			]]
+			if LimitItems.Enabled and not holdingBlock() then continue end
+	
 			local item = chooseBlock()
 			if not item then break end
 	
+			-- Left as late as possible, so your hand is only ever changed for a placement that
+			-- is actually about to happen.
 			if AutoBlock.Enabled then
 				equip(item)
 			end
-			if LimitItems.Enabled and not holdingBlock() then continue end
 	
 			bedwars.placeBlock(pos, item.itemType)
 			built = true
@@ -19528,8 +19556,7 @@ run(function()
 	})
 	AutoBlock = BedProtector:CreateToggle({
 		Name = 'Auto Block',
-		Tooltip = 'Holds the block before placing it',
-		Default = true
+		Tooltip = 'Holds the block before placing it'
 	})
 	LimitItems = BedProtector:CreateToggle({
 		Name = 'Limit to Items',
