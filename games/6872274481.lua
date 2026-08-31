@@ -5290,7 +5290,6 @@ run(function()
 		'telepearl',
 		'fireball',
 		'tnt',
-		'obsidian',
 		'golden_apple'
 	}
 	-- ent -> {Billboard = BillboardGui, Player = Player}
@@ -5406,8 +5405,22 @@ run(function()
 		local frame = billboard:FindFirstChild('Frame')
 		if not frame then return end
 	
-		local inventory = store.inventories[plr]
-		if not inventory then
+		--[[
+			Both the cache and a fresh read, and never one instead of the other.
+	
+			The cache is written once when a player is first seen and then only rebuilt when
+			they swap their held item or change armor, so anything they picked up after you
+			injected - a TNT bought mid game - was never in it. A fresh read has those, but
+			replacing the cache with one is what blanked the display before now: a read that
+			comes back short overwrites everything that was there.
+	
+			Counting from both and letting neither remove the other is the way to have it
+			both ways. The two overlap heavily, so the same stack has to be recognised across
+			them - see the folder Instance check below.
+		]]
+		local cached = store.inventories[plr]
+		local fresh = bedwars.getInventory and bedwars.getInventory(plr)
+		if not (cached or fresh) then
 			billboard.Enabled = false
 			return
 		end
@@ -5418,10 +5431,18 @@ run(function()
 			end
 		end
 	
-		local totals, rank, order = {}, {}, {}
+		local totals, rank, order, seen = {}, {}, {}, {}
 	
 		local function count(item)
 			if type(item) ~= 'table' or not item.itemType then return end
+	
+			-- Keyed on the folder Instance, because the cache and the fresh read describe the
+			-- same stacks and counting one twice would double every number on screen.
+			local tool = item.tool
+			if typeof(tool) == 'Instance' then
+				if seen[tool] then return end
+				seen[tool] = true
+			end
 	
 			local at = listed(item.itemType)
 			if not at then return end
@@ -5437,17 +5458,27 @@ run(function()
 			totals[item.itemType] += have
 		end
 	
-		if type(inventory.items) == 'table' then
-			for _, item in inventory.items do
-				count(item)
-			end
-		end
+		-- Built up rather than written as a literal: either one can be missing, and a nil
+		-- sitting in the first slot of a table stops the loop before it starts.
+		local sources = {}
+		if cached then table.insert(sources, cached) end
+		if fresh then table.insert(sources, fresh) end
 	
-		-- Their hand is normally part of the list above already; this is only for the case
-		-- where it is not.
-		local hand = inventory.hand
-		if type(hand) == 'table' and hand.itemType and not totals[hand.itemType] then
-			count(hand)
+		for _, inventory in sources do
+			if type(inventory.items) == 'table' then
+				for _, item in inventory.items do
+					count(item)
+				end
+			end
+	
+			-- Their hand is normally part of the list above already. One that carries a folder
+			-- Instance is caught by the check inside count; one that does not has to be kept
+			-- off a type that has already been counted, or it would be added twice.
+			local hand = inventory.hand
+			if type(hand) == 'table' and hand.itemType
+				and (typeof(hand.tool) == 'Instance' or not totals[hand.itemType]) then
+				count(hand)
+			end
 		end
 	
 		table.sort(order, function(a, b)
