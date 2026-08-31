@@ -5347,6 +5347,14 @@ run(function()
 			local size = Instance.new('UITextSizeConstraint')
 			size.MaxTextSize = 12
 			size.Parent = text
+	
+			-- What the panel behind it used to do. Without something separating the digits
+			-- from the icon they sit on, a white number on a light block washes out as soon
+			-- as the billboard shrinks with distance.
+			local outline = Instance.new('UIStroke')
+			outline.Color = Color3.new()
+			outline.Thickness = 2
+			outline.Parent = text
 		end
 	end
 	
