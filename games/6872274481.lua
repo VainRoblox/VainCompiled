@@ -5277,7 +5277,6 @@ run(function()
 	local Background
 	local Color = {}
 	local ShowAmount
-	local AllItems
 	
 	-- The things worth knowing an enemy has. Seeded straight into the item list, so they can
 	-- be switched off or removed there like anything else rather than being nine settings of
@@ -5312,44 +5311,14 @@ run(function()
 	-- than however the inventory happened to be arranged.
 	local function listed(itemType)
 		if not itemType then return nil end
+		if not (List and List.ListEnabled) then return nil end
 	
-		if List and List.ListEnabled then
-			for i, v in List.ListEnabled do
-				if itemType == v or itemType:find(v) then
-					return i
-				end
+		for i, v in List.ListEnabled do
+			if itemType == v or itemType:find(v) then
+				return i
 			end
 		end
-	
-		-- Everything the list did not name, sorted after everything it did.
-		if on(AllItems) then return math.huge end
 		return nil
-	end
-	
-	--[[
-		How many of an item there are, right now.
-	
-		store.inventories is written once when a player is first seen and then only rebuilt
-		when they swap their held item or change armor - those four things are all base
-		watches for it. A count moving on its own never touches any of them, which is why the
-		numbers sat at whatever they were when you injected.
-	
-		Each cached item keeps the folder Instance it came from, and that Instance's Amount
-		attribute is what actually changes. Reading it is live without having to rebuild the
-		inventory at all - which is what went wrong last time: a fresh read that came back
-		with a smaller set of items than the cache replaced the good one and everything
-		vanished. Nothing is replaced here, so there is nothing to lose.
-	
-		An item whose Instance has left the folder has been used up, and is reported gone.
-	]]
-	local function liveAmount(item)
-		local tool = item.tool
-		if typeof(tool) ~= 'Instance' then
-			return tonumber(item.amount) or 1
-		end
-		if not tool.Parent then return nil end
-	
-		return tonumber(tool:GetAttribute('Amount')) or tonumber(item.amount) or 1
 	end
 	
 	local function addIcon(frame, itemType, amount)
@@ -5405,90 +5374,51 @@ run(function()
 		local frame = billboard:FindFirstChild('Frame')
 		if not frame then return end
 	
-		--[[
-			Both the cache and a fresh read, and never one instead of the other.
-	
-			The cache is written once when a player is first seen and then only rebuilt when
-			they swap their held item or change armor, so anything they picked up after you
-			injected - a TNT bought mid game - was never in it. A fresh read has those, but
-			replacing the cache with one is what blanked the display before now: a read that
-			comes back short overwrites everything that was there.
-	
-			Counting from both and letting neither remove the other is the way to have it
-			both ways. The two overlap heavily, so the same stack has to be recognised across
-			them - see the folder Instance check below.
-		]]
-		local cached = store.inventories[plr]
-		local fresh = bedwars.getInventory and bedwars.getInventory(plr)
-		if not (cached or fresh) then
+		local inventory = store.inventories[plr]
+		if not inventory then
 			billboard.Enabled = false
 			return
 		end
 	
-		local totals, rank, order, seen = {}, {}, {}, {}
+		for _, obj in frame:GetChildren() do
+			if obj:IsA('ImageLabel') and obj.Name ~= 'Blur' then
+				obj:Destroy()
+			end
+		end
+	
+		local totals, rank, order = {}, {}, {}
 	
 		local function count(item)
 			if type(item) ~= 'table' or not item.itemType then return end
 	
-			-- Keyed on the folder Instance, because the cache and the fresh read describe the
-			-- same stacks and counting one twice would double every number on screen.
-			local tool = item.tool
-			if typeof(tool) == 'Instance' then
-				if seen[tool] then return end
-				seen[tool] = true
-			end
-	
 			local at = listed(item.itemType)
 			if not at then return end
-	
-			local have = liveAmount(item)
-			if not have then return end
 	
 			if not totals[item.itemType] then
 				totals[item.itemType] = 0
 				rank[item.itemType] = at
 				table.insert(order, item.itemType)
 			end
-			totals[item.itemType] += have
+			totals[item.itemType] += tonumber(item.amount) or 1
 		end
 	
-		-- Built up rather than written as a literal: either one can be missing, and a nil
-		-- sitting in the first slot of a table stops the loop before it starts.
-		local sources = {}
-		if cached then table.insert(sources, cached) end
-		if fresh then table.insert(sources, fresh) end
-	
-		for _, inventory in sources do
-			if type(inventory.items) == 'table' then
-				for _, item in inventory.items do
-					count(item)
-				end
+		if type(inventory.items) == 'table' then
+			for _, item in inventory.items do
+				count(item)
 			end
+		end
 	
-			-- Their hand is normally part of the list above already. One that carries a folder
-			-- Instance is caught by the check inside count; one that does not has to be kept
-			-- off a type that has already been counted, or it would be added twice.
-			local hand = inventory.hand
-			if type(hand) == 'table' and hand.itemType
-				and (typeof(hand.tool) == 'Instance' or not totals[hand.itemType]) then
-				count(hand)
-			end
+		-- Their hand is normally part of the list above already; this is only for the case
+		-- where it is not.
+		local hand = inventory.hand
+		if type(hand) == 'table' and hand.itemType and not totals[hand.itemType] then
+			count(hand)
 		end
 	
 		table.sort(order, function(a, b)
 			if rank[a] == rank[b] then return a < b end
 			return rank[a] < rank[b]
 		end)
-	
-		-- Cleared only once there is something to put back. Doing it first meant anything
-		-- that went wrong while working out the contents - and something did - left every
-		-- icon destroyed and nothing drawn, which is why the display kept going blank
-		-- instead of simply not updating.
-		for _, obj in frame:GetChildren() do
-			if obj:IsA('ImageLabel') and obj.Name ~= 'Blur' then
-				obj:Destroy()
-			end
-		end
 	
 		local any = false
 		for _, itemType in order do
@@ -5502,9 +5432,7 @@ run(function()
 	local function refreshAll()
 		for ent, entry in Entries do
 			if entry.Billboard.Parent and entry.Player and entry.Player.Parent then
-				-- Guarded per player. A throw part way through used to abandon the whole pass,
-				-- so everybody after the one that failed went unrefreshed too.
-				pcall(refreshAdornee, entry.Billboard, entry.Player)
+				refreshAdornee(entry.Billboard, entry.Player)
 			else
 				entry.Billboard:Destroy()
 				Entries[ent] = nil
@@ -5620,13 +5548,6 @@ run(function()
 			end
 		end,
 		Darker = true
-	})
-	AllItems = InventoryESP:CreateToggle({
-		Name = 'All Items',
-		Tooltip = 'Shows everything they carry, not just the list',
-		Function = function()
-			task.spawn(refreshAll)
-		end
 	})
 	ShowAmount = InventoryESP:CreateToggle({
 		Name = 'Show Amount',
