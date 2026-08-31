@@ -19309,21 +19309,62 @@ run(function()
 	-- anything up is not retried on every pass.
 	local RETRY = 1
 	
-	local OWN = {personal_chest = true, og_personal_chest = true}
+	local function personalFolder()
+		local inventories = replicatedStorage:FindFirstChild('Inventories')
+		return inventories and inventories:FindFirstChild(lplr.Name..'_personal')
+	end
 	
 	--[[
-		Your own chest and your team's crate.
+		Your own chest, never looted whatever the settings say - it is AutoBank's, and taking
+		back out what that just put in is never what anybody wants.
 	
-		Your personal one is AutoBank's job, so looting it would only hand the same items back
-		and forth between the two modules. The team crate is found the way the game finds it,
-		by the Team attribute on the block matching your own - which is also why an enemy
-		crate, being another team's, is still fair game.
+		Tested on the folder the items live in rather than on the block's name. The name was
+		not enough: a personal chest is reached through an ordinary ChestFolderValue like any
+		other chest, so from the outside it looks like nothing special, which is exactly how
+		this was emptying the chest AutoBank had just filled.
 	]]
-	local function ownChest(block)
-		if OWN[block.Name] then return true end
+	local function ownChest(folder)
+		return folder ~= nil and folder == personalFolder()
+	end
 	
-		local team = lplr:GetAttribute('Team')
-		return team ~= nil and block:GetAttribute('Team') == team
+	--[[
+		Your team's crate, which Skip Own covers.
+	
+		Found the way the game's own getTeamCrate finds it, by the Team attribute matching
+		yours - an enemy crate belongs to another team and stays fair game.
+	
+		Compared as text and looked for up the parents, because the tag sits on a holder with
+		the block underneath it and the id comes back as a string in some places and a number
+		in others; a straight == between the two forms is quietly false.
+	]]
+	local function teamOf(inst)
+		local team = inst:GetAttribute('Team')
+		if team == nil then team = inst:GetAttribute('GeneratorTeam') end
+		return team ~= nil and tostring(team) or nil
+	end
+	
+	local function teamChest(block)
+		local mine = lplr:GetAttribute('Team')
+		if mine == nil or not block then return false end
+		mine = tostring(mine)
+	
+		local node = block
+		for _ = 1, 3 do
+			if not node then break end
+			if teamOf(node) == mine then return true end
+			node = node.Parent
+		end
+		return false
+	end
+	
+	-- Which chest block a folder belongs to, so a chest opened by hand can be judged the same
+	-- way as one walked up to.
+	local function blockFor(chests, folder)
+		if not folder then return nil end
+		for _, v in chests do
+			local value = v:FindFirstChild('ChestFolderValue')
+			if value and value.Value == folder then return v end
+		end
 	end
 	
 	local function chestApp()
@@ -19434,14 +19475,24 @@ run(function()
 							pcall(function()
 								if Open.Enabled then
 									if chestApp() then
-										lootChest(select(2, observedValue()))
+										local folder = select(2, observedValue())
+										-- Judged the same as any other chest, so opening your own
+										-- by hand is not a way round the checks below.
+										if not ownChest(folder)
+											and not (SkipOwn.Enabled and teamChest(blockFor(chests, folder))) then
+											lootChest(folder)
+										end
 									end
 								else
 									for _, v in chests do
 										if not ChestSteal.Enabled then break end
-										if not (SkipOwn.Enabled and ownChest(v)) and inRange(v) then
-											local folder = v:FindFirstChild('ChestFolderValue')
-											lootChest(folder and folder.Value, v)
+	
+										local value = v:FindFirstChild('ChestFolderValue')
+										local folder = value and value.Value
+										if folder and inRange(v)
+											and not ownChest(folder)
+											and not (SkipOwn.Enabled and teamChest(v)) then
+											lootChest(folder, v)
 										end
 									end
 								end
@@ -19495,7 +19546,7 @@ run(function()
 	})
 	SkipOwn = ChestSteal:CreateToggle({
 		Name = 'Skip Own',
-		Tooltip = 'Leaves your own and your team chest alone',
+		Tooltip = 'Leaves your team chest alone',
 		Default = true
 	})
 	Skywars = ChestSteal:CreateToggle({
