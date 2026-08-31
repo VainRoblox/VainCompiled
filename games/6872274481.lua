@@ -19234,6 +19234,8 @@ run(function()
 	local AutoPatch
 	local AutoBlock
 	local LimitItems
+	local StartDelay
+	local waited = false
 	
 	-- The game cancels any placement sent inside half of its own interval, so anything
 	-- quicker than this is thrown away rather than built. That is what made this stop after
@@ -19341,9 +19343,11 @@ run(function()
 		switchItem(item.tool)
 	end
 	
-	local function holdingBlock()
-		local held = store.hand.tool and bedwars.ItemMeta[store.hand.tool.Name]
-		return (held and held.block) ~= nil
+	-- What is in your hand as an item type, or nil when it is not a block at all.
+	local function heldBlockType()
+		local tool = store.hand.tool
+		local meta = tool and bedwars.ItemMeta[tool.Name]
+		return (meta and meta.block) and tool.Name or nil
 	end
 	
 	--[[
@@ -19437,15 +19441,19 @@ run(function()
 			if AutoPatch.Enabled and not isGap(pos) then continue end
 	
 			--[[
-				Judged on what is already in your hand, before Auto Block touches it.
+				Limit to Items is asked twice, on either side of Auto Block, because the two
+				halves of it want different things.
 	
-				Equipping first meant Auto Block satisfied this check itself, so the gate could
-				never fail and holding a sword still built. Asked first, the two settings read
-				the way they are worded: a sword out means nothing is built at all, while a
-				block out means building may start - and only then does Auto Block swap that
-				block for the one you asked for.
+				First, something that is a block at all has to be out. This is judged before
+				Auto Block touches your hand - equipping first meant Auto Block satisfied the
+				check by its own action, so the gate could never fail and a sword still built.
+	
+				Then, what is out has to be the block actually going down. Auto Block will have
+				just made that true, which is what lets wool in hand turn into the wood you
+				asked for; with Auto Block off there is nothing to reconcile them, so holding
+				wool while stone is being placed builds nothing.
 			]]
-			if LimitItems.Enabled and not holdingBlock() then continue end
+			if LimitItems.Enabled and not heldBlockType() then continue end
 	
 			local item = chooseBlock()
 			if not item then break end
@@ -19454,6 +19462,18 @@ run(function()
 			-- is actually about to happen.
 			if AutoBlock.Enabled then
 				equip(item)
+			end
+	
+			if LimitItems.Enabled and heldBlockType() ~= item.itemType then continue end
+	
+			-- Once per switch on, so there is a moment between reaching for the module and the
+			-- first block appearing rather than one landing the instant it comes on.
+			if not waited then
+				waited = true
+				if StartDelay.Value > 0 then
+					task.wait(StartDelay.Value)
+					if not BedProtector.Enabled then break end
+				end
 			end
 	
 			bedwars.placeBlock(pos, item.itemType)
@@ -19467,8 +19487,12 @@ run(function()
 	BedProtector = vain.Categories.World:CreateModule({
 		Name = 'BedProtector',
 		Function = function(callback)
-			if not callback then return end
+			if not callback then
+				waited = false
+				return
+			end
 	
+			waited = false
 			local once = Mode.Value == 'On Toggle'
 			repeat
 				local bed = getBedNear()
@@ -19560,7 +19584,16 @@ run(function()
 	})
 	LimitItems = BedProtector:CreateToggle({
 		Name = 'Limit to Items',
-		Tooltip = 'Only builds while holding a block'
+		Tooltip = 'Only builds while holding the block being placed'
+	})
+	StartDelay = BedProtector:CreateSlider({
+		Name = 'Start Delay',
+		Tooltip = 'Waits this long before the first block\nDefault is 0',
+		Min = 0,
+		Max = 1,
+		Default = 0,
+		Decimal = 100,
+		Suffix = 'seconds'
 	})
 	
 end)
