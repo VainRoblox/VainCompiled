@@ -5277,7 +5277,21 @@ run(function()
 	local Background
 	local Color = {}
 	local ShowAmount
-	local ShowArmor
+	local Presets = {}
+	
+	-- The things worth knowing an enemy has. Ordered, so the icons always come out the same
+	-- way round rather than in whatever order the inventory happened to be in.
+	local PRESETS = {
+		{Name = 'Iron', Type = 'iron'},
+		{Name = 'Gold', Type = 'gold'},
+		{Name = 'Diamond', Type = 'diamond'},
+		{Name = 'Emerald', Type = 'emerald'},
+		{Name = 'Telepearl', Type = 'telepearl'},
+		{Name = 'Fireball', Type = 'fireball'},
+		{Name = 'TNT', Type = 'tnt'},
+		{Name = 'Obsidian', Type = 'obsidian'},
+		{Name = 'Golden Apple', Type = 'golden_apple'}
+	}
 	-- ent -> {Billboard = BillboardGui, Player = Player}
 	-- The player is kept alongside the billboard because the adornee is the root
 	-- part, and walking up its Parent chain lands on the workspace, not the player.
@@ -5295,22 +5309,26 @@ run(function()
 	
 	local function listed(itemType)
 		if not itemType then return false end
-		if not (List and List.ListEnabled) then return false end
-		if table.find(List.ListEnabled, itemType) then return true end
-		for _, v in List.ListEnabled do
-			if itemType:find(v) then return true end
+	
+		local preset = Presets[itemType]
+		if preset and preset.Enabled then return true end
+	
+		if List and List.ListEnabled then
+			if table.find(List.ListEnabled, itemType) then return true end
+			for _, v in List.ListEnabled do
+				if itemType:find(v) then return true end
+			end
 		end
 		return false
 	end
 	
-	local function addIcon(frame, item)
+	local function addIcon(frame, itemType, amount)
 		local image = Instance.new('ImageLabel')
 		image.Size = UDim2.fromOffset(32, 32)
 		image.BackgroundTransparency = 1
-		image.Image = bedwars.getIcon(item, true)
+		image.Image = bedwars.getIcon({itemType = itemType}, true)
 		image.Parent = frame
 	
-		local amount = tonumber(item.amount)
 		if on(ShowAmount) and amount and amount > 1 then
 			local text = Instance.new('TextLabel')
 			text.Name = 'Amount'
@@ -5328,6 +5346,18 @@ run(function()
 		end
 	end
 	
+	--[[
+		Draws what a player is carrying.
+	
+		The whole inventory, not just their hand. Only inventory.hand was ever looked at
+		before, which is why adding anything to the item list did nothing unless the target
+		happened to be holding that exact thing at that exact moment - and why the amount
+		never showed either, since a held item is usually a single one.
+	
+		Other players' items really are readable; Vain already reads them elsewhere to work
+		out how dangerous somebody is. Stacks of the same thing are added together, so eight
+		iron in one slot and twelve in another read as twenty rather than as two icons.
+	]]
 	local function refreshAdornee(billboard, plr)
 		if not (billboard and billboard.Parent and plr) then return end
 		local frame = billboard:FindFirstChild('Frame')
@@ -5345,26 +5375,45 @@ run(function()
 			end
 		end
 	
-		local shown, any = {}, false
+		local totals, extra = {}, {}
 	
-		local hand = inventory.hand
-		if type(hand) == 'table' and hand.itemType and listed(hand.itemType) then
-			shown[hand.itemType] = true
-			any = true
-			addIcon(frame, hand)
-		end
+		local function count(item)
+			if type(item) ~= 'table' or not item.itemType then return end
+			if not listed(item.itemType) then return end
 	
-		-- Armor slot numbering has moved around between updates, so this walks whatever
-		-- the table holds rather than assuming fixed indices. Empty slots come through
-		-- as the string 'empty'.
-		if on(ShowArmor) and type(inventory.armor) == 'table' then
-			for _, armor in inventory.armor do
-				if type(armor) == 'table' and armor.itemType and not shown[armor.itemType] then
-					shown[armor.itemType] = true
-					any = true
-					addIcon(frame, armor)
+			if not totals[item.itemType] then
+				totals[item.itemType] = 0
+				if not Presets[item.itemType] then
+					table.insert(extra, item.itemType)
 				end
 			end
+			totals[item.itemType] += tonumber(item.amount) or 1
+		end
+	
+		if type(inventory.items) == 'table' then
+			for _, item in inventory.items do
+				count(item)
+			end
+		end
+	
+		-- Their hand is normally part of the list above already; this is only for the case
+		-- where it is not.
+		local hand = inventory.hand
+		if type(hand) == 'table' and hand.itemType and not totals[hand.itemType] then
+			count(hand)
+		end
+	
+		-- Presets in their listed order, anything from the custom list after them.
+		local any = false
+		for _, preset in PRESETS do
+			if totals[preset.Type] then
+				addIcon(frame, preset.Type, totals[preset.Type])
+				any = true
+			end
+		end
+		for _, itemType in extra do
+			addIcon(frame, itemType, totals[itemType])
+			any = true
 		end
 	
 		billboard.Enabled = any
@@ -5446,11 +5495,11 @@ run(function()
 				Folder:ClearAllChildren()
 			end
 		end,
-		Tooltip = 'Shows what players are holding and wearing'
+		Tooltip = 'Shows what players are carrying'
 	})
 	List = InventoryESP:CreateTextList({
 		Name = 'Item',
-		Tooltip = 'Which held items this applies to',
+		Tooltip = 'Extra items to show, on top of the ones below',
 		Function = function()
 			task.spawn(refreshAll)
 		end
@@ -5496,14 +5545,17 @@ run(function()
 			task.spawn(refreshAll)
 		end
 	})
-	ShowArmor = InventoryESP:CreateToggle({
-		Name = 'Show Armor',
-		Tooltip = 'Also displays the armor the target is wearing',
-		Default = true,
-		Function = function()
-			task.spawn(refreshAll)
-		end
-	})
+	for _, preset in PRESETS do
+		Presets[preset.Type] = InventoryESP:CreateToggle({
+			Name = preset.Name,
+			Tooltip = 'Shows '..preset.Name:lower(),
+			Default = true,
+			Darker = true,
+			Function = function()
+				task.spawn(refreshAll)
+			end
+		})
+	end
 	
 end)
 
