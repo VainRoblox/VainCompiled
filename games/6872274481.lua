@@ -800,6 +800,35 @@ run(function()
 	local Client = require(replicatedStorage.TS.remotes).default.Client
 	local OldGet, OldBreak = Client.Get
 
+	-- Which team upgrades are on offer, at what cost, for the queue you are actually in -
+	-- mine wars, survival and hyper gen each run a different set.
+	--
+	-- Asked of the module's own export rather than read out of a fixed upvalue slot. Slot
+	-- 6 is getQueueMeta on the current client - a function, not the meta table - so
+	-- iterating it threw, and that took out every AutoBuy setting declared after the
+	-- upgrade toggles and left Buy Upgrades with nothing at all to buy. The upvalue route
+	-- is kept as a fallback for older clients, but it looks for a table that is shaped
+	-- like the meta instead of trusting an index that has already moved once.
+	local upgrademeta = require(replicatedStorage.TS.games.bedwars['team-upgrade']['team-upgrade-meta'])
+
+	local function isUpgradeMeta(tab)
+		if type(tab) ~= 'table' then return false end
+		local _, entry = next(tab)
+		return type(entry) == 'table' and type(entry.tiers) == 'table'
+	end
+
+	local function teamUpgradeMeta()
+		local ok, queuemeta = pcall(upgrademeta.getTeamUpgradeMetaForQueue)
+		if ok and isUpgradeMeta(queuemeta) then return queuemeta end
+
+		for i = 1, 16 do
+			local found, value = pcall(debug.getupvalue, upgrademeta.getTeamUpgradeMetaForQueue, i)
+			if found and isUpgradeMeta(value) then return value end
+		end
+
+		return {}
+	end
+
 	bedwars = setmetatable({
 		AbilityController = Flamework.resolveDependency('@easy-games/game-core:client/controllers/ability/ability-controller@AbilityController'),
 		-- Holds registeredActions, keyed by the id an action was bound under. That is how
@@ -864,7 +893,7 @@ run(function()
 		SoundList = require(replicatedStorage.TS.sound['game-sound']).GameSound,
 		SoundManager = require(replicatedStorage['rbxts_include']['node_modules']['@easy-games']['game-core'].out).SoundManager,
 		Store = require(lplr.PlayerScripts.TS.ui.store).ClientStore,
-		TeamUpgradeMeta = debug.getupvalue(require(replicatedStorage.TS.games.bedwars['team-upgrade']['team-upgrade-meta']).getTeamUpgradeMetaForQueue, 6),
+		TeamUpgradeMeta = teamUpgradeMeta(),
 		UILayers = require(replicatedStorage['rbxts_include']['node_modules']['@easy-games']['game-core'].out).UILayers,
 		VisualizerUtils = require(lplr.PlayerScripts.TS.lib.visualizer['visualizer-utils']).VisualizerUtils,
 		WeldTable = require(replicatedStorage.TS.util['weld-util']).WeldUtil,
@@ -896,6 +925,11 @@ run(function()
 			end
 		})
 	end
+
+	-- The settings list is built once at load, but which upgrades exist and what they cost
+	-- follows the queue, so the buying side asks again each time rather than trusting what
+	-- was true when the menu was drawn.
+	rawset(bedwars, 'getTeamUpgradeMeta', teamUpgradeMeta)
 
 	local remoteNames = {
 		AfkStatus = debug.getproto(Knit.Controllers.AfkController.KnitStart, 1),
@@ -19704,16 +19738,19 @@ end)
 
 run(function()
 	local AutoBuy
-	local Sword
 	local Armor
 	local Upgrades
-	local TierCheck
+	local Preferred
 	local BedwarsCheck
 	local GUI
 	local SmartCheck
 	local Custom = {}
 	local CustomPost = {}
 	local UpgradeToggles = {}
+	-- Both directions of the preferred-upgrade dropdown: the toggle that governs an upgrade,
+	-- and the upgrade behind the display name the dropdown shows.
+	local UpgradeToggle = {}
+	local UpgradeByName = {}
 	local Functions, id = {}
 	local Callbacks = {Custom, Functions, CustomPost}
 	local npctick = tick()
@@ -19750,6 +19787,39 @@ run(function()
 		'diamond_pickaxe'
 	}
 	
+	-- Where iron armor sits on the ladder, which is as far as smart check waits.
+	local IRON_ARMOR = 3
+	
+	-- What you are wearing, as a rung on the armors ladder, or nil for armor that is not on
+	-- it at all - a kit chestplate, say. Worked out in one place because the two that did it
+	-- separately disagreed: one fell back to getBestArmor and the other did not, so smart
+	-- check and the armor buying could each think you were wearing something different.
+	local function armorTier()
+		local worn = store.inventory.inventory.armor[2]
+		worn = (worn and worn ~= 'empty') and worn or getBestArmor(1)
+		return table.find(armors, worn and worn.itemType or 'none')
+	end
+	
+	--[[
+		Smart check keeps everything in reserve until iron armor is on. Nothing else is worth
+		spending on while you are still in leather, and it is the same iron either way, so a
+		pickaxe bought now is iron armor you cannot afford later.
+	
+		Team upgrades are deliberately not held back: they are bought with diamonds and never
+		compete for the iron this is saving.
+	
+		Without Buy Armor there is nothing to wait for - the armor it is holding out for would
+		never be bought - so it would block every purchase for the whole game. It stands down
+		instead.
+	]]
+	local function savingForArmor()
+		if not (SmartCheck.Enabled and Armor.Enabled) then return false end
+		-- Armor that is not on the ladder cannot be compared against iron, and holding every
+		-- purchase back on something that can never be resolved would stall the whole module.
+		local tier = armorTier()
+		return tier ~= nil and tier < IRON_ARMOR
+	end
+	
 	local function getShopNPC()
 		local shop, items, upgrades, newid = nil, false, false, nil
 		if entitylib.isAlive then
@@ -19775,7 +19845,11 @@ run(function()
 		if item.ignoredByKit and table.find(item.ignoredByKit, store.equippedKit or '') then return false end
 		if item.lockedByForge or item.disabled then return false end
 		if item.require and item.require.teamUpgrade then
-			if (bedwars.Store:getState().Bedwars.teamUpgrades[item.require.teamUpgrade.upgradeId] or -1) < item.require.teamUpgrade.lowestTierIndex then
+			-- teamUpgrades is keyed by team and holds a table per team; your own tiers are
+			-- the flat map in myTeamUpgrades. Indexing the outer one by an upgrade id only
+			-- ever came back nil, so this read as "tier -1" and refused the item outright.
+			local mine = bedwars.Store:getState().Bedwars.myTeamUpgrades or {}
+			if (mine[item.require.teamUpgrade.upgradeId] or -1) < item.require.teamUpgrade.lowestTierIndex then
 				return false
 			end
 		end
@@ -19801,12 +19875,52 @@ run(function()
 		currencytable[item.currency] -= item.price
 	end
 	
+	-- Which tier of an upgrade your team is on. The store keeps your own tiers in the flat
+	-- myTeamUpgrades map; teamUpgrades is keyed by team, and it starts empty and only fills
+	-- once somebody has actually bought something, so reading tiers out of it reported tier
+	-- zero for the whole match.
+	local function upgradeTier(upgradeType)
+		local mine = bedwars.Store:getState().Bedwars.myTeamUpgrades or {}
+		return mine[upgradeType] or 0
+	end
+	
+	--[[
+		The upgrade everything else is waiting on, if any.
+	
+		It only counts while there is something to wait for. An upgrade whose own toggle is
+		off is never going to be bought, and one this queue does not offer cannot be bought at
+		all - waiting on either would stall every other upgrade for the rest of the game.
+	]]
+	local function pendingPreferred(meta)
+		local want = Preferred and Preferred.Value
+		if not want or want == 'None' then return nil end
+	
+		local upgradeType = UpgradeByName[want]
+		local upgrade = upgradeType and meta[upgradeType]
+		if not upgrade then return nil end
+	
+		local toggle = UpgradeToggle[upgradeType]
+		if not (toggle and toggle.Enabled) then return nil end
+		if upgradeTier(upgradeType) >= #upgrade.tiers then return nil end
+	
+		return upgradeType
+	end
+	
 	local function buyUpgrade(upgradeType, currencytable)
 		if not Upgrades.Enabled then return end
-		local upgrade = bedwars.TeamUpgradeMeta[upgradeType]
-		local currentUpgrades = bedwars.Store:getState().Bedwars.teamUpgrades[lplr:GetAttribute('Team')] or {}
-		local currentTier = (currentUpgrades[upgradeType] or 0) + 1
-		
+	
+		local meta = (bedwars.getTeamUpgradeMeta and bedwars.getTeamUpgradeMeta()) or bedwars.TeamUpgradeMeta
+		local upgrade = meta[upgradeType]
+		-- This queue does not run this upgrade at all.
+		if not upgrade then return false end
+	
+		-- Everything else stands aside until the preferred upgrade has no tiers left, so the
+		-- diamonds finish it off rather than being spread a tier at a time across all of them.
+		local pending = pendingPreferred(meta)
+		if pending and pending ~= upgradeType then return false end
+	
+		local currentTier = upgradeTier(upgradeType) + 1
+	
 		if currentTier <= #upgrade.tiers then
 			local tier = upgrade.tiers[currentTier]
 			if tier.availableOnlyInQueue and not table.find(tier.availableOnlyInQueue, store.queueType) then return false end
@@ -19822,41 +19936,38 @@ run(function()
 		return false
 	end
 	
+	--[[
+		Buys the one tier above whatever you are holding, and nothing else.
+	
+		The shop only ever sells the step immediately after what you own - iron armor is not
+		on sale until leather is on your back - so scanning up the ladder for the first tier
+		you could afford was never right. With enough of the wrong currency it would settle on
+		a later tier, hand the server a purchase that could not be made, and buy nothing at
+		all. That is what the tier check was papering over, so the check is gone and the
+		one-step rule is simply always applied.
+	
+		One tier a pass still climbs quickly, since the buying loop comes round again 0.4s
+		later with the new tier as the starting point.
+	]]
 	local function buyTool(tool, tools, currencytable)
-		local bought, buyable = false
-		tool = tool and table.find(tools, tool.itemType) and table.find(tools, tool.itemType) + 1 or math.huge
-	
-		for i = tool, #tools do
-			local v = bedwars.Shop.getShopItem(tools[i], lplr)
-			if canBuy(v, currencytable) then
-				if SmartCheck.Enabled and bedwars.ItemMeta[tools[i]].breakBlock and i > 2 then
-					if Armor.Enabled then
-						local currentarmor = store.inventory.inventory.armor[2]
-						currentarmor = currentarmor and currentarmor ~= 'empty' and currentarmor.itemType or 'none'
-						if (table.find(armors, currentarmor) or 3) < 3 then break end
-					end
-					if Sword.Enabled then
-						if store.tools.sword and (table.find(swords, store.tools.sword.itemType) or 2) < 2 then break end
-					end
-				end
-				bought = true
-				buyable = v
-				-- Stop at the first affordable tier. Without this, every later affordable
-				-- tier overwrote buyable and the highest one won, so with enough resources
-				-- it tried to jump straight to iron while stone was still the next step -
-				-- the shop only sells the immediate next tier, so that purchase was
-				-- rejected and nothing was bought at all. One tier per pass still reaches
-				-- the top quickly, since the loop runs again 0.4s later.
-				break
-			end
-			if TierCheck.Enabled and v.nextTier then break end
+		-- No tool at all starts below the ladder, so the first rung is what gets bought.
+		-- Lists that carry a 'none' rung of their own pass it in instead.
+		local tier = 0
+		if tool then
+			tier = table.find(tools, tool.itemType)
+			-- Holding something that is not on this ladder - a kit weapon, say. There is no
+			-- next step to work out from it, so it is left alone.
+			if not tier then return false end
 		end
 	
-		if buyable then
-			buyItem(buyable, currencytable)
-		end
+		local upgrade = tools[tier + 1]
+		if not upgrade then return false end
 	
-		return bought
+		local v = bedwars.Shop.getShopItem(upgrade, lplr)
+		if not (v and canBuy(v, currencytable)) then return false end
+	
+		buyItem(v, currencytable)
+		return true
 	end
 	
 	AutoBuy = vain.Categories.Inventory:CreateModule({
@@ -19906,7 +20017,7 @@ run(function()
 		end,
 		Tooltip = 'Automatically buys items when you go near the shop'
 	})
-	Sword = AutoBuy:CreateToggle({
+	AutoBuy:CreateToggle({
 		Name = 'Buy Sword',
 		Tooltip = 'Automatically buys a sword upgrade',
 		Function = function(callback)
@@ -19930,6 +20041,7 @@ run(function()
 					swords[5] = 'light_sword'
 				end
 	
+				if savingForArmor() then return end
 				return buyTool(store.tools.sword, swords, currencytable)
 			end or nil
 		end
@@ -19941,9 +20053,9 @@ run(function()
 			npctick = tick()
 			Functions[1] = callback and function(currencytable, shop)
 				if not shop then return end
-				local currentarmor = store.inventory.inventory.armor[2] ~= 'empty' and store.inventory.inventory.armor[2] or getBestArmor(1)
-				currentarmor = currentarmor and currentarmor.itemType or 'none'
-				return buyTool({itemType = currentarmor}, armors, currencytable)
+				-- Never held back by smart check: this is the purchase it is saving for.
+				local tier = armorTier()
+				return tier ~= nil and buyTool({itemType = armors[tier]}, armors, currencytable)
 			end or nil
 		end,
 		Default = true
@@ -19955,6 +20067,7 @@ run(function()
 			npctick = tick()
 			Functions[3] = callback and function(currencytable, shop)
 				if not shop then return end
+				if savingForArmor() then return end
 				return buyTool(store.tools.wood or {itemType = 'none'}, axes, currencytable)
 			end or nil
 		end
@@ -19966,7 +20079,11 @@ run(function()
 			npctick = tick()
 			Functions[4] = callback and function(currencytable, shop)
 				if not shop then return end
-				return buyTool(store.tools.stone, pickaxes, currencytable)
+				if savingForArmor() then return end
+				-- Owning no pickaxe at all used to start the search past the end of the
+				-- ladder, so the very first one was never bought. The axe side already passes
+				-- the 'none' rung in; this now does the same.
+				return buyTool(store.tools.stone or {itemType = 'none'}, pickaxes, currencytable)
 			end or nil
 		end
 	})
@@ -19981,10 +20098,13 @@ run(function()
 		Default = true
 	})
 	local count = 0
+	-- 'None' first so the dropdown opens on it and nothing is held back by default.
+	local upgradeNames = {'None'}
 	for i, v in bedwars.TeamUpgradeMeta do
 		local toggleCount = count
-		table.insert(UpgradeToggles, AutoBuy:CreateToggle({
-			Name = 'Buy '..(v.name == 'Armor' and 'Protection' or v.name),
+		local displayName = (v.name == 'Armor' and 'Protection' or v.name)
+		local toggle = AutoBuy:CreateToggle({
+			Name = 'Buy '..displayName,
 			Function = function(callback)
 				npctick = tick()
 				Functions[5 + toggleCount + (v.name == 'Armor' and 20 or 0)] = callback and function(currencytable, shop, upgrades)
@@ -19995,10 +20115,33 @@ run(function()
 			end,
 			Darker = true,
 			Default = (i == 'ARMOR' or i == 'DAMAGE')
-		}))
+		})
+		table.insert(UpgradeToggles, toggle)
+		-- Both directions are kept: the upgrade behind a display name, so the dropdown can
+		-- name one, and the toggle that decides whether it is ever bought.
+		UpgradeToggle[i] = toggle
+		UpgradeByName[displayName] = i
+		table.insert(upgradeNames, displayName)
 		count += 1
 	end
-	TierCheck = AutoBuy:CreateToggle({Name = 'Tier Check', Tooltip = 'Only buys when the next tier is actually affordable'})
+	-- The meta is a hash, so it comes out in a different order every session. Only the names
+	-- after 'None' are sorted, since 'None' has to stay first: the dropdown ignores Default
+	-- and always opens on the first entry.
+	table.sort(upgradeNames, function(a, b)
+		if a == 'None' or b == 'None' then return a == 'None' end
+		return a < b
+	end)
+	Preferred = AutoBuy:CreateDropdown({
+		Name = 'Preferred Upgrade',
+		Tooltip = 'Maxes this one before any other',
+		Function = function()
+			npctick = tick()
+		end,
+		List = upgradeNames,
+		Darker = true
+	})
+	-- Hidden and shown with the rest of the upgrade settings.
+	table.insert(UpgradeToggles, Preferred)
 	BedwarsCheck = AutoBuy:CreateToggle({
 		Name = 'Only Bedwars',
 		Tooltip = 'Only runs while in a bedwars queue',
@@ -20014,7 +20157,7 @@ run(function()
 	SmartCheck = AutoBuy:CreateToggle({
 		Name = 'Smart check',
 		Default = true,
-		Tooltip = 'Buys iron armor before iron axe'
+		Tooltip = 'Saves everything for iron armor first\nNeeds Buy Armor on'
 	})
 	AutoBuy:CreateTextList({
 		Name = 'Item',
@@ -20029,6 +20172,9 @@ run(function()
 				if ind then
 					(tab[4] and CustomPost or Custom)[ind] = function(currencytable, shop)
 						if not shop then return end
+						-- Held back too: these are bought with the same iron the armor needs,
+						-- so buying them first is why there was none left for it.
+						if savingForArmor() then return end
 	
 						local v = bedwars.Shop.getShopItem(tab[2], lplr)
 						if v then
@@ -21004,6 +21150,7 @@ run(function()
 	local BedPlates
 	local Background
 	local Color = {}
+	local ShowOwn
 	local Quantity
 	local FullLayers
 	local FullColor = {}
@@ -21146,6 +21293,14 @@ run(function()
 		return table.concat(parts, '|')
 	end
 	
+	-- A bed carries a NoBreak attribute for the team it belongs to, which is how the game
+	-- stops you breaking your own. Asked live rather than cached, since your team is not
+	-- settled the moment the plates are first drawn. No team at all - spectating - matches
+	-- nothing, so every plate stays up.
+	local function isOwnBed(bed)
+		return bed:GetAttribute('Team' .. (lplr:GetAttribute('Team') or -1) .. 'NoBreak') ~= nil
+	end
+	
 	local function refreshAdornee(v)
 		if not v.Adornee then return end
 	
@@ -21159,7 +21314,9 @@ run(function()
 		table.sort(order, function(a, b)
 			return health(a) > health(b)
 		end)
-		v.Enabled = #order > 0
+		-- Set before the signature check below, so flicking the setting takes effect even
+		-- when nothing about the wrap itself has changed.
+		v.Enabled = #order > 0 and (not ShowOwn or ShowOwn.Enabled or not isOwnBed(v.Adornee))
 	
 		local sig = signature(order, counts, full)
 		if Signature[v] == sig then return end
@@ -21312,6 +21469,12 @@ run(function()
 		Max = 60,
 		Default = 10,
 		Suffix = 'hz'
+	})
+	ShowOwn = BedPlates:CreateToggle({
+		Name = 'Show Own',
+		Tooltip = 'Also plates your own bed',
+		Function = refreshAll,
+		Default = true
 	})
 	Quantity = BedPlates:CreateToggle({
 		Name = 'Show Amount',
