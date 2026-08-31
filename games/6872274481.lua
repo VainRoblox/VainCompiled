@@ -5373,15 +5373,24 @@ run(function()
 		if not frame then return end
 	
 		--[[
-			Read fresh, not out of store.inventories.
+			The cache is refreshed here rather than read straight out of.
 	
-			That cache is only rebuilt when a player swaps their held item or changes armor -
-			those four things are all that is watched for it. A count moving on its own,
-			picking iron up or spending emeralds, touches none of them, so the cached numbers
-			sat at whatever they were the last time the target happened to switch items. Which
-			is exactly why the values never updated.
+			store.inventories is only rebuilt when a player swaps their held item or changes
+			armor - those four things are all that is watched for it - so a count moving on
+			its own, picking iron up or spending emeralds, never reached it and the numbers
+			sat at whatever they were the last time the target switched items.
+	
+			A fresh read that comes back with nothing in it is dropped instead of used. It
+			returns an empty inventory rather than an error when it cannot see the target, and
+			taking that at face value blanked every icon the moment one read came back empty -
+			which is why doing this the obvious way showed nothing at all.
 		]]
-		local inventory = bedwars.getInventory and bedwars.getInventory(plr) or store.inventories[plr]
+		local fresh = bedwars.getInventory and bedwars.getInventory(plr)
+		if fresh and (fresh.hand or next(fresh.items or {})) then
+			store.inventories[plr] = fresh
+		end
+	
+		local inventory = store.inventories[plr]
 		if not inventory then
 			billboard.Enabled = false
 			return
@@ -5439,7 +5448,10 @@ run(function()
 	local function refreshAll()
 		for ent, entry in Entries do
 			if entry.Billboard.Parent and entry.Player and entry.Player.Parent then
-				refreshAdornee(entry.Billboard, entry.Player)
+				-- Guarded one at a time. A throw part way through used to abort the whole
+				-- pass, and since icons are cleared before they are redrawn, everybody after
+				-- the one that failed was left blank.
+				pcall(refreshAdornee, entry.Billboard, entry.Player)
 			else
 				entry.Billboard:Destroy()
 				Entries[ent] = nil
