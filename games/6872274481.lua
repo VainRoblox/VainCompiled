@@ -18878,7 +18878,7 @@ end)
 
 run(function()
 	local RavenTP
-	local Step
+	local Speed
 	local Hold
 	
 	-- Giving up rather than following a target who is never going to be reached.
@@ -18886,28 +18886,30 @@ run(function()
 	local TIMEOUT = 3
 	
 	--[[
-		Moves the raven a step towards a position and points it the way you are looking.
+		Flies the raven towards a position by giving it velocity, and turns it to face the way
+		it is going.
 	
-		A step at a time rather than one jump. The raven is yours to move - the game flies it
-		from the client the same way - but a single enormous displacement is not something
-		Roblox will carry across to the server, so the server kept its own idea of where the
-		raven was. Close up the jump was small enough to survive, which is exactly why this
-		only ever worked nearby.
+		Writing a position was the whole problem. Nothing about the raven is sent to the
+		server - the controller has no remote for it - so its position on the server comes
+		from physics and physics alone. A position written here therefore moved the raven on
+		your screen and nowhere else, the server carried on simulating its own, and the
+		detonation, which the server places, went off back where the raven started. Next to
+		you.
 	
-		The velocity is cleared as well, or the throw the raven was launched with keeps
-		dragging it off the position being written every frame.
+		Velocity is the same handle the game itself flies the raven with, and it is physics
+		the server follows rather than a claim it has no reason to accept. Facing is set from
+		the current position, so turning it cannot move it.
 	]]
-	local function moveTowards(raven, target)
+	local function steer(raven, target)
 		local part = raven.PrimaryPart
 		if not part or not part.Parent then return nil end
 	
-		part.AssemblyLinearVelocity = Vector3.zero
-	
 		local delta = target - part.Position
 		local distance = delta.Magnitude
-		local goal = distance > Step.Value and (part.Position + delta.Unit * Step.Value) or target
+		if distance < 0.1 then return distance end
 	
-		raven:PivotTo(CFrame.lookAlong(goal, gameCamera.CFrame.LookVector))
+		part.AssemblyLinearVelocity = delta.Unit * Speed.Value
+		part.CFrame = CFrame.lookAlong(part.Position, delta.Unit)
 		return distance
 	end
 	
@@ -18946,24 +18948,30 @@ run(function()
 			bodyforce.Force = Vector3.new(0, raven.PrimaryPart.AssemblyMass * workspace.Gravity, 0)
 			bodyforce.Parent = raven.PrimaryPart
 	
-			-- Flown in, then held. Detonating was previously fired on a timer while the raven
-			-- was still on its way, so the server blew it up wherever it had got to - which
-			-- over any distance was still next to you.
+			-- Flown in, then held on target. Detonating used to be fired on a fixed timer while
+			-- the raven was still on its way, so even once it did move the server blew it up
+			-- wherever it had got to by then.
 			local deadline = tick() + TIMEOUT
 			local distance
 			repeat
 				local root = plr.Character and plr.RootPart
 				if not root then break end
 	
-				distance = moveTowards(raven, root.Position)
+				distance = steer(raven, root.Position)
 				if not distance then break end
 				task.wait()
 			until distance <= ARRIVE or tick() > deadline
 	
+			-- Held still on top of the target rather than flying through it, and long enough
+			-- for where it ended up to have reached the server before it is asked to explode.
 			local holding = tick() + Hold.Value
 			repeat
 				local root = plr.Character and plr.RootPart
-				if not root or not moveTowards(raven, root.Position) then break end
+				local part = raven.PrimaryPart
+				if not root or not part or not part.Parent then break end
+	
+				part.AssemblyLinearVelocity = Vector3.zero
+				part.CFrame = CFrame.lookAlong(root.Position, gameCamera.CFrame.LookVector)
 				task.wait()
 			until tick() > holding
 	
@@ -18971,13 +18979,13 @@ run(function()
 		end,
 		Tooltip = 'Spawns a raven, flies it to the player under your mouse and detonates it'
 	})
-	Step = RavenTP:CreateSlider({
-		Name = 'Step',
-		Tooltip = 'How far it moves each frame\nSmaller carries further reliably',
-		Min = 1,
-		Max = 100,
-		Default = 30,
-		Suffix = 'studs'
+	Speed = RavenTP:CreateSlider({
+		Name = 'Speed',
+		Tooltip = 'How fast it flies in\nDefault is 150',
+		Min = 20,
+		Max = 500,
+		Default = 150,
+		Suffix = 'studs/s'
 	})
 	Hold = RavenTP:CreateSlider({
 		Name = 'Hold',

@@ -4271,6 +4271,12 @@ function mainapi:CreateOverlay(categorysettings)
 	end
 
 	function categoryapi:Update()
+		-- Reached from a Visible property signal, which is deferred onto a thread without
+		-- the identity to touch an Instance. The AbsoluteContentSize handlers below were
+		-- already guarded; the Visible ones were missed, and every one of them lands here.
+		if mainapi.ThreadFix then
+			setthreadidentity(8)
+		end
 		window.Visible = self.Button.Enabled and (clickgui.Visible or self.Pinned)
 		if self.Expanded then
 			self:Expand()
@@ -5318,6 +5324,11 @@ function mainapi:CreateLegit()
 	end
 
 	local function visibleCheck()
+		-- Connected straight to a Visible property signal, so the guard has to live in
+		-- here rather than at the connection.
+		if mainapi.ThreadFix then
+			setthreadidentity(8)
+		end
 		for _, v in legitapi.Modules do
 			if v.Children then
 				local visible = clickgui.Visible
@@ -6989,6 +7000,11 @@ end
 
 function mainapi:UpdateGUI(hue, sat, val, default)
 	if mainapi.Loaded == nil then return end
+	-- Called from Visible signals as well as from colour changes, so it inherits whatever
+	-- thread fired it.
+	if self.ThreadFix then
+		setthreadidentity(8)
+	end
 	if not default and mainapi.GUIColor.Rainbow then return end
 	if textgui.Button.Enabled then
 		VainLogoGradient.Color = ColorSequence.new({
