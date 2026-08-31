@@ -38,7 +38,8 @@ local vain = shared.vain
 -- nothing, so a name still in use by another game is never redirected.
 vain.Renames = vain.Renames or {Modules = {}, Options = {}}
 for old, new in {
-	Breaker = 'Nuker'
+	Breaker = 'Nuker',
+	['Better Spectating'] = 'BetterSpectating'
 } do
 	vain.Renames.Modules[old] = new
 end
@@ -6969,43 +6970,122 @@ run(function()
 	
 end)
 
-run(function()
-	local AutoBalloon
-	
-	AutoBalloon = vain.Categories.Utility:CreateModule({
-		Name = 'AutoBalloon',
-		Function = function(callback)
-			if callback then
-				repeat task.wait() until store.matchState ~= 0 or (not AutoBalloon.Enabled)
-				if not AutoBalloon.Enabled then return end
-	
-				local lowestpoint = math.huge
-				for _, v in store.blocks do
-					local point = (v.Position.Y - (v.Size.Y / 2)) - 50
-					if point < lowestpoint then 
-						lowestpoint = point 
-					end
+local AutoBalloon
+local Legit
+local inflating = false
+
+local function hotbarSlot(itemType)
+	for i, v in store.inventory.hotbar do
+		if v.item and v.item.itemType == itemType then
+			return i - 1
+		end
+	end
+end
+
+-- The action the game binds while a balloon is in your hand. It only exists once the
+-- balloon is actually held, which is the whole point of equipping first.
+local function boundInflate()
+	local binder = bedwars.ActionBinder
+	local action = binder and binder.registeredActions and binder.registeredActions['inflate-balloon']
+	return action and action.boundFunction or nil
+end
+
+--[[
+	Blatant sends the inflate straight off without the balloon ever being in your hand.
+
+	Legit equips it first and then runs the same bound action your mouse button would.
+	Equipping is what turns the balloon's own handler on, so the animation plays and the
+	cooldown is respected rather than being reimplemented here; nothing is sent by hand.
+
+	Falls back to the controller call when the action has not appeared, so a slow equip
+	still gets you out of the void rather than doing nothing at all.
+]]
+local function legitInflate()
+	local balloon = getItem('balloon')
+	if not balloon or not balloon.tool then return end
+
+	local previous = store.hand.tool
+	local slot = hotbarSlot('balloon')
+	if slot then
+		hotbarSwitch(slot)
+	end
+	switchItem(balloon.tool)
+
+	local run
+	for _ = 1, 20 do
+		run = boundInflate()
+		if run then break end
+		task.wait()
+	end
+
+	for _ = 1, 3 do
+		if (lplr.Character:GetAttribute('InflatedBalloons') or 0) >= 3 then break end
+
+		if run then
+			run('inflate-balloon', Enum.UserInputState.Begin, newproxy(true))
+		else
+			bedwars.BalloonController:inflateBalloon()
+		end
+		task.wait(0.1)
+	end
+
+	-- Put back whatever was in your hand, the same as AutoConsume does, so being saved
+	-- does not also disarm you.
+	if previous and previous.Parent then
+		pcall(switchItem, previous)
+	end
+end
+
+AutoBalloon = vain.Categories.Utility:CreateModule({
+	Name = 'AutoBalloon',
+	Function = function(callback)
+		if callback then
+			repeat task.wait() until store.matchState ~= 0 or (not AutoBalloon.Enabled)
+			if not AutoBalloon.Enabled then return end
+
+			local lowestpoint = math.huge
+			for _, v in store.blocks do
+				local point = (v.Position.Y - (v.Size.Y / 2)) - 50
+				if point < lowestpoint then 
+					lowestpoint = point 
 				end
-	
-				repeat
-					if entitylib.isAlive then
-						if entitylib.character.RootPart.Position.Y < lowestpoint and (lplr.Character:GetAttribute('InflatedBalloons') or 0) < 3 then
-							local balloon = getItem('balloon')
-							if balloon then
+			end
+
+			repeat
+				if entitylib.isAlive then
+					if entitylib.character.RootPart.Position.Y < lowestpoint and (lplr.Character:GetAttribute('InflatedBalloons') or 0) < 3 then
+						local balloon = getItem('balloon')
+						if balloon then
+							if Legit.Enabled then
+								-- Guarded because this one yields, on the equip and between
+								-- inflates, so a pass could otherwise start on top of itself.
+								if not inflating then
+									inflating = true
+									pcall(legitInflate)
+									inflating = false
+								end
+							else
 								for _ = 1, 3 do 
 									bedwars.BalloonController:inflateBalloon() 
 								end
 							end
-							task.wait(0.1)
 						end
+						task.wait(0.1)
 					end
-					task.wait(0.1)
-				until not AutoBalloon.Enabled
-			end
-		end,
-		Tooltip = 'Inflates when you fall into the void'
-	})
-end)
+				end
+				task.wait(0.1)
+			until not AutoBalloon.Enabled
+		else
+			inflating = false
+		end
+	end,
+	Tooltip = 'Inflates when you fall into the void'
+})
+Legit = AutoBalloon:CreateToggle({
+	Name = 'Legit',
+	Tooltip = 'Holds the balloon before inflating it'
+})
+
 
 run(function()
 	local AutoKit
@@ -7487,6 +7567,10 @@ run(function()
 end)
 
 run(function()
+	local AutoShoot
+	local Startup
+	local Speed
+	local Return
 	local shooting, old = false
 	
 	local function getCrossbows()
@@ -7497,39 +7581,102 @@ run(function()
 		return crossbows
 	end
 	
-	vain.Categories.Utility:CreateModule({
+	--[[
+		Whether a shot you just took is one worth following up on.
+	
+		The arguments are the ones the game calls this with, self included - it is invoked as
+		a method, so the first of them is the controller rather than the projectile source.
+		Reading them one across is why the source check here was really testing the controller,
+		which is never nil.
+	
+		Matched loosely on purpose: the ammo you loaded and the projectile it turned into do
+		not share a name once a crossbow is involved, and iron, firework and volley arrows are
+		all arrows as far as this is concerned.
+	]]
+	local function isShot(ammoType, projectileType)
+		for _, v in {ammoType, projectileType} do
+			if type(v) == 'string' and (v:find('arrow') or v:find('fireball')) then
+				return true
+			end
+		end
+		return false
+	end
+	
+	local function fireCrossbows()
+		local selected = store.inventory.hotbarSlot
+	
+		for _, v in getCrossbows() do
+			if not AutoShoot.Enabled or not entitylib.isAlive then break end
+	
+			if hotbarSwitch(v) then
+				task.wait(Speed.Value)
+				-- Guarded the way every other clicking module guards it. Called bare, this
+				-- threw on any executor without it and, with nothing to catch it, left the
+				-- shooting flag stuck on - after which the macro never ran again.
+				if mouse1click and (isrbxactive or iswindowactive)() then
+					mouse1click()
+				end
+				task.wait(Speed.Value)
+			end
+		end
+	
+		if Return.Enabled then
+			hotbarSwitch(selected)
+		end
+	end
+	
+	AutoShoot = vain.Categories.Utility:CreateModule({
 		Name = 'AutoShoot',
 		Function = function(callback)
 			if callback then
 				old = bedwars.ProjectileController.createLocalProjectile
 				bedwars.ProjectileController.createLocalProjectile = function(...)
-					local source, data, proj = ...
-					if source and (proj == 'arrow' or proj == 'fireball') and not shooting then
+					local _, _, ammoType, projectileType = ...
+					if isShot(ammoType, projectileType) and not shooting and #getCrossbows() > 0 then
 						task.spawn(function()
-							local bows = getCrossbows()
-							if #bows > 0 then
-								shooting = true
-								task.wait(0.15)
-								local selected = store.inventory.hotbarSlot
-								for _, v in getCrossbows() do
-									if hotbarSwitch(v) then
-										task.wait(0.05)
-										mouse1click()
-										task.wait(0.05)
-									end
-								end
-								hotbarSwitch(selected)
-								shooting = false
-							end
+							shooting = true
+							-- Wrapped so a throw anywhere in here cannot leave the flag set and
+							-- kill the module for the rest of the round.
+							pcall(function()
+								task.wait(Startup.Value)
+								fireCrossbows()
+							end)
+							shooting = false
 						end)
 					end
 					return old(...)
 				end
 			else
-				bedwars.ProjectileController.createLocalProjectile = old
+				shooting = false
+				if old then
+					bedwars.ProjectileController.createLocalProjectile = old
+				end
 			end
 		end,
-		Tooltip = 'Automatically crossbow macro\'s'
+		Tooltip = 'Fires your other crossbows after a shot'
+	})
+	Startup = AutoShoot:CreateSlider({
+		Name = 'Startup',
+		Tooltip = 'Wait before the macro begins\nDefault is 0.15',
+		Min = 0,
+		Max = 1,
+		Default = 0.15,
+		Decimal = 100,
+		Suffix = 'seconds'
+	})
+	Speed = AutoShoot:CreateSlider({
+		Name = 'Speed',
+		Tooltip = 'Wait around each shot, lower is faster\nDefault is 0.05',
+		Min = 0,
+		Max = 0.5,
+		Default = 0.05,
+		Decimal = 100,
+		Suffix = 'seconds'
+	})
+	Return = AutoShoot:CreateToggle({
+		Name = 'Return',
+		Tooltip = 'Switches back to the slot you were on',
+		Default = true
 	})
 	
 end)
@@ -8131,13 +8278,13 @@ local lplr = playersService.LocalPlayer
 		end
 
 		AdvancedSpectate = vain.Categories.Utility:CreateModule({
-			Name = 'Better Spectating',
+			Name = 'BetterSpectating',
 			Tooltip = 'Spectate anyone, not just your team (forces spectate to ALL). Enable Fixed Spectate + pick a player to lock the view.',
 			Function = function(callback)
 				local ctrl = getSpec()
 				if callback then
 					if not ctrl then
-						notif('Better Spectating', 'Spectate controller not found in this place.', 6, 'warning')
+						notif('BetterSpectating', 'Spectate controller not found in this place.', 6, 'warning')
 						AdvancedSpectate:Toggle()
 						return
 					end
@@ -18655,84 +18802,193 @@ end)
 run(function()
 	local MissileTP
 	
+	--[[
+		Tells the server the missile is yours to steer, which is the step this was missing.
+	
+		The server only lets go of a guided projectile once it has been told the client has
+		taken control - it is what the game sends the moment its own launch finishes. Without
+		it the missile stays the server's, so every position written to it here was replicated
+		straight back over and the missile carried on flying wherever it was already going.
+	]]
+	local function control(model, state)
+		pcall(function()
+			bedwars.Client:Get('GuidedProjectileClientControlStateChanged'):SendToServer({
+				newState = state,
+				model = model
+			})
+		end)
+	end
+	
 	MissileTP = vain.Categories.Utility:CreateModule({
 		Name = 'MissileTP',
 		Function = function(callback)
-			if callback then
-				MissileTP:Toggle()
-				local plr = entitylib.EntityMouse({
-					Range = 1000,
-					Players = true,
-					Part = 'RootPart'
-				})
+			if not callback then return end
+			MissileTP:Toggle()
 	
-				if getItem('guided_missile') and plr then
-					local projectile = bedwars.RuntimeLib.await(bedwars.GuidedProjectileController.fireGuidedProjectile:CallServerAsync('guided_missile'))
-					if projectile then
-						local projectilemodel = projectile.model
-						if not projectilemodel.PrimaryPart then
-							projectilemodel:GetPropertyChangedSignal('PrimaryPart'):Wait()
-						end
+			local plr = entitylib.EntityMouse({
+				Range = 1000,
+				Players = true,
+				Part = 'RootPart'
+			})
 	
-						local bodyforce = Instance.new('BodyForce')
-						bodyforce.Force = Vector3.new(0, projectilemodel.PrimaryPart.AssemblyMass * workspace.Gravity, 0)
-						bodyforce.Name = 'AntiGravity'
-						bodyforce.Parent = projectilemodel.PrimaryPart
-	
-						repeat
-							projectile.model:SetPrimaryPartCFrame(CFrame.lookAlong(plr.RootPart.CFrame.p, gameCamera.CFrame.LookVector))
-							task.wait(0.1)
-						until not projectile.model or not projectile.model.Parent
-					else
-						notif('MissileTP', 'Missile on cooldown.', 3)
-					end
-				end
+			if not getItem('guided_missile') then
+				notif('MissileTP', 'No guided missile', 3)
+				return
 			end
+			if not plr then
+				notif('MissileTP', 'No player under your mouse', 3)
+				return
+			end
+	
+			local projectile = bedwars.RuntimeLib.await(bedwars.GuidedProjectileController.fireGuidedProjectile:CallServerAsync('guided_missile'))
+			if not projectile then
+				notif('MissileTP', 'Missile on cooldown.', 3)
+				return
+			end
+	
+			local projectilemodel = projectile.model
+			if not projectilemodel.PrimaryPart then
+				projectilemodel:GetPropertyChangedSignal('PrimaryPart'):Wait()
+			end
+	
+			control(projectilemodel, true)
+	
+			local bodyforce = Instance.new('BodyForce')
+			bodyforce.Force = Vector3.new(0, projectilemodel.PrimaryPart.AssemblyMass * workspace.Gravity, 0)
+			bodyforce.Name = 'AntiGravity'
+			bodyforce.Parent = projectilemodel.PrimaryPart
+	
+			repeat
+				-- The target can die or leave while the missile is still in the air, which used
+				-- to throw on a RootPart that was no longer there and strand the missile
+				-- mid-flight with nothing releasing it.
+				local root = plr.Character and plr.RootPart
+				if not root or not root.Parent then break end
+	
+				projectilemodel:PivotTo(CFrame.lookAlong(root.CFrame.Position, gameCamera.CFrame.LookVector))
+				task.wait(0.1)
+			until not projectilemodel.Parent
+	
+			control(projectilemodel, false)
 		end,
-		Tooltip = 'Spawns and teleports a missile to a player\nnear your mouse.'
+		Tooltip = 'Fires a guided missile and pins it to the player under your mouse'
 	})
+	
 end)
 
 run(function()
 	local RavenTP
+	local Step
+	local Hold
+	
+	-- Giving up rather than following a target who is never going to be reached.
+	local ARRIVE = 3
+	local TIMEOUT = 3
+	
+	--[[
+		Moves the raven a step towards a position and points it the way you are looking.
+	
+		A step at a time rather than one jump. The raven is yours to move - the game flies it
+		from the client the same way - but a single enormous displacement is not something
+		Roblox will carry across to the server, so the server kept its own idea of where the
+		raven was. Close up the jump was small enough to survive, which is exactly why this
+		only ever worked nearby.
+	
+		The velocity is cleared as well, or the throw the raven was launched with keeps
+		dragging it off the position being written every frame.
+	]]
+	local function moveTowards(raven, target)
+		local part = raven.PrimaryPart
+		if not part or not part.Parent then return nil end
+	
+		part.AssemblyLinearVelocity = Vector3.zero
+	
+		local delta = target - part.Position
+		local distance = delta.Magnitude
+		local goal = distance > Step.Value and (part.Position + delta.Unit * Step.Value) or target
+	
+		raven:PivotTo(CFrame.lookAlong(goal, gameCamera.CFrame.LookVector))
+		return distance
+	end
 	
 	RavenTP = vain.Categories.Utility:CreateModule({
 		Name = 'RavenTP',
 		Function = function(callback)
-			if callback then
-				RavenTP:Toggle()
-				local plr = entitylib.EntityMouse({
-					Range = 1000,
-					Players = true,
-					Part = 'RootPart'
-				})
+			if not callback then return end
+			RavenTP:Toggle()
 	
-				if getItem('raven') and plr then
-					bedwars.Client:Get(remotes.SpawnRaven):CallServerAsync():andThen(function(projectile)
-						if projectile then
-							local bodyforce = Instance.new('BodyForce')
-							bodyforce.Force = Vector3.new(0, projectile.PrimaryPart.AssemblyMass * workspace.Gravity, 0)
-							bodyforce.Parent = projectile.PrimaryPart
+			local plr = entitylib.EntityMouse({
+				Range = 1000,
+				Players = true,
+				Part = 'RootPart'
+			})
 	
-							if plr then
-								task.spawn(function()
-									for _ = 1, 20 do
-										if plr.RootPart and projectile then
-											projectile:SetPrimaryPartCFrame(CFrame.lookAlong(plr.RootPart.Position, gameCamera.CFrame.LookVector))
-										end
-										task.wait(0.05)
-									end
-								end)
-								task.wait(0.3)
-								bedwars.RavenController:detonateRaven()
-							end
-						end
-					end)
-				end
+			if not getItem('raven') then
+				notif('RavenTP', 'No raven', 3)
+				return
 			end
+			if not plr then
+				notif('RavenTP', 'No player under your mouse', 3)
+				return
+			end
+	
+			local raven = bedwars.RuntimeLib.await(bedwars.Client:Get(remotes.SpawnRaven):CallServerAsync())
+			if not raven then
+				notif('RavenTP', 'Raven on cooldown', 3)
+				return
+			end
+	
+			if not raven.PrimaryPart then
+				raven:GetPropertyChangedSignal('PrimaryPart'):Wait()
+			end
+	
+			local bodyforce = Instance.new('BodyForce')
+			bodyforce.Force = Vector3.new(0, raven.PrimaryPart.AssemblyMass * workspace.Gravity, 0)
+			bodyforce.Parent = raven.PrimaryPart
+	
+			-- Flown in, then held. Detonating was previously fired on a timer while the raven
+			-- was still on its way, so the server blew it up wherever it had got to - which
+			-- over any distance was still next to you.
+			local deadline = tick() + TIMEOUT
+			local distance
+			repeat
+				local root = plr.Character and plr.RootPart
+				if not root then break end
+	
+				distance = moveTowards(raven, root.Position)
+				if not distance then break end
+				task.wait()
+			until distance <= ARRIVE or tick() > deadline
+	
+			local holding = tick() + Hold.Value
+			repeat
+				local root = plr.Character and plr.RootPart
+				if not root or not moveTowards(raven, root.Position) then break end
+				task.wait()
+			until tick() > holding
+	
+			bedwars.RavenController:detonateRaven()
 		end,
-		Tooltip = 'Spawns and teleports a raven to a player\nnear your mouse.'
+		Tooltip = 'Spawns a raven, flies it to the player under your mouse and detonates it'
 	})
+	Step = RavenTP:CreateSlider({
+		Name = 'Step',
+		Tooltip = 'How far it moves each frame\nSmaller carries further reliably',
+		Min = 1,
+		Max = 100,
+		Default = 30,
+		Suffix = 'studs'
+	})
+	Hold = RavenTP:CreateSlider({
+		Name = 'Hold',
+		Tooltip = 'Time on target before detonating\nDefault is 0.3',
+		Min = 0,
+		Max = 2,
+		Default = 0.3,
+		Decimal = 100,
+		Suffix = 'seconds'
+	})
+	
 end)
 
 run(function()
@@ -18786,9 +19042,30 @@ run(function()
 		return false
 	end
 	
+	--[[
+		How many of an item you are actually carrying, right now.
+	
+		store.hand.amount is a snapshot, rebuilt only when the held item itself changes - so
+		it read whatever you had at the moment you equipped and then sat there while you built
+		the number away. Counted off the inventory instead, which is replaced on every change,
+		so it follows blocks being used.
+	
+		Every stack of the type is counted rather than just the one in hand, since what is
+		wanted is how many are left, and the next stack is as much left as this one.
+	]]
+	local function blocksLeft(itemType)
+		local amount = 0
+		for _, item in store.inventory.inventory.items do
+			if item.itemType == itemType then
+				amount += item.amount or 0
+			end
+		end
+		return amount
+	end
+	
 	local function getScaffoldBlock()
 		if store.hand.toolType == 'block' then
-			return store.hand.tool.Name, store.hand.amount
+			return store.hand.tool.Name, blocksLeft(store.hand.tool.Name)
 		elseif (not LimitItem.Enabled) then
 			local wool, amount = getWool()
 			if wool then
@@ -18826,7 +19103,9 @@ run(function()
 						if label then
 							amount = amount or 0
 							label.Text = amount..' <font color="rgb(170, 170, 170)">(Scaffold)</font>'
-							label.TextColor3 = Color3.fromHSV((amount / 128) / 2.8, 0.86, 1)
+							-- Clamped, because counting every stack can now go past the single
+							-- stack this was scaled for and the hue would wrap back round to red.
+							label.TextColor3 = Color3.fromHSV(math.clamp((amount / 128) / 2.8, 0, 1), 0.86, 1)
 						end
 	
 						if wool then
