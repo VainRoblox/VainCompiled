@@ -5327,6 +5327,32 @@ run(function()
 		return nil
 	end
 	
+	--[[
+		How many of an item there are, right now.
+	
+		store.inventories is written once when a player is first seen and then only rebuilt
+		when they swap their held item or change armor - those four things are all base
+		watches for it. A count moving on its own never touches any of them, which is why the
+		numbers sat at whatever they were when you injected.
+	
+		Each cached item keeps the folder Instance it came from, and that Instance's Amount
+		attribute is what actually changes. Reading it is live without having to rebuild the
+		inventory at all - which is what went wrong last time: a fresh read that came back
+		with a smaller set of items than the cache replaced the good one and everything
+		vanished. Nothing is replaced here, so there is nothing to lose.
+	
+		An item whose Instance has left the folder has been used up, and is reported gone.
+	]]
+	local function liveAmount(item)
+		local tool = item.tool
+		if typeof(tool) ~= 'Instance' then
+			return tonumber(item.amount) or 1
+		end
+		if not tool.Parent then return nil end
+	
+		return tonumber(tool:GetAttribute('Amount')) or tonumber(item.amount) or 1
+	end
+	
 	local function addIcon(frame, itemType, amount)
 		local image = Instance.new('ImageLabel')
 		image.Size = UDim2.fromOffset(32, 32)
@@ -5400,12 +5426,15 @@ run(function()
 			local at = listed(item.itemType)
 			if not at then return end
 	
+			local have = liveAmount(item)
+			if not have then return end
+	
 			if not totals[item.itemType] then
 				totals[item.itemType] = 0
 				rank[item.itemType] = at
 				table.insert(order, item.itemType)
 			end
-			totals[item.itemType] += tonumber(item.amount) or 1
+			totals[item.itemType] += have
 		end
 	
 		if type(inventory.items) == 'table' then
