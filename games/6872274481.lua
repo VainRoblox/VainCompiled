@@ -1439,6 +1439,34 @@ run(function()
 	-- than stacking another track on top of one still running.
 	local swingtrack
 
+	-- How long to leave a swing running when the track itself cannot say, and how long to
+	-- fade it out over.
+	local SWING_FALLBACK = 0.3
+	local SWING_FADE = 0.1
+
+	--[[
+		Ends a swing once it has had its time.
+
+		Scheduled rather than waited on. Waiting blocked the promise this is called from
+		and, at any break speed shorter than the wait, started the next swing on top of one
+		still playing. Leaving it to be stopped by the next swing instead was worse: the
+		last one of a dig had no next swing to replace it, so it simply never stopped.
+
+		Length is zero until the asset has loaded, which is usually the case immediately
+		after asking for it, so there is a fallback to fall back on.
+	]]
+	local function endSwing(track)
+		task.delay(track.Length > 0 and track.Length or SWING_FALLBACK, function()
+			if swingtrack == track then
+				swingtrack = nil
+			end
+			pcall(function()
+				track:Stop(SWING_FADE)
+				track:Destroy()
+			end)
+		end)
+	end
+
 	-- The remaining blocks between an opening and the target, nearest end first.
 	local ROUTE_LIMIT = 32
 
@@ -1561,10 +1589,14 @@ run(function()
 						-- - one at a time, replaced rather than layered.
 						pcall(function()
 							if swingtrack then
-								swingtrack:Stop(0.1)
+								swingtrack:Stop(SWING_FADE)
 								swingtrack:Destroy()
+								swingtrack = nil
 							end
-							swingtrack = bedwars.AnimationUtil:playAnimation(lplr, bedwars.BlockController:getAnimationController():getAssetId(bedwars.AnimationType.SWORD_SWING))
+
+							local track = bedwars.AnimationUtil:playAnimation(lplr, bedwars.BlockController:getAnimationController():getAssetId(bedwars.AnimationType.SWORD_SWING))
+							swingtrack = track
+							endSwing(track)
 						end)
 					end
 				end
