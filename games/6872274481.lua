@@ -5277,6 +5277,7 @@ run(function()
 	local Background
 	local Color = {}
 	local ShowAmount
+	local UpdateRate
 	
 	-- The things worth knowing an enemy has. Seeded straight into the item list, so they can
 	-- be switched off or removed there like anything else rather than being nine settings of
@@ -5371,7 +5372,16 @@ run(function()
 		local frame = billboard:FindFirstChild('Frame')
 		if not frame then return end
 	
-		local inventory = store.inventories[plr]
+		--[[
+			Read fresh, not out of store.inventories.
+	
+			That cache is only rebuilt when a player swaps their held item or changes armor -
+			those four things are all that is watched for it. A count moving on its own,
+			picking iron up or spending emeralds, touches none of them, so the cached numbers
+			sat at whatever they were the last time the target happened to switch items. Which
+			is exactly why the values never updated.
+		]]
+		local inventory = bedwars.getInventory and bedwars.getInventory(plr) or store.inventories[plr]
 		if not inventory then
 			billboard.Enabled = false
 			return
@@ -5494,7 +5504,10 @@ run(function()
 				task.spawn(function()
 					repeat
 						local ok = pcall(refreshAll)
-						task.wait(ok and 0.2 or 0.5)
+						-- The slider may not exist yet if a saved config switched this on while
+						-- the file was still running.
+						local rate = UpdateRate and (1 / UpdateRate.Value) or 0.2
+						task.wait(ok and rate or 0.5)
 					until not InventoryESP.Enabled
 				end)
 			else
@@ -5545,6 +5558,14 @@ run(function()
 			end
 		end,
 		Darker = true
+	})
+	UpdateRate = InventoryESP:CreateSlider({
+		Name = 'Update Rate',
+		Tooltip = 'How often inventories are re-read\nDefault is 5hz',
+		Min = 1,
+		Max = 20,
+		Default = 5,
+		Suffix = 'hz'
 	})
 	ShowAmount = InventoryESP:CreateToggle({
 		Name = 'Show Amount',
