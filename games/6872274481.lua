@@ -5425,12 +5425,6 @@ run(function()
 			return
 		end
 	
-		for _, obj in frame:GetChildren() do
-			if obj:IsA('ImageLabel') and obj.Name ~= 'Blur' then
-				obj:Destroy()
-			end
-		end
-	
 		local totals, rank, order, seen = {}, {}, {}, {}
 	
 		local function count(item)
@@ -5486,6 +5480,16 @@ run(function()
 			return rank[a] < rank[b]
 		end)
 	
+		-- Cleared only once there is something to put back. Doing it first meant anything
+		-- that went wrong while working out the contents - and something did - left every
+		-- icon destroyed and nothing drawn, which is why the display kept going blank
+		-- instead of simply not updating.
+		for _, obj in frame:GetChildren() do
+			if obj:IsA('ImageLabel') and obj.Name ~= 'Blur' then
+				obj:Destroy()
+			end
+		end
+	
 		local any = false
 		for _, itemType in order do
 			addIcon(frame, itemType, totals[itemType])
@@ -5498,7 +5502,9 @@ run(function()
 	local function refreshAll()
 		for ent, entry in Entries do
 			if entry.Billboard.Parent and entry.Player and entry.Player.Parent then
-				refreshAdornee(entry.Billboard, entry.Player)
+				-- Guarded per player. A throw part way through used to abandon the whole pass,
+				-- so everybody after the one that failed went unrefreshed too.
+				pcall(refreshAdornee, entry.Billboard, entry.Player)
 			else
 				entry.Billboard:Destroy()
 				Entries[ent] = nil
