@@ -554,7 +554,29 @@ end)
 	attacks come from the precastHitbox telegraph the game sends for all of them.
 ]]
 run(function()
-	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, StepMove, Fly, ShiftLock, Debug
+	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, Movement, ShiftLock, Debug
+
+	--[[
+		How the character gets about, as one choice rather than two toggles.
+
+		Walk hands the destination to the humanoid and lets it walk there, which is what a
+		player does and what the server expects to see.
+
+		Step TP places the character along the same route in small pieces, never further per
+		second than a walk would have covered - which is precise enough to hold a strafe
+		circle, but needs a floor under every step and so pays for ledges and corners.
+
+		Fly is the same movement without needing the floor at all, rising to an enemy above
+		you, and still at walk pace. The two used to be separate switches and Fly was only
+		consulted from inside the step path, so turning it on while walking did nothing.
+	]]
+	local function mode()
+		return Movement ~= nil and Movement.Value or 'Walk'
+	end
+
+	local function moving()
+		return mode() ~= 'Walk'
+	end
 
 	--[[
 		Chatter, which the Debug toggle controls.
@@ -1331,7 +1353,7 @@ run(function()
 			walk would have covered. The distance per second the server sees is unchanged;
 			only the need for ground beneath it goes away.
 		]]
-		if Fly ~= nil and Fly.Enabled then
+		if mode() == 'Fly' then
 			local direct = goal - hrp.Position
 			local range = direct.Magnitude
 			if range < 0.5 then return end
@@ -1454,7 +1476,7 @@ run(function()
 
 	local lastGoal
 	local function goTo(hum, hrp, goal)
-		if StepMove ~= nil and StepMove.Enabled then
+		if moving() then
 			moveGoal = goal
 			return
 		end
@@ -1489,9 +1511,9 @@ run(function()
 	end
 
 	local function walkTo(hum, hrp, goal, direct)
-		-- Stepping goes where it is pointed, so it follows the route itself rather than
-		-- handing the humanoid a waypoint and hoping.
-		if StepMove ~= nil and StepMove.Enabled then
+		-- Stepping and flying go where they are pointed, so they follow the route
+		-- themselves rather than handing the humanoid a waypoint and hoping.
+		if moving() then
 			stepTo(hrp, hum, goal)
 			return
 		end
@@ -1665,16 +1687,24 @@ run(function()
 
 	AutoFarm = vain.Categories.Blatant:CreateModule({
 		Name = 'Auto Farm',
-		Tooltip = 'Walks the dungeon and clears it: fights every enemy with your weapon and Q/E, dodges telegraphed attacks, and backs off to recover when hurt',
+		Tooltip = 'Clears the dungeon: fights every enemy with your weapon and Q/E, dodges telegraphed attacks, and backs off to recover when hurt',
 		Function = function(callback)
-			if not callback then return end
+			if not callback then
+				-- Handed back rather than left as we set it, so turning the farm off does
+				-- not leave you unable to turn while walking.
+				pcall(function()
+					local hum = lplr.Character and lplr.Character:FindFirstChildOfClass('Humanoid')
+					if hum then hum.AutoRotate = true end
+				end)
+				return
+			end
 
 			setupDodge()
 			clearPath()
 			moveGoal = nil
 
 			AutoFarm:Clean(runService.Heartbeat:Connect(function()
-				if not (StepMove ~= nil and StepMove.Enabled) or not moveGoal then return end
+				if not moving() or not moveGoal then return end
 				local char = lplr.Character
 				local hrp = char and char:FindFirstChild('HumanoidRootPart')
 				local hum = char and char:FindFirstChildOfClass('Humanoid')
@@ -1749,9 +1779,7 @@ run(function()
 
 					-- Before anything else: being in the air outranks every plan that
 					-- assumes standing on something.
-					if StepMove ~= nil and StepMove.Enabled
-						and not (Fly ~= nil and Fly.Enabled)
-						and keepGrounded(hrp, hum) then
+					if mode() == 'Step TP' and keepGrounded(hrp, hum) then
 						return
 					end
 
@@ -1925,12 +1953,19 @@ run(function()
 		Tooltip = 'Time between farm ticks' })
 	Debug = AutoFarm:CreateToggle({ Name = 'Debug', Default = false,
 		Tooltip = 'Reports every telegraph seen and every dodge taken, so a dodge that is not happening can be told apart from one that is happening and not helping' })
-	StepMove = AutoFarm:CreateToggle({ Name = 'Step Movement', Default = true,
-		Tooltip = 'Moves in small steps capped at your own walk speed instead of asking the humanoid to walk. Goes exactly where it is sent, and covers the same ground per second a walking player does' })
+	Movement = AutoFarm:CreateDropdown({
+		Name = 'Movement',
+		List = {'Walk', 'Step TP', 'Fly'},
+		Default = 'Walk',
+		Tooltip = 'How to get around',
+		ItemTooltips = {
+			Walk = 'Lets the humanoid walk there, which is what a player does',
+			['Step TP'] = 'Places you along the route in small pieces, never faster than a walk. Precise, but needs a floor under every step',
+			Fly = 'The same, through the air, rising to enemies above you. Still walk pace, but never blocked by ledges or corners',
+		}
+	})
 	ShiftLock = AutoFarm:CreateToggle({ Name = 'Shift Lock', Default = true,
 		Tooltip = 'Keeps you facing your target while moving instead of turning to face wherever you walk, so backing away from something still points your abilities at it' })
-	Fly = AutoFarm:CreateToggle({ Name = 'Fly', Default = false,
-		Tooltip = 'Moves through the air instead of along the ground, rising to an enemy that is above you. Still limited to your walk speed, so the ground it covers per second is unchanged - it simply stops needing a floor, which is what the ledges and corners were costing' })
 	Strafe = AutoFarm:CreateToggle({ Name = 'Strafe', Default = true,
 		Tooltip = 'Circles the enemy while fighting instead of standing still, so the ground attacks aimed at you land where you were' })
 	UsePathfinding = AutoFarm:CreateToggle({ Name = 'Pathfinding', Default = true,
