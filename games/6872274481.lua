@@ -5382,6 +5382,61 @@ run(function()
 		return nil
 	end
 	
+	--[[
+		How many of an item there are, right now.
+	
+		store.inventories is a snapshot. It is rebuilt only when a player swaps their held
+		item or changes armor - those four things are all base watches for - so a count moving
+		on its own never reaches it and the numbers sat at whatever they were when you
+		injected.
+	
+		Each cached item keeps the folder Instance it came from, and that Instance's Amount
+		attribute is the thing that actually changes, so reading it is live without rebuilding
+		anything. An item whose Instance has left the folder has been used up, and is reported
+		gone rather than lingering at its last count.
+	]]
+	local function liveAmount(item)
+		local tool = item.tool
+		if typeof(tool) ~= 'Instance' then
+			return tonumber(item.amount) or 1
+		end
+		if not tool.Parent then return nil end
+	
+		return tonumber(tool:GetAttribute('Amount')) or tonumber(item.amount) or 1
+	end
+	
+	--[[
+		Folds anything newly picked up into the cached inventory.
+	
+		Only ever adds. Replacing the cache with a fresh read is what blanked this display
+		twice before: the read returns an empty inventory rather than an error when it cannot
+		resolve a player, and taking that at face value wiped every icon. Adding to what is
+		already there has no such failure - a read that comes back with nothing simply
+		contributes nothing, and what was on screen stays.
+	
+		Removal is handled by liveAmount above, which drops anything whose Instance has left
+		the folder, so entries cannot pile up either.
+	]]
+	local function mergeNewItems(plr, cached)
+		if type(cached.items) ~= 'table' or not bedwars.getInventory then return end
+	
+		local fresh = bedwars.getInventory(plr)
+		if type(fresh) ~= 'table' or type(fresh.items) ~= 'table' then return end
+	
+		local known = {}
+		for _, item in cached.items do
+			if typeof(item.tool) == 'Instance' then known[item.tool] = true end
+		end
+	
+		for _, item in fresh.items do
+			if typeof(item.tool) == 'Instance' and not known[item.tool] then
+				table.insert(cached.items, item)
+			end
+		end
+	
+		cached.hand = fresh.hand or cached.hand
+	end
+	
 	local function addIcon(frame, itemType, amount)
 		local image = Instance.new('ImageLabel')
 		image.Size = UDim2.fromOffset(32, 32)
@@ -5440,6 +5495,7 @@ run(function()
 			billboard.Enabled = false
 			return
 		end
+		mergeNewItems(plr, inventory)
 	
 		for _, obj in frame:GetChildren() do
 			if obj:IsA('ImageLabel') and obj.Name ~= 'Blur' then
@@ -5455,12 +5511,15 @@ run(function()
 			local at = listed(item.itemType)
 			if not at then return end
 	
+			local have = liveAmount(item)
+			if not have then return end
+	
 			if not totals[item.itemType] then
 				totals[item.itemType] = 0
 				rank[item.itemType] = at
 				table.insert(order, item.itemType)
 			end
-			totals[item.itemType] += tonumber(item.amount) or 1
+			totals[item.itemType] += have
 		end
 	
 		if type(inventory.items) == 'table' then
