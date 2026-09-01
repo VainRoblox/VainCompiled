@@ -395,16 +395,16 @@ run(function()
 		}
 	end
 
+	-- The default terms, used by every game that does not replace them: someone who
+	-- outranks you cannot be acted on, wherever they are and whatever team they are on.
+	-- entitylib applies this ahead of any targetCheck, so it cannot be assigned over.
+	entitylib.protectionCheck = function(ent)
+		return not ent.Player or select(2, whitelist:get(ent.Player))
+	end
+
 	entitylib.targetCheck = function(ent)
 		if ent.NPC then return true end
 		if isFriend(ent.Player) then return false end
-
-		-- Asked before the game's own team logic, not after. A TeamCheck used to return
-		-- straight out of here, and both Bedwars and Skywars attach one to every entity -
-		-- so on exactly the games this matters most, rank protection was being skipped
-		-- entirely and an Owner was as targetable as anyone else.
-		if ent.Player and not select(2, whitelist:get(ent.Player)) then return false end
-
 		if ent.TeamCheck then
 			return ent:TeamCheck()
 		end
@@ -3892,6 +3892,9 @@ run(function()
 	local function Added(ent)
 		if not Targets.Players.Enabled and ent.Player then return end
 		if not Targets.NPCs.Enabled and ent.NPC then return end
+		-- Never drawn, whatever the settings say - showing where somebody is, is itself a
+		-- use of them.
+		if ent.Protected then return end
 		if Teammates.Enabled and (not ent.Targetable) and (not ent.Friend) then return end
 		if vain.ThreadFix then
 			setthreadidentity(8)
@@ -4114,6 +4117,9 @@ run(function()
 		Drawing2D = function(ent)
 			if not Targets.Players.Enabled and ent.Player then return end
 			if not Targets.NPCs.Enabled and ent.NPC then return end
+			-- Never drawn, whatever the settings say - showing where somebody is, is itself
+			-- a use of them.
+			if ent.Protected then return end
 			if Teammates.Enabled and (not ent.Targetable) and (not ent.Friend) then return end
 			if vain.ThreadFix then
 				setthreadidentity(8)
@@ -4180,6 +4186,9 @@ run(function()
 		Drawing3D = function(ent)
 			if not Targets.Players.Enabled and ent.Player then return end
 			if not Targets.NPCs.Enabled and ent.NPC then return end
+			-- Never drawn, whatever the settings say - showing where somebody is, is itself
+			-- a use of them.
+			if ent.Protected then return end
 			if Teammates.Enabled and (not ent.Targetable) and (not ent.Friend) then return end
 			if vain.ThreadFix then
 				setthreadidentity(8)
@@ -4209,6 +4218,9 @@ run(function()
 		DrawingSkeleton = function(ent)
 			if not Targets.Players.Enabled and ent.Player then return end
 			if not Targets.NPCs.Enabled and ent.NPC then return end
+			-- Never drawn, whatever the settings say - showing where somebody is, is itself
+			-- a use of them.
+			if ent.Protected then return end
 			if Teammates.Enabled and (not ent.Targetable) and (not ent.Friend) then return end
 			if vain.ThreadFix then
 				setthreadidentity(8)
@@ -5962,6 +5974,9 @@ run(function()
 	local function Added(ent)
 		if not Targets.Players.Enabled and ent.Player then return end
 		if not Targets.NPCs.Enabled and ent.NPC then return end
+		-- Never drawn, whatever the settings say - showing where somebody is, is itself a
+		-- use of them.
+		if ent.Protected then return end
 		if Teammates.Enabled and (not ent.Targetable) and (not ent.Friend) then return end
 		if vain.ThreadFix then
 			setthreadidentity(8)

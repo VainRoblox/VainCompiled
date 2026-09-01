@@ -96,7 +96,25 @@ local function waitForChildOfType(obj, name, timeout, prop)
 	return returned
 end
 
-entitylib.targetCheck = function(entity)
+--[[
+	Whether an entity may be acted on at all, asked before any game's own team logic.
+
+	Nothing is set here - it is filled in by whoever loads the whitelist, and a game that
+	wants different terms replaces this one function rather than the whole check.
+
+	It lives at this level because games replace entitylib.targetCheck outright, and every
+	one of them was then expected to remember to repeat the rank check inside their copy.
+	Seven did it by hand; one forgot entirely and three ran it after a branch that had
+	already returned, so protection quietly did nothing in four games including the two it
+	mattered most in. There is no line left to forget now.
+]]
+entitylib.protectionCheck = nil
+
+-- The game's own check, kept aside so reading entitylib.targetCheck can hand back the
+-- guarded version instead.
+local gameTargetCheck
+
+local function defaultTargetCheck(entity)
 	if entity.TeamCheck then
 		return entity:TeamCheck()
 	end
@@ -106,6 +124,44 @@ entitylib.targetCheck = function(entity)
 	if entity.Player.Team ~= lplr.Team then return true end
 	return #entity.Player.Team:GetPlayers() == #playersService:GetPlayers()
 end
+
+local function guardedTargetCheck(entity)
+	local protection = entitylib.protectionCheck
+	local protected = protection ~= nil and not protection(entity)
+
+	-- Recorded on the entity, not just returned. Not being targetable is the ordinary
+	-- state of a teammate, so the render modules cannot tell the two apart from that
+	-- alone - and hiding every teammate is not what protection is supposed to mean. This
+	-- is refreshed wherever Targetable is, which is everywhere it is worked out.
+	entity.Protected = protected
+	if protected then return false end
+
+	return (gameTargetCheck or defaultTargetCheck)(entity)
+end
+
+--[[
+	targetCheck is read as a normal field and assigned as a normal field, so every game
+	and module already written against it keeps working untouched. What changes is that a
+	write stores the function aside and a read hands back the guarded wrapper, so the
+	protection cannot be replaced by assigning over it.
+
+	An assignment of the wrapper itself is ignored rather than nested - modules that save
+	the old check and put it back afterwards (MurderMystery does) would otherwise wrap it
+	one layer deeper every time they were toggled.
+]]
+setmetatable(entitylib, {
+	__index = function(_, key)
+		if key == 'targetCheck' then return guardedTargetCheck end
+		return nil
+	end,
+	__newindex = function(self, key, value)
+		if key == 'targetCheck' then
+			gameTargetCheck = value ~= guardedTargetCheck and value or gameTargetCheck
+			return
+		end
+		rawset(self, key, value)
+	end
+})
 
 entitylib.getUpdateConnections = function(entity)
 	local humanoid = entity.Humanoid
