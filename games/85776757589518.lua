@@ -1088,9 +1088,21 @@ run(function()
 							-- thrown from where the server already believes we are.
 							hum:MoveTo(hrp.Position)
 						end
-						faceNearest()
+						--[[
+							Turned only to attack, never while walking.
 
+							faceNearest writes the root part's CFrame, and doing that every
+							tick resets the humanoid's physics state - which cancels the
+							walk MoveTo had just started. The character turned to face its
+							target and then stood there, every time. Harmless in the old
+							version because that teleported anyway; fatal once movement
+							depends on actually walking.
+
+							One write immediately before the swing is enough to aim, and
+							far too rare to interfere with getting anywhere.
+						]]
 						if (dist or math.huge) <= reach and not (busy and busy.Value ~= false) then
+							faceNearest()
 							swing(char, weaponUsed)
 							castAbilities(abilityUsed)
 						end
