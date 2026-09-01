@@ -10965,7 +10965,18 @@ kitRun(function()
         local prompt = best:FindFirstChildOfClass('ProximityPrompt')
         if not prompt then return end
 
-        local before = store.hand and store.hand.amount or 0
+        --[[
+            What is watched to know a deposit landed.
+
+            The count in hand was the wrong thing to watch: it is written from a store
+            subscription that lags well behind the server, so the wait kept falling through
+            early and fired the prompt again, and again - four of them landing at once and
+            the count only catching up afterwards. That is the bursts.
+
+            The hive's own Level is set by the server and replicates straight away, so it
+            says exactly when one bee has gone in and no more than one.
+        ]]
+        local before = best:GetAttribute('Level') or 0
 
         if fireproximityprompt then
             fireproximityprompt(prompt)
@@ -10976,21 +10987,19 @@ kitRun(function()
         end
 
         --[[
-            One bee per trip, and this is what holds it to one.
+            One bee per trip, waited out here.
 
-            Firing the prompt and carrying on meant coming back around a tenth of a second
-            later, long before the server had taken the bee and the hand had caught up, so
-            the prompt went off again and a second bee went with it. The count in hand
-            dropping is the only thing that actually says a deposit landed.
-
-            Bounded, so a deposit the server turns down does not wedge the loop here.
+            Bounded, so a deposit the server turns down does not wedge the loop - but long
+            enough that a slow round trip is not mistaken for a refusal and fired at again.
+            Running out of bees ends the wait too, since no level is coming.
         ]]
-        local deadline = os.clock() + 1
+        local deadline = os.clock() + 2
         repeat
             task.wait(0.05)
         until os.clock() >= deadline
-            or not heldIs('bee')
-            or (store.hand and store.hand.amount or 0) < before
+            or (best:GetAttribute('Level') or 0) > before
+            or not best.Parent
+            or not entitylib.isAlive
 
         local delay = value(DepositDelay, 0.1)
         if delay > 0 then
