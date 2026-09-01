@@ -758,6 +758,45 @@ run(function()
 	end
 
 	--[[
+		Everything nearby, not just the one being hit.
+
+		Spacing worked off the nearest enemy alone, so the strafe circle happily carried us
+		through the other four standing around it - the one we were fighting was at a
+		polite distance the whole way, and the rest were not considered at all.
+
+		This adds up a push away from every enemy inside the keep distance, weighted by how
+		close each one is, so a crowd shoves harder than a straggler and the way out points
+		away from the crowd rather than away from whoever happens to be nearest.
+	]]
+	local function crowding(pos, keep)
+		local push, count = Vector3.zero, 0
+		for _, m in enemyCache do
+			local part = m and m.Parent and enemyPart(m)
+			if part then
+				local away = (pos - part.Position) * Vector3.new(1, 0, 1)
+				local distance = away.Magnitude
+				if distance > 0.1 and distance < keep then
+					push += away.Unit * ((keep - distance) / keep)
+					count += 1
+				end
+			end
+		end
+		return push, count
+	end
+
+	-- Which way round is clearer. Circling into the rest of the pack is worse than
+	-- circling away from it, so the two directions are compared before one is committed to.
+	local function clearestTangent(pos, centre, tangent, ideal)
+		local best, bestScore
+		for _, dir in {1, -1} do
+			local probe = centre + ((pos - centre) * Vector3.new(1, 0, 1)).Unit * ideal + tangent * dir * 14
+			local _, crowded = crowding(probe, ideal)
+			if not bestScore or crowded < bestScore then best, bestScore = dir, crowded end
+		end
+		return best or 1
+	end
+
+	--[[
 		Walking, and only walking.
 
 		Short hops are handed straight to the humanoid, which is what a player holding a
@@ -1120,7 +1159,15 @@ run(function()
 						local away = (hrp.Position - part.Position) * Vector3.new(1, 0, 1)
 						away = away.Magnitude > 0.1 and away.Unit or hrp.CFrame.LookVector
 
-						if (dist or 0) < keep then
+						local push, crowded = crowding(hrp.Position, keep)
+
+						if crowded > 0 then
+							-- Anything at all inside the keep distance takes priority over
+							-- circling: get clear of the pack first, then resume.
+							clearPath()
+							local out = push.Magnitude > 0.1 and push.Unit or away
+							goTo(hum, hrp, hrp.Position + out * (keep + 10))
+						elseif (dist or 0) < keep then
 							clearPath()
 							goTo(hum, hrp, hrp.Position + away * ((keep - (dist or 0)) + 8))
 						elseif (dist or math.huge) > reach then
@@ -1131,16 +1178,17 @@ run(function()
 						elseif Strafe ~= nil and Strafe.Enabled then
 							clearPath()
 
+							local ideal = (keep + reach) * 0.5
+							local tangent = Vector3.new(-away.Z, 0, away.X)
+
+							-- Reconsidered on a timer rather than every tick, but chosen by
+							-- which side is emptier rather than simply alternating.
 							if os.clock() > strafeUntil then
-								strafeDir = -strafeDir
-								strafeUntil = os.clock() + 3
+								strafeDir = clearestTangent(hrp.Position, part.Position, tangent, ideal)
+								strafeUntil = os.clock() + 2
 							end
 
-							-- A point on the circle we want to be on, pushed sideways so
-							-- there is always somewhere new to walk to.
-							local ideal = (keep + reach) * 0.5
-							local tangent = Vector3.new(-away.Z, 0, away.X) * strafeDir
-							goTo(hum, hrp, part.Position + (away * ideal) + (tangent * 14))
+							goTo(hum, hrp, part.Position + (away * ideal) + (tangent * strafeDir * 14))
 						else
 							clearPath()
 							-- Stop walking and hold position while swinging, so the hit is
