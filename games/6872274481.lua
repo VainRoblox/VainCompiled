@@ -11167,12 +11167,16 @@ kitRun(function()
         Darker = true,
         Default = true
     })
+    -- Ten is what the game allows: a bee's own pickup prompt is built with a
+    -- MaxActivationDistance of 10, so a catch sent from further out has every chance of
+    -- being turned down. The slider goes past it to leave room to try, but the default is
+    -- the distance the game itself works at.
     CollectRange = Beekeeper:CreateSlider({
         Name = 'Range',
-        Tooltip = 'How far a bee can be to catch it (default 30)',
+        Tooltip = 'How far a bee can be to catch it (default 10)',
         Min = 1,
-        Max = 60,
-        Default = 30,
+        Max = 30,
+        Default = 10,
         Suffix = 'studs',
         Darker = true
     })
