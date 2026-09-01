@@ -6773,38 +6773,54 @@ run(function()
 		end
 	
 		v.Enabled = false
-		local alreadygot = {}
+	
+		--[[
+			Tallied first, drawn second.
+	
+			How many of something a chest holds is an Amount attribute on the item, not a child
+			of it - looking for a child called Value found nothing, every time, which is why no
+			number was ever drawn.
+	
+			A chest can also hold the same item in more than one stack, so the amounts are
+			summed. Reading only the first stack, the way the old dedup did, would under-report
+			anything that arrived in separate drops.
+		]]
+		local order, totals = {}, {}
 		for _, item in chestitems do
 			-- ShowAll displays all items regardless of the list; otherwise use the filter
 			local shouldShow = on(ShowAll) or table.find(List.ListEnabled, item.Name) or nearStorageItem(item.Name)
-			if not alreadygot[item.Name] and shouldShow then
-				alreadygot[item.Name] = true
-				v.Enabled = true
-				local blockimage = Instance.new('ImageLabel')
-				blockimage.Size = UDim2.fromOffset(32, 32)
-				blockimage.BackgroundTransparency = 1
-				blockimage.Image = bedwars.getIcon({itemType = item.Name}, true)
-				blockimage.Parent = v.Frame
+			if not shouldShow then continue end
 	
-				-- Add amount text if enabled
-				if on(ShowAmount) then
-					local amount = item:FindFirstChild('Value')
-					if amount and amount.Value then
-						local textlabel = Instance.new('TextLabel')
-						textlabel.Name = 'Amount'
-						textlabel.Size = UDim2.fromOffset(16, 16)
-						textlabel.Position = UDim2.fromOffset(16, 16)
-						textlabel.BackgroundColor3 = Color3.new(0, 0, 0)
-						textlabel.BackgroundTransparency = 0.3
-						textlabel.TextColor3 = Color3.new(1, 1, 1)
-						textlabel.TextSize = 12
-						textlabel.Text = tostring(amount.Value)
-						textlabel.Parent = blockimage
-						local corner = Instance.new('UICorner')
-						corner.CornerRadius = UDim.new(0, 2)
-						corner.Parent = textlabel
-					end
-				end
+			if totals[item.Name] == nil then
+				order[#order + 1] = item.Name
+				totals[item.Name] = 0
+			end
+			-- An item carrying no amount at all is one of itself.
+			totals[item.Name] = totals[item.Name] + (item:GetAttribute('Amount') or 1)
+		end
+	
+		for _, name in order do
+			v.Enabled = true
+			local blockimage = Instance.new('ImageLabel')
+			blockimage.Size = UDim2.fromOffset(32, 32)
+			blockimage.BackgroundTransparency = 1
+			blockimage.Image = bedwars.getIcon({itemType = name}, true)
+			blockimage.Parent = v.Frame
+	
+			if on(ShowAmount) then
+				local textlabel = Instance.new('TextLabel')
+				textlabel.Name = 'Amount'
+				textlabel.Size = UDim2.fromOffset(16, 16)
+				textlabel.Position = UDim2.fromOffset(16, 16)
+				textlabel.BackgroundColor3 = Color3.new(0, 0, 0)
+				textlabel.BackgroundTransparency = 0.3
+				textlabel.TextColor3 = Color3.new(1, 1, 1)
+				textlabel.TextSize = 12
+				textlabel.Text = tostring(totals[name])
+				textlabel.Parent = blockimage
+				local corner = Instance.new('UICorner')
+				corner.CornerRadius = UDim.new(0, 2)
+				corner.Parent = textlabel
 			end
 		end
 		table.clear(chestitems)
@@ -6842,7 +6858,21 @@ run(function()
 		corner.CornerRadius = UDim.new(0, 4)
 		corner.Parent = frame
 		Reference[v] = billboard
+	
+		-- Taking part of a stack changes the item's Amount without the folder gaining or
+		-- losing a child, so ChildAdded alone would leave the number showing what was there
+		-- when the chest was first looked at.
+		local function watchAmount(item)
+			StorageESP:Clean(item:GetAttributeChangedSignal('Amount'):Connect(function()
+				refreshAdornee(billboard)
+			end))
+		end
+		for _, item in chest:GetChildren() do
+			watchAmount(item)
+		end
+	
 		StorageESP:Clean(chest.ChildAdded:Connect(function(item)
+			watchAmount(item)
 			if on(ShowAll) or table.find(List.ListEnabled, item.Name) or nearStorageItem(item.Name) then
 				refreshAdornee(billboard)
 			end
