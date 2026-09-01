@@ -5393,6 +5393,25 @@ run(function()
 		return nil
 	end
 	
+	--[[
+		The folder a player's items actually live in, read straight off their character.
+	
+		This is where the game gets it from: an ObjectValue called InventoryFolder on the
+		character, pointing at a folder whose children are the items - each named by its item
+		type with the count on an Amount attribute. Reading it is live by definition, so
+		nothing has to be cached or refreshed.
+	
+		Going through bedwars.getInventory instead is what kept emptying this display. That
+		resolves the player to an entity first and returns an empty inventory when the lookup
+		misses, so a miss is indistinguishable from somebody carrying nothing - and a display
+		rebuilt from that shows nothing at all.
+	]]
+	local function inventoryFolder(plr)
+		local char = plr.Character
+		local value = char and char:FindFirstChild('InventoryFolder')
+		return value and value.Value
+	end
+	
 	local function addIcon(frame, itemType, amount)
 		local image = Instance.new('ImageLabel')
 		image.Size = UDim2.fromOffset(iconSize(), iconSize())
@@ -5446,11 +5465,7 @@ run(function()
 		local frame = billboard:FindFirstChild('Frame')
 		if not frame then return end
 	
-		local inventory = store.inventories[plr]
-		if not inventory then
-			billboard.Enabled = false
-			return
-		end
+		local inventory = store.inventories[plr] or {}
 	
 		for _, obj in frame:GetChildren() do
 			if obj:IsA('ImageLabel') and obj.Name ~= 'Blur' then
@@ -5474,7 +5489,14 @@ run(function()
 			totals[item.itemType] += tonumber(item.amount) or 1
 		end
 	
-		if type(inventory.items) == 'table' then
+		-- Live first. The snapshot is only used when the folder cannot be reached, so the
+		-- display falls back to being stale rather than to being empty.
+		local folder = inventoryFolder(plr)
+		if folder then
+			for _, child in folder:GetChildren() do
+				count({itemType = child.Name, amount = child:GetAttribute('Amount')})
+			end
+		elseif type(inventory.items) == 'table' then
 			for _, item in inventory.items do
 				count(item)
 			end
