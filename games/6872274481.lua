@@ -5339,7 +5339,8 @@ run(function()
 	local Color = {}
 	local ShowAmount
 	local Size
-	local Height
+	local Gap
+	local ShowAll
 	
 	-- The things worth knowing an enemy has. Seeded straight into the item list, so they can
 	-- be switched off or removed there like anything else rather than being nine settings of
@@ -5393,6 +5394,9 @@ run(function()
 				return i
 			end
 		end
+	
+		-- Everything the list did not name, sorted after everything it did.
+		if on(ShowAll) then return math.huge end
 		return nil
 	end
 	
@@ -5463,9 +5467,10 @@ run(function()
 		out how dangerous somebody is. Stacks of the same thing are added together, so eight
 		iron in one slot and twelve in another read as twenty rather than as two icons.
 	]]
-	local function refreshAdornee(billboard, plr)
-		if not (billboard and billboard.Parent and plr) then return end
-		local frame = billboard:FindFirstChild('Frame')
+	local function refreshAdornee(entry, plr)
+		local container = entry.Billboard
+		if not (container and container.Parent and plr) then return end
+		local frame = container:FindFirstChild('Frame')
 		if not frame then return end
 	
 		local inventory = store.inventories[plr] or {}
@@ -5523,7 +5528,7 @@ run(function()
 			any = true
 		end
 	
-		billboard.Enabled = any
+		entry.Shown = any
 	end
 	
 	local function refreshAll()
@@ -5533,9 +5538,9 @@ run(function()
 				-- much a use of them as aiming at them, so this follows the same rule the
 				-- other render modules do.
 				if ent.Protected then
-					entry.Billboard.Enabled = false
+					entry.Shown = false
 				else
-					refreshAdornee(entry.Billboard, entry.Player)
+					refreshAdornee(entry, entry.Player)
 				end
 			else
 				entry.Billboard:Destroy()
@@ -5547,49 +5552,75 @@ run(function()
 	local function Added(ent)
 		if not ent.Player or Entries[ent] then return end
 	
-		local billboard = Instance.new('BillboardGui')
-		billboard.Parent = Folder
-		billboard.Name = 'inventory'
 		--[[
-			Anchored to the same point the name is drawn at, then pushed down in screen space.
+			Drawn in screen space, the same way NameTags draws, rather than as a billboard.
 	
-			The two are projected differently: NameTags works out a screen position itself,
-			while this is a billboard offset in world studs. A gap measured in studs is worth
-			a lot of pixels up close and almost none far away, so no fixed value can hold them
-			apart - it overlapped at distance and drifted apart nearby.
+			A BillboardGui is sized in the world, so it shrinks as the player gets further
+			away - while the name above it is a plain label at a fixed pixel size that does
+			not. Two things scaling at different rates cannot be held apart by any offset:
+			whatever gap looks right up close is gone at range, which is exactly what kept
+			them overlapping.
 	
-			ExtentsOffset is applied after projection, in multiples of the billboard's own
-			size, so a value here means the same number of pixels at any range.
+			Anchored to the same point NameTags anchors to, the head, but by the top edge
+			rather than the bottom - so the name grows upward from that point and this hangs
+			downward from it, and the two can never meet whatever the distance.
 		]]
-		billboard.StudsOffsetWorldSpace = Vector3.new(0, ent.HipHeight and (ent.HipHeight + 1) or 3.6, 0)
-		billboard.ExtentsOffset = Vector3.new(0, -(Height and Height.Value or 1.4), 0)
-		billboard.Size = UDim2.fromOffset(stripSize(), stripSize())
-		billboard.AlwaysOnTop = true
-		billboard.ClipsDescendants = false
-		billboard.Adornee = ent.RootPart
-		billboard.Enabled = false
-		local blur = addBlur(billboard)
+		local container = Instance.new('Frame')
+		container.Name = 'inventory'
+		container.AnchorPoint = Vector2.new(0.5, 0)
+		container.Size = UDim2.fromOffset(stripSize(), stripSize())
+		container.BackgroundTransparency = 1
+		container.Visible = false
+		container.Parent = Folder
+	
+		local blur = addBlur(container)
 		blur.Visible = on(Background)
+	
 		local frame = Instance.new('Frame')
+		frame.Name = 'Frame'
 		frame.Size = UDim2.fromScale(1, 1)
 		frame.BackgroundColor3 = Color3.fromHSV(Color.Hue or 0, Color.Sat or 0, Color.Value or 0.15)
 		frame.BackgroundTransparency = 1 - (on(Background) and (Color.Opacity or 0.5) or 0)
-		frame.Parent = billboard
+		frame.Parent = container
+	
 		local layout = Instance.new('UIListLayout')
 		layout.FillDirection = Enum.FillDirection.Horizontal
 		layout.Padding = UDim.new(0, 4)
 		layout.VerticalAlignment = Enum.VerticalAlignment.Center
 		layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 		layout:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(function()
-			billboard.Size = UDim2.fromOffset(math.max(layout.AbsoluteContentSize.X + 4, stripSize()), stripSize())
+			container.Size = UDim2.fromOffset(math.max(layout.AbsoluteContentSize.X + 4, stripSize()), stripSize())
 		end)
 		layout.Parent = frame
+	
 		local corner = Instance.new('UICorner')
 		corner.CornerRadius = UDim.new(0, 4)
 		corner.Parent = frame
 	
-		Entries[ent] = {Billboard = billboard, Player = ent.Player}
+		Entries[ent] = {Billboard = container, Player = ent.Player}
 	end
+	
+	-- Positioned every frame, since a screen position only means anything for the frame it
+	-- was worked out in.
+	local function positionAll()
+		for ent, entry in Entries do
+			local container = entry.Billboard
+			if not container.Parent then continue end
+	
+			if not (ent.RootPart and ent.RootPart.Parent) or not entry.Shown then
+				container.Visible = false
+				continue
+			end
+	
+			local head = ent.RootPart.Position + Vector3.new(0, (ent.HipHeight or 2.6) + 1, 0)
+			local point, onScreen = gameCamera:WorldToViewportPoint(head)
+			container.Visible = onScreen
+			if onScreen then
+				container.Position = UDim2.fromOffset(point.X, point.Y + (Gap and Gap.Value or 4))
+			end
+		end
+	end
+	
 	
 	InventoryESP = vain.Categories.Render:CreateModule({
 		Name = 'InventoryESP',
@@ -5607,9 +5638,11 @@ run(function()
 					end
 				end))
 	
-				-- A single throttled pass, not a RenderStepped connection per entity.
-				-- Rebuilding every icon for every player each frame was both the source
-				-- of the error spam and far more work than this needs.
+				-- Position every frame, contents on a timer. A screen position is only valid
+				-- for the frame it was worked out in, but rebuilding icons that often is far
+				-- more work than this needs and was the source of the old error spam.
+				InventoryESP:Clean(runService.RenderStepped:Connect(positionAll))
+	
 				task.spawn(function()
 					repeat
 						local ok = pcall(refreshAll)
@@ -5667,20 +5700,22 @@ run(function()
 	})
 	Size = InventoryESP:CreateSlider({
 		Name = 'Size',
-		Tooltip = 'How big the icons are\nDefault is 100',
-		Min = 50, Max = 250, Default = 100, Suffix = '%',
+		Tooltip = 'How big the icons are\nDefault is 60, which matches NameTags',
+		Min = 25, Max = 250, Default = 60, Suffix = '%',
 		Function = function()
 			task.spawn(refreshAll)
 		end
 	})
-	Height = InventoryESP:CreateSlider({
+	Gap = InventoryESP:CreateSlider({
 		Name = 'Gap',
-		Tooltip = 'How far below the name it sits\nDefault is 1.4',
-		Min = 0, Max = 5, Default = 1.4, Decimal = 10,
-		Function = function(value)
-			for _, entry in Entries do
-				entry.Billboard.ExtentsOffset = Vector3.new(0, -value, 0)
-			end
+		Tooltip = 'Pixels between the name and the icons\nDefault is 2',
+		Min = 0, Max = 40, Default = 2, Suffix = 'px'
+	})
+	ShowAll = InventoryESP:CreateToggle({
+		Name = 'Show All',
+		Tooltip = 'Shows everything they carry, not just the list',
+		Function = function()
+			task.spawn(refreshAll)
 		end
 	})
 	ShowAmount = InventoryESP:CreateToggle({
