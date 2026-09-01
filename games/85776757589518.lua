@@ -1407,12 +1407,28 @@ run(function()
 			whether it is spent going along or going up, so a step onto a ledge simply takes
 			a few ticks instead of one.
 		]]
+		--[[
+			Height budgeted apart from distance, not out of it.
+
+			Clamping the combined vector meant any change in height came out of the forward
+			travel: on ground that is not perfectly flat - which is most of a dungeon - a
+			step that rose even slightly moved less far along, every single time. That is
+			the slowdown, and it got worse the rougher the floor.
+
+			A walking player does not slow down on a ramp, so neither does this. Distance
+			along the ground keeps the whole budget, and height gets a budget of its own,
+			which is what stops a ledge being taken in one jump without taxing every
+			ordinary step for it.
+		]]
 		local function place(desired)
-			local delta3 = desired - hrp.Position
-			if delta3.Magnitude > full then
-				desired = hrp.Position + delta3.Unit * full
+			local flat = (desired - hrp.Position) * Vector3.new(1, 0, 1)
+			if flat.Magnitude > full then
+				flat = flat.Unit * full
 			end
-			hrp.CFrame = CFrame.new(desired) * (hrp.CFrame - hrp.CFrame.Position)
+
+			local rise = math.clamp(desired.Y - hrp.Position.Y, -full, full)
+			hrp.CFrame = CFrame.new(hrp.Position + flat + Vector3.new(0, rise, 0))
+				* (hrp.CFrame - hrp.CFrame.Position)
 		end
 
 		--[[
@@ -1466,8 +1482,18 @@ run(function()
 			because the whole point is to reach ground the ordinary limits called too far;
 			but no ground whatsoever means open air, and open air is a fall.
 		]]
+		--[[
+			For climbing only, which is the whole reason this branch exists.
+
+			It was reaching four hundred studs down for something to stand on, and over a
+			pit it found the bottom of the pit - so it stepped out into the gap and fell.
+			A destination that is not above us and has no footing is not a step up, it is
+			a hole, and the answer to a hole is to stay where you are.
+		]]
+		if goal.Y <= hrp.Position.Y + 1 then return end
+
 		groundParams.FilterDescendantsInstances = {lplr.Character}
-		local below = workspace:Raycast(target + Vector3.new(0, 12, 0), Vector3.new(0, -400, 0), groundParams)
+		local below = workspace:Raycast(target + Vector3.new(0, 12, 0), Vector3.new(0, -MAX_DROP, 0), groundParams)
 		if not below then return end
 
 		local rise = math.clamp(goal.Y - hrp.Position.Y, -full, full)
