@@ -554,7 +554,7 @@ end)
 	attacks come from the precastHitbox telegraph the game sends for all of them.
 ]]
 run(function()
-	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding
+	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe
 
 	local pathfindingService = cloneref(game:GetService('PathfindingService'))
 
@@ -768,6 +768,21 @@ run(function()
 		The path is recomputed sparingly: enemies move, and rebuilding a route every tick
 		costs more than it corrects.
 	]]
+	--[[
+		Circling, rather than standing and taking it.
+
+		Standing still inside attack range is what the red lanes are for: they are aimed
+		where you are when the cast starts, and a stationary target is already standing in
+		the answer. Walking a circle around the enemy instead means the lane lands behind
+		you without anything having to notice it, keeps melee from settling into reach, and
+		costs nothing - abilities fire on their own timer regardless of where the feet are.
+
+		The direction is held for a few seconds at a time rather than chosen fresh each
+		tick, since flipping constantly is how you end up jittering on the spot instead of
+		actually going round.
+	]]
+	local strafeDir, strafeUntil = 1, 0
+
 	local waypoints, waypointIndex, pathGoal, pathBuiltAt = nil, 1, nil, 0
 
 	local function clearPath()
@@ -1034,6 +1049,19 @@ run(function()
 							-- because a route recomputed around a moving enemy is worse
 							-- than walking at it.
 							walkTo(hum, hrp, part.Position, (dist or 0) < 25)
+						elseif Strafe.Enabled then
+							clearPath()
+
+							if os.clock() > strafeUntil then
+								strafeDir = -strafeDir
+								strafeUntil = os.clock() + 3
+							end
+
+							-- A point on the circle we want to be on, pushed sideways so
+							-- there is always somewhere new to walk to.
+							local ideal = (keep + reach) * 0.5
+							local tangent = Vector3.new(-away.Z, 0, away.X) * strafeDir
+							hum:MoveTo(part.Position + (away * ideal) + (tangent * 14))
 						else
 							clearPath()
 							-- Stop walking and hold position while swinging, so the hit is
@@ -1073,6 +1101,8 @@ run(function()
 		Tooltip = 'How close to get before swinging. Melee wants this low, a staff can sit further back (default 12)' })
 	FarmDelay = AutoFarm:CreateSlider({ Name = 'Loop Delay', Min = 0, Max = 0.5, Default = 0.1, Decimal = 100, Suffix = 's',
 		Tooltip = 'Time between farm ticks' })
+	Strafe = AutoFarm:CreateToggle({ Name = 'Strafe', Default = true,
+		Tooltip = 'Circles the enemy while fighting instead of standing still, so the ground attacks aimed at you land where you were' })
 	UsePathfinding = AutoFarm:CreateToggle({ Name = 'Pathfinding', Default = true,
 		Tooltip = "Follows the game's own navigation around corners and up stairs instead of walking into walls. Turn off only if it gets stuck" })
 	HealSwap = AutoFarm:CreateToggle({ Name = 'Heal Swap when low', Default = true,
