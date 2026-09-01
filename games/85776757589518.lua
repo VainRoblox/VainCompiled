@@ -967,8 +967,28 @@ run(function()
 			local startHrp = startChar and startChar:FindFirstChild('HumanoidRootPart')
 			runOrigin = startHrp and startHrp.Position or Vector3.zero
 
+			--[[
+				Errors are said out loud, once each.
+
+				The body below runs inside a pcall so one bad frame cannot kill the farm,
+				but swallowing the message meant any mistake in here looked identical to
+				the farm simply deciding to do nothing - which is impossible to tell apart
+				from outside, and is how a broken build gets reported as "it just stands
+				there". Each distinct error is reported the first time it is seen.
+			]]
+			local reported = {}
+			local function report(err)
+				err = tostring(err)
+				if reported[err] then return end
+				reported[err] = true
+				if vain and vain.CreateNotification then
+					vain:CreateNotification('Auto Farm', err, 10, 'alert')
+				end
+				warn('[Auto Farm] ' .. err)
+			end
+
 			repeat
-				pcall(function()
+				local ok, err = pcall(function()
 					local char = lplr.Character
 					local hrp = char and char:FindFirstChild('HumanoidRootPart')
 					local hum = char and char:FindFirstChildOfClass('Humanoid')
@@ -1049,7 +1069,7 @@ run(function()
 							-- because a route recomputed around a moving enemy is worse
 							-- than walking at it.
 							walkTo(hum, hrp, part.Position, (dist or 0) < 25)
-						elseif Strafe.Enabled then
+						elseif Strafe ~= nil and Strafe.Enabled then
 							clearPath()
 
 							if os.clock() > strafeUntil then
@@ -1085,7 +1105,8 @@ run(function()
 						end
 					end
 				end)
-				task.wait(FarmDelay.Value)
+				if not ok then report(err) end
+				task.wait(FarmDelay and FarmDelay.Value or 0.1)
 			until not AutoFarm.Enabled
 		end,
 	})
