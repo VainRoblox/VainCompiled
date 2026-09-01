@@ -914,6 +914,8 @@ run(function()
 		Roact = require(replicatedStorage['rbxts_include']['node_modules']['@rbxts']['roact'].src),
 		RuntimeLib = require(replicatedStorage['rbxts_include'].RuntimeLib),
 		SoundList = require(replicatedStorage.TS.sound['game-sound']).GameSound,
+		StatusEffectMeta = require(replicatedStorage.TS['status-effect']['status-effect-meta']).StatusEffectMeta,
+		StatusEffectType = require(replicatedStorage.TS['status-effect']['status-effect-type']).StatusEffectType,
 		SoundManager = require(replicatedStorage['rbxts_include']['node_modules']['@easy-games']['game-core'].out).SoundManager,
 		Store = require(lplr.PlayerScripts.TS.ui.store).ClientStore,
 		TeamUpgradeMeta = teamUpgradeMeta(),
@@ -5848,10 +5850,166 @@ run(function()
 	local DistanceLimit
 	local Rank
 	local Device
+	local Enchants
+	local Effects
 	local Strings, Sizes, Reference = {}, {}, {}
 	local Folder = Instance.new('Folder')
 	Folder.Parent = vain.gui
 	local methodused
+	
+	--[[
+		Enchantments and effects are the same thing underneath: the game writes both onto the
+		character as a StatusEffect_<name> attribute, present while active and removed when it
+		wears off. So one read of the character's attributes answers both settings.
+	
+		Three companion attributes sit under the same prefix carrying stack counts and extra
+		data. They are not effects of their own and would otherwise show up as garbage entries.
+	]]
+	local STATUS_PREFIX = 'StatusEffect_'
+	local STATUS_COMPANION = {stacks = true, extraNumbers = true, extraBooleans = true}
+	
+	-- At most this many per group, so somebody carrying a dozen effects widens their tag by a
+	-- readable amount rather than off the side of the screen. The rest are counted, not named.
+	local STATUS_SHOWN = 4
+	
+	-- Effects the game keeps for its own bookkeeping - cooldown markers, spam guards, the
+	-- hidden half of a stacking effect - which mean nothing on a nametag.
+	local STATUS_INTERNAL = {'_ON_COOLDOWN$', '_INDICATOR$', '_SELF_STACK$', '^ANTI_', '^ANALYTICS', '^AFK_'}
+	
+	local StatusEnchant, StatusLabel
+	local StatusSig, StatusNext = {}, 0
+	
+	-- How often the attributes are re-read. Nothing fires when an effect lands or wears off
+	-- that the entity events would catch, so this is polled rather than driven; a fifth of a
+	-- second is quicker than anyone reacts and costs one table read per entity.
+	local STATUS_POLL = 0.2
+	
+	--[[
+		Worked out once, from the game's own enum rather than a list written out here, so an
+		effect added in an update names itself instead of vanishing.
+	
+		The label comes from the enum member: BERSERKER_1 reads as Berserker, ARMOR_ENCHANT_
+		ABSORPTION as Absorption. The game's own display name is preferred where it has one,
+		since it is usually the friendlier word - Greasy rather than Greased - but it only
+		covers about two thirds of them, and none of the ones worth calling an enchantment.
+	]]
+	local function classifyStatus()
+		if StatusLabel then return end
+		StatusEnchant, StatusLabel = {}, {}
+	
+		local function title(name)
+			local words = {}
+			for word in name:gsub('_%d+$', ''):gmatch('[^_]+') do
+				words[#words + 1] = word:sub(1, 1):upper() .. word:sub(2):lower()
+			end
+			return table.concat(words, ' ')
+		end
+	
+		for name, value in bedwars.StatusEffectType do
+			-- Members only. Some of these enums carry a reverse map alongside the forward one,
+			-- and a lowercase key there would otherwise read as an effect called GREASED.
+			if type(name) ~= 'string' or type(value) ~= 'string' or name ~= name:upper() then continue end
+	
+			local internal = false
+			for _, pattern in STATUS_INTERNAL do
+				if name:find(pattern) then
+					internal = true
+					break
+				end
+			end
+			if internal then continue end
+	
+			-- An enchantment is anything the enum calls one, however it is spelt: ENCHANT_FIRE,
+			-- ARMOR_ENCHANT_FROST, GROUNDED_ENCHANT.
+			local enchant = name:find('ENCHANT') ~= nil
+			StatusEnchant[value] = enchant
+	
+			local meta = bedwars.StatusEffectMeta[value]
+			StatusLabel[value] = (not enchant and meta and meta.displayName) or title((name:gsub('^.*ENCHANT_', ''):gsub('_ENCHANT$', '')))
+		end
+	end
+	
+	-- What is currently on the character, split the two ways the settings ask for. Sorted,
+	-- because attributes come back in no particular order and an unsorted tag would shuffle
+	-- its own words every time it refreshed.
+	local function statusOf(ent)
+		classifyStatus()
+	
+		local character = ent.Character
+		if not character then return end
+	
+		local enchants, effects, attributes = {}, {}, nil
+		local ok, result = pcall(character.GetAttributes, character)
+		if not ok then return end
+		attributes = result
+	
+		for key in attributes do
+			local name = key:sub(1, #STATUS_PREFIX) == STATUS_PREFIX and key:sub(#STATUS_PREFIX + 1) or nil
+			if not name or STATUS_COMPANION[name:match('_([%a]+)$') or ''] then continue end
+	
+			local label = StatusLabel[name]
+			if not label then continue end
+	
+			local stacks = attributes[key .. '_stacks']
+			if type(stacks) == 'number' and stacks > 1 then
+				label = label .. ' x' .. stacks
+			end
+	
+			local into = StatusEnchant[name] and enchants or effects
+			into[#into + 1] = label
+		end
+	
+		table.sort(enchants)
+		table.sort(effects)
+		return enchants, effects
+	end
+	
+	-- One group rendered, capped, with the overflow counted rather than dropped silently.
+	local function statusText(list, color)
+		if not list or #list == 0 then return '' end
+	
+		local shown = list
+		if #list > STATUS_SHOWN then
+			shown = table.move(list, 1, STATUS_SHOWN, 1, {})
+			shown[STATUS_SHOWN + 1] = '+' .. (#list - STATUS_SHOWN)
+		end
+	
+		local text = ' [' .. table.concat(shown, '] [') .. ']'
+		return color and ('<font color="' .. color .. '">' .. text .. '</font>') or text
+	end
+	
+	-- Both groups appended to a tag, in whichever form the current renderer wants.
+	local function appendStatus(ent, text, rich)
+		if not ((Enchants and Enchants.Enabled) or (Effects and Effects.Enabled)) then return text end
+	
+		local enchants, effects = statusOf(ent)
+		if Enchants and Enchants.Enabled then
+			text = text .. statusText(enchants, rich and '#d0a3ff')
+		end
+		if Effects and Effects.Enabled then
+			text = text .. statusText(effects, rich and '#7fd8ff')
+		end
+		return text
+	end
+	
+	-- True once per interval for the whole set, rather than each entity keeping its own
+	-- clock, so one pass re-reads everyone or nobody.
+	local function statusDue()
+		if not ((Enchants and Enchants.Enabled) or (Effects and Effects.Enabled)) then return false end
+	
+		local now = os.clock()
+		if now < StatusNext then return false end
+		StatusNext = now + STATUS_POLL
+		return true
+	end
+	
+	-- The set of what is showing, as one string, so the loop can tell a real change from a
+	-- re-read that found exactly the same thing and skip the rebuild.
+	local function statusSignature(ent)
+		local enchants, effects = statusOf(ent)
+		if not enchants then return '' end
+		return table.concat(enchants, ',') .. '|' .. table.concat(effects, ',')
+	end
 	
 	local Added = {
 		Normal = function(ent)
@@ -5863,10 +6021,7 @@ run(function()
 			Strings[ent] = ent.Player and whitelist:tag(ent.Player, true, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
 	
 			if Rank.Enabled and ent.Player then
-				local rankTag = whitelist:tag(ent.Player, true, false)
-				if rankTag ~= '' then
-					Strings[ent] = Strings[ent]..' <font color="rgb(200, 200, 200)">'..rankTag..'</font>'
-				end
+				Strings[ent] = Strings[ent]..' <font color="rgb(200, 200, 200)">'..whitelist:rankname(ent.Player)..'</font>'
 			end
 	
 			if Device.Enabled and ent.Player then
@@ -5879,6 +6034,8 @@ run(function()
 				local healthColor = Color3.fromHSV(math.clamp(ent.Health / ent.MaxHealth, 0, 1) / 2.5, 0.89, 0.75)
 				Strings[ent] = Strings[ent]..' <font color="rgb('..tostring(math.floor(healthColor.R * 255))..','..tostring(math.floor(healthColor.G * 255))..','..tostring(math.floor(healthColor.B * 255))..')">'..math.round(ent.Health)..'</font>'
 			end
+	
+			Strings[ent] = appendStatus(ent, Strings[ent], true)
 	
 			if Distance.Enabled then
 				Strings[ent] = '<font color="rgb(85, 255, 85)">[</font><font color="rgb(255, 255, 255)">%s</font><font color="rgb(85, 255, 85)">]</font> '..Strings[ent]
@@ -5930,10 +6087,7 @@ run(function()
 			Strings[ent] = ent.Player and whitelist:tag(ent.Player, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
 	
 			if Rank.Enabled and ent.Player then
-				local rankTag = whitelist:tag(ent.Player, true, false)
-				if rankTag ~= '' then
-					Strings[ent] = Strings[ent]..' '..rankTag
-				end
+				Strings[ent] = Strings[ent]..' '..whitelist:rankname(ent.Player)
 			end
 	
 			if Device.Enabled and ent.Player then
@@ -5945,6 +6099,8 @@ run(function()
 			if Health.Enabled then
 				Strings[ent] = Strings[ent]..' '..math.round(ent.Health)
 			end
+	
+			Strings[ent] = appendStatus(ent, Strings[ent], false)
 	
 			if Distance.Enabled then
 				Strings[ent] = '[%s] '..Strings[ent]
@@ -5964,6 +6120,7 @@ run(function()
 				Reference[ent] = nil
 				Strings[ent] = nil
 				Sizes[ent] = nil
+				StatusSig[ent] = nil
 				v:Destroy()
 			end
 		end,
@@ -5973,6 +6130,7 @@ run(function()
 				Reference[ent] = nil
 				Strings[ent] = nil
 				Sizes[ent] = nil
+				StatusSig[ent] = nil
 				for _, obj in v do
 					pcall(function()
 						obj.Visible = false
@@ -5991,10 +6149,7 @@ run(function()
 				Strings[ent] = ent.Player and whitelist:tag(ent.Player, true, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
 	
 				if Rank.Enabled and ent.Player then
-					local rankTag = whitelist:tag(ent.Player, true, false)
-					if rankTag ~= '' then
-						Strings[ent] = Strings[ent]..' <font color="rgb(200, 200, 200)">'..rankTag..'</font>'
-					end
+					Strings[ent] = Strings[ent]..' <font color="rgb(200, 200, 200)">'..whitelist:rankname(ent.Player)..'</font>'
 				end
 	
 				if Device.Enabled and ent.Player then
@@ -6007,6 +6162,8 @@ run(function()
 					local healthColor = Color3.fromHSV(math.clamp(ent.Health / ent.MaxHealth, 0, 1) / 2.5, 0.89, 0.75)
 					Strings[ent] = Strings[ent]..' <font color="rgb('..tostring(math.floor(healthColor.R * 255))..','..tostring(math.floor(healthColor.G * 255))..','..tostring(math.floor(healthColor.B * 255))..')">'..math.round(ent.Health)..'</font>'
 				end
+	
+				Strings[ent] = appendStatus(ent, Strings[ent], true)
 	
 				if Distance.Enabled then
 					Strings[ent] = '<font color="rgb(85, 255, 85)">[</font><font color="rgb(255, 255, 255)">%s</font><font color="rgb(85, 255, 85)">]</font> '..Strings[ent]
@@ -6037,10 +6194,7 @@ run(function()
 				Strings[ent] = ent.Player and whitelist:tag(ent.Player, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
 	
 				if Rank.Enabled and ent.Player then
-					local rankTag = whitelist:tag(ent.Player, true, false)
-					if rankTag ~= '' then
-						Strings[ent] = Strings[ent]..' '..rankTag
-					end
+					Strings[ent] = Strings[ent]..' '..whitelist:rankname(ent.Player)
 				end
 	
 				if Device.Enabled and ent.Player then
@@ -6052,6 +6206,8 @@ run(function()
 				if Health.Enabled then
 					Strings[ent] = Strings[ent]..' '..math.round(ent.Health)
 				end
+	
+				Strings[ent] = appendStatus(ent, Strings[ent], false)
 	
 				if Distance.Enabled then
 					Strings[ent] = '[%s] '..Strings[ent]
@@ -6083,7 +6239,16 @@ run(function()
 	
 	local Loop = {
 		Normal = function()
+			local due = statusDue()
 			for ent, nametag in Reference do
+				if due then
+					local sig = statusSignature(ent)
+					if StatusSig[ent] ~= sig then
+						StatusSig[ent] = sig
+						Updated[methodused](ent)
+					end
+				end
+	
 				if DistanceCheck.Enabled then
 					local distance = entitylib.isAlive and (entitylib.character.RootPart.Position - ent.RootPart.Position).Magnitude or math.huge
 					if distance < DistanceLimit.ValueMin or distance > DistanceLimit.ValueMax then
@@ -6111,7 +6276,16 @@ run(function()
 			end
 		end,
 		Drawing = function()
+			local due = statusDue()
 			for ent, nametag in Reference do
+				if due then
+					local sig = statusSignature(ent)
+					if StatusSig[ent] ~= sig then
+						StatusSig[ent] = sig
+						Updated[methodused](ent)
+					end
+				end
+	
 				if DistanceCheck.Enabled then
 					local distance = entitylib.isAlive and (entitylib.character.RootPart.Position - ent.RootPart.Position).Magnitude or math.huge
 					if distance < DistanceLimit.ValueMin or distance > DistanceLimit.ValueMax then
@@ -6328,6 +6502,26 @@ run(function()
 	Rank = NameTags:CreateToggle({
 		Name = 'Rank',
 		Tooltip = 'Shows the player rank from the whitelist',
+		Function = function()
+			if NameTags.Enabled then
+				NameTags:Toggle()
+				NameTags:Toggle()
+			end
+		end
+	})
+	Enchants = NameTags:CreateToggle({
+		Name = 'Enchantments',
+		Tooltip = 'Shows the enchantments they have active',
+		Function = function()
+			if NameTags.Enabled then
+				NameTags:Toggle()
+				NameTags:Toggle()
+			end
+		end
+	})
+	Effects = NameTags:CreateToggle({
+		Name = 'Effects',
+		Tooltip = 'Shows their active effects like jump, pie or gloop',
 		Function = function()
 			if NameTags.Enabled then
 				NameTags:Toggle()
@@ -22163,6 +22357,26 @@ run(function()
 		return bed:GetAttribute('Team' .. (lplr:GetAttribute('Team') or -1) .. 'NoBreak') ~= nil
 	end
 	
+	-- Which team a bed belongs to, read off the same no-break attribute isOwnBed matches
+	-- on: the team barred from breaking a bed is the team that owns it. Lowest id wins so
+	-- a bed carrying more than one stays on one answer instead of flipping between them,
+	-- since GetAttributes is not ordered. Falls back to the raw number when the queue has
+	-- no display name, and to nothing when the bed carries no such attribute at all.
+	local function bedTeamName(bed)
+		local id
+		for name in bed:GetAttributes() do
+			local found = tonumber(name:match('^Team(%d+)NoBreak$'))
+			if found and (not id or found < id) then
+				id = found
+			end
+		end
+		if not id then return end
+	
+		local queue = bedwars.QueueMeta[store.queueType]
+		local team = queue and queue.teams and queue.teams[id]
+		return (team and team.displayName) or ('Team ' .. id)
+	end
+	
 	local function refreshAdornee(v)
 		if not v.Adornee then return end
 	
@@ -22191,7 +22405,12 @@ run(function()
 			local plated = (layers[1] and layers[1].obsidian) ~= nil
 	
 			if plated and not Warned[bed] then
-				notif('BedPlates', isOwnBed(bed) and 'Obsidian is going on your bed!' or 'Someone is putting obsidian on a bed!', 8, 'alert')
+				if isOwnBed(bed) then
+					notif('BedPlates', 'Obsidian is going on your bed!', 8, 'alert')
+				else
+					local team = bedTeamName(bed)
+					notif('BedPlates', team and ('Obsidian is going on the ' .. team .. ' bed!') or 'Someone is putting obsidian on a bed!', 8, 'alert')
+				end
 			end
 			Warned[bed] = plated or nil
 		end
