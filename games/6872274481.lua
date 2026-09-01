@@ -9954,7 +9954,11 @@ local lplr = playersService.LocalPlayer
 								Players = Targets.Players.Enabled,
 								NPCs = Targets.NPCs.Enabled,
 								Sort = sortmethods[Sort.Value],
-								Priority = prioritymethods[TargetPriority.Value]
+								-- The library calls this Preference and takes the choice itself,
+								-- rather than a lookup: 'None' and nil are no-ops there. It was
+								-- indexing a table that was never written, so acquiring a target
+								-- threw on every frame instead of picking one.
+								Preference = TargetPriority.Value
 							})
 
 							if found then
