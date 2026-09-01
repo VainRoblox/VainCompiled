@@ -689,6 +689,61 @@ run(function()
 	end
 
 
+	--[[
+		The invisible walls, and staying inside them.
+
+		The room is fenced by a Barriers folder full of parts, and a dodge that chose a spot
+		on the far side of one could never get there: the step refused it, the search offered
+		it again next tick, and the farm stood announcing a dodge it would never take. That
+		is the stall.
+
+		Tested by geometry rather than by raycast, because these are exactly the sort of part
+		that is built unqueryable - a ray would pass straight through the very wall we are
+		trying to respect. Each part becomes a box in its own space, which is cheap enough
+		for the dozen or so a room has, and correct whatever their query flags say.
+	]]
+	local barrierParts, barrierScan = {}, 0
+
+	local function refreshBarriers()
+		if os.clock() - barrierScan < 3 and #barrierParts > 0 then return end
+		barrierScan = os.clock()
+
+		barrierParts = {}
+		local folder = workspace:FindFirstChild('Barriers')
+		if not folder then return end
+		for _, d in folder:GetDescendants() do
+			if d:IsA('BasePart') then
+				table.insert(barrierParts, d)
+			end
+		end
+	end
+
+	local function insideBarrier(pos, margin)
+		margin = margin or 2
+		for _, part in barrierParts do
+			if part.Parent then
+				local local_ = part.CFrame:PointToObjectSpace(pos)
+				local half = part.Size * 0.5
+				if math.abs(local_.X) <= half.X + margin
+					and math.abs(local_.Y) <= half.Y + margin
+					and math.abs(local_.Z) <= half.Z + margin then
+					return true
+				end
+			end
+		end
+		return false
+	end
+
+	-- Walked in a few steps rather than tested at the ends, since a wall between two clear
+	-- points is still a wall.
+	local function crossesBarrier(from, to)
+		if #barrierParts == 0 then return false end
+		for i = 1, 6 do
+			if insideBarrier(from:Lerp(to, i / 6), 1) then return true end
+		end
+		return false
+	end
+
 	local dangers = {}
 	local dodgeReady = false
 	local seenZones = 0
@@ -926,7 +981,10 @@ run(function()
 		than the nearest of sixteen. Both make the dodge read as a sidestep instead of a
 		trip across the room.
 	]]
-	local DODGE_RINGS = {8, 13, 19, 27, 38}
+	-- Reaching further than before, because giving up and standing in the fire is worse
+	-- than a long walk: with the walls now respected there is always somewhere legal, and
+	-- this keeps widening until it finds it.
+	local DODGE_RINGS = {8, 13, 19, 27, 38, 50, 64, 80}
 	local DODGE_SAMPLES = 24
 
 	-- A zone backed by a model is measured from it each pass and is over when it goes.
@@ -964,6 +1022,8 @@ run(function()
 		local margin = 5
 		if not anyDanger(pos, margin) then return nil end
 
+		refreshBarriers()
+
 		for _, radius in DODGE_RINGS do
 			local best, bestScore
 			for i = 0, DODGE_SAMPLES - 1 do
@@ -976,7 +1036,10 @@ run(function()
 				-- take - which is exactly what standing still while logging looked like.
 				local footing = groundAt(candidate, pos.Y)
 
-				if footing and not anyDanger(candidate, margin + 3) then
+				if footing
+					and not anyDanger(candidate, margin + 3)
+					and not insideBarrier(candidate, 2)
+					and not crossesBarrier(pos, candidate) then
 					--[[
 						Scored on staying in the fight, not on getting away from it.
 
