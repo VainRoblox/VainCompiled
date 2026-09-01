@@ -554,7 +554,7 @@ end)
 	attacks come from the precastHitbox telegraph the game sends for all of them.
 ]]
 run(function()
-	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, StepMove, Fly, Debug
+	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, StepMove, Fly, ShiftLock, Debug
 
 	--[[
 		Chatter, which the Debug toggle controls.
@@ -1755,6 +1755,24 @@ run(function()
 						return
 					end
 
+					--[[
+						Facing held still while the feet move.
+
+						MoveTo turns the humanoid to face wherever it is walking, so backing
+						away from something turns your back on it: abilities go off behind
+						you and every change of direction costs a turn before it costs a
+						step. Switching AutoRotate off is what shift lock does, and it is
+						not one of the things the game asks the client to report about
+						itself, unlike speed and platform stand.
+
+						The turn towards a target still happens, once, immediately before
+						each swing - which is often enough to keep facing roughly right
+						without a CFrame write every tick cancelling the walk.
+					]]
+					if ShiftLock ~= nil then
+						hum.AutoRotate = not ShiftLock.Enabled
+					end
+
 					local target, part, dist = nearestEnemy(hrp.Position)
 
 					-- DODGE first: standing in a telegraphed attack costs more than a turn
@@ -1909,6 +1927,8 @@ run(function()
 		Tooltip = 'Reports every telegraph seen and every dodge taken, so a dodge that is not happening can be told apart from one that is happening and not helping' })
 	StepMove = AutoFarm:CreateToggle({ Name = 'Step Movement', Default = true,
 		Tooltip = 'Moves in small steps capped at your own walk speed instead of asking the humanoid to walk. Goes exactly where it is sent, and covers the same ground per second a walking player does' })
+	ShiftLock = AutoFarm:CreateToggle({ Name = 'Shift Lock', Default = true,
+		Tooltip = 'Keeps you facing your target while moving instead of turning to face wherever you walk, so backing away from something still points your abilities at it' })
 	Fly = AutoFarm:CreateToggle({ Name = 'Fly', Default = false,
 		Tooltip = 'Moves through the air instead of along the ground, rising to an enemy that is above you. Still limited to your walk speed, so the ground it covers per second is unchanged - it simply stops needing a floor, which is what the ledges and corners were costing' })
 	Strafe = AutoFarm:CreateToggle({ Name = 'Strafe', Default = true,
