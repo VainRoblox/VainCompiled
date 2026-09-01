@@ -6070,48 +6070,6 @@ general:CreateButton({
 })
 
 --[[
-	Rank commands (only relevant if you're a Discord-ranked user, see /whitelist edit)
-]]
-
-local rankKeyBox
-rankKeyBox = general:CreateTextBox({
-	Name = 'Rank key',
-	Placeholder = 'Paste your personal key from Discord',
-	Tooltip = 'Your personal key from /whitelist edit in Discord. Needed to run rank commands.',
-	Function = function()
-		if mainapi.Libraries.rankapi then
-			mainapi.Libraries.rankapi.setCommandKey(rankKeyBox.Value)
-		end
-	end
-})
-
-local rankCommandBox
-rankCommandBox = general:CreateTextBox({
-	Name = 'Rank command',
-	Placeholder = 'kick username reason',
-	Tooltip = 'Type: command target reason - same as the ;rank chat trigger. Press Enter to run.',
-	Function = function(enter)
-		if not enter then return end -- ignore per-keystroke calls, only run on Enter
-		if not mainapi.Libraries.rankapi then
-			notif('Vain', 'Rank system has not loaded yet.', 5, 'alert')
-			return
-		end
-
-		local args = rankCommandBox.Value:split(' ')
-		local commandName = args[1] and args[1]:lower()
-		local targetName = args[2]
-		if not commandName or not targetName then
-			notif('Vain', 'Usage: <command> <target> <reason>', 5, 'alert')
-			return
-		end
-		table.remove(args, 1)
-		table.remove(args, 1)
-
-		mainapi.Libraries.rankapi.issueCommand(commandName, targetName, table.concat(args, ' '))
-	end
-})
-
---[[
 	Module Settings
 ]]
 
