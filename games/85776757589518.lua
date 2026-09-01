@@ -1562,19 +1562,42 @@ run(function()
 	-- Heal-swap: when HP is low, if the inventory has heal spell(s), save the current
 	-- loadout, switch to the best spell-power (mage) weapon + 1-2 heal spells, cast them
 	-- to full HP while backing away, then restore the original loadout.
+	--[[
+		Swapping to heals, when there is anything to swap to.
+
+		Every way out of this used to be silent, so owning no heal spell and the remote
+		having been renamed looked exactly alike from outside: nothing happened, no weapon
+		changed, no reason given. Each is named now.
+
+		The common one is simply not owning a heal. It is matched on the ability's name
+		containing the word, so anything called Chain Heal or Universal Heal qualifies and
+		a Rending Slice does not - which is the whole of it for most loadouts.
+	]]
 	local function healSwap()
 		local getStorage, equip, abilityUsed = remote('reloadInvy'), remote('equipItem'), remote('abilityUsed')
-		if not (getStorage and equip and abilityUsed) then return false end
-		local storage = getStorage:InvokeServer()
-		if type(storage) ~= 'table' or type(storage.abilities) ~= 'table' then return false end
+		if not (getStorage and equip and abilityUsed) then
+			say('heal swap: a remote is missing (reloadInvy/equipItem/abilityUsed)')
+			return false
+		end
 
-		local heals = {}
+		local ok, storage = pcall(function() return getStorage:InvokeServer() end)
+		if not ok or type(storage) ~= 'table' or type(storage.abilities) ~= 'table' then
+			say('heal swap: could not read your storage')
+			return false
+		end
+
+		local heals, owned = {}, 0
 		for id, item in pairs(storage.abilities) do
+			owned += 1
 			if tostring(fv(item, 'name') or ''):lower():find('heal') then
 				table.insert(heals, tostring(id):sub(9))
 			end
 		end
-		if #heals == 0 then return false end
+		if #heals == 0 then
+			say(string.format('heal swap: none of your %d abilities is a heal, waiting for regen instead', owned))
+			return false
+		end
+		say(string.format('heal swap: %d heal(s) found, switching', #heals))
 
 		local savedWeapon, savedQ, savedE
 		if type(storage.weapons) == 'table' then
