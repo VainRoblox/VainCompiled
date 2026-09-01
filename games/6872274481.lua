@@ -10750,6 +10750,7 @@ kitRun(function()
     local DepositDelay
     local BeeLimit
     local HiveESP
+    local ShowAmount
     local ShowOwn
     local Background
     local Color = {}
@@ -10992,11 +10993,21 @@ kitRun(function()
         ]]
         local before = best:GetAttribute('Level') or 0
 
-        if fireproximityprompt then
+        --[[
+            Held for as long as the prompt itself asks for, rather than fired through.
+
+            That duration is the game's own pacing for the interaction, so honouring it is
+            both what a player does and what the server sees from one.
+        ]]
+        local hold = prompt.HoldDuration or 0
+        if hold > 0 then
+            prompt:InputHoldBegin()
+            task.wait(hold)
+            prompt:InputHoldEnd()
+        elseif fireproximityprompt then
             fireproximityprompt(prompt)
         else
             prompt:InputHoldBegin()
-            task.wait(prompt.HoldDuration)
             prompt:InputHoldEnd()
         end
 
@@ -11078,18 +11089,30 @@ kitRun(function()
         label.RichText = true
         label.Parent = frame
 
+        --[[
+            Redrawn from whatever the hive says right now.
+
+            Driven from the loop as well as from the level changing, because a hive that
+            was already standing when the module came on never fires that signal and its
+            count would sit at whatever it happened to be when the plate was first drawn.
+        ]]
         local function refresh()
-            local level = hive:GetAttribute('Level') or 0
-            if own then
-                label.Text = tostring(level)
-            else
-                local owner = playersService:GetPlayerByUserId(hive:GetAttribute('PlacedByUserId') or 0)
-                label.Text = tostring(level) .. ' <font size="10">' .. ((owner and owner.Name) or '?') .. '</font>'
+            local parts = {}
+
+            if on(ShowAmount) then
+                parts[#parts + 1] = tostring(hive:GetAttribute('Level') or 0)
             end
+            if not own then
+                local owner = playersService:GetPlayerByUserId(hive:GetAttribute('PlacedByUserId') or 0)
+                parts[#parts + 1] = '<font size="10">' .. ((owner and owner.Name) or '?') .. '</font>'
+            end
+
+            label.Text = table.concat(parts, ' ')
+            billboard.Enabled = #parts > 0
         end
         refresh()
 
-        Reference[hive] = {Billboard = billboard, Frame = frame, Blur = blur}
+        Reference[hive] = {Billboard = billboard, Frame = frame, Blur = blur, Refresh = refresh}
         Beekeeper:Clean(hive:GetAttributeChangedSignal('Level'):Connect(refresh))
     end
 
@@ -11114,6 +11137,13 @@ kitRun(function()
                         end
                         if on(Deposit) then
                             pcall(deposit)
+                        end
+                        for hive, entry in Reference do
+                            if hive.Parent then
+                                entry.Refresh()
+                            else
+                                removeHive(hive)
+                            end
                         end
                         task.wait(0.1)
                     end
@@ -11211,6 +11241,7 @@ kitRun(function()
         Name = 'Beehive ESP',
         Tooltip = 'Shows how many bees each hive is holding',
         Function = function(callback)
+            if ShowAmount and ShowAmount.Object then ShowAmount.Object.Visible = callback end
             if ShowOwn and ShowOwn.Object then ShowOwn.Object.Visible = callback end
             if Background and Background.Object then Background.Object.Visible = callback end
             if Color and Color.Object then Color.Object.Visible = callback and Background.Enabled end
@@ -11219,6 +11250,12 @@ kitRun(function()
                 Beekeeper:Toggle()
             end
         end,
+        Default = true
+    })
+    ShowAmount = Beekeeper:CreateToggle({
+        Name = 'Show Amount',
+        Tooltip = 'Shows how many bees the hive is holding',
+        Darker = true,
         Default = true
     })
     ShowOwn = Beekeeper:CreateToggle({
