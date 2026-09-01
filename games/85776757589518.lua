@@ -1577,6 +1577,21 @@ run(function()
 					local peaceful = lplr:FindFirstChild('peaceful')
 					if peaceful and peaceful.Value == true then return end
 
+					--[[
+						Nothing happens before the run does.
+
+						peaceful only says you are not in town, which is already true while
+						everyone stands on the platform waiting for the countdown - so the
+						farm would set off into a dungeon that had not started, walking at
+						enemies that were not there yet. The game keeps its own flag for
+						this, and it is the honest answer.
+
+						Absent, it is assumed started: some modes have no such flag, and
+						refusing to farm in those would be worse than starting early in one.
+					]]
+					local started = workspace:FindFirstChild('dungeonStarted')
+					if started and started:IsA('BoolValue') and started.Value ~= true then return end
+
 					-- Before anything else: being in the air outranks every plan that
 					-- assumes standing on something.
 					if StepMove ~= nil and StepMove.Enabled and keepGrounded(hrp, hum) then
