@@ -273,8 +273,15 @@ local whitelist = {
 	tagcallback = {},
 	data = {WhitelistedUsers = {}},
 	hashes = setmetatable({}, {
-		__index = function(_, v)
-			return hash and hash.sha512(v..'SelfReport') or ''
+		__index = function(self, v)
+			if not hash then return '' end
+
+			-- Worked out once per player and then kept. This is a SHA-512 written in Lua
+			-- and get() is called from the targeting check, so leaving it uncached paid
+			-- for the whole digest again for every entity on every pass.
+			local digest = hash.sha512(v..'SelfReport')
+			rawset(self, v, digest)
+			return digest
 		end
 	}),
 	hooked = false,
@@ -598,7 +605,10 @@ end)
 
 run(function()
 	function whitelist:get(plr)
-		local plrstr = self.hashes[plr.Name..plr.UserId]
+		-- The user id on its own, where Vape folds the display name in as well. A name is
+		-- not fixed: change your Roblox username under that scheme and your entry stops
+		-- matching, you quietly fall off the list, and nothing says why.
+		local plrstr = self.hashes[tostring(plr.UserId)]
 		for _, v in self.data.WhitelistedUsers do
 			if v.hash == plrstr then
 				return v.level, v.attackable or whitelist.localprio >= v.level, v.tags
@@ -949,12 +959,12 @@ run(function()
 	function whitelist:update(first)
 		local suc = pcall(function()
 			local _, subbed = pcall(function()
-				return game:HttpGet('https://github.com/7GrandDadPGN/whitelists')
+				return game:HttpGet('https://github.com/VainRoblox/whitelist')
 			end)
 			local commit = subbed:find('currentOid')
 			commit = commit and subbed:sub(commit + 13, commit + 52) or nil
 			commit = commit and #commit == 40 and commit or 'main'
-			whitelist.textdata = game:HttpGet('https://raw.githubusercontent.com/7GrandDadPGN/whitelists/'..commit..'/PlayerWhitelist.json', true)
+			whitelist.textdata = game:HttpGet('https://raw.githubusercontent.com/VainRoblox/whitelist/'..commit..'/PlayerWhitelist.json', true)
 		end)
 		if not suc or not hash or not whitelist.get then return true end
 		whitelist.loaded = true
