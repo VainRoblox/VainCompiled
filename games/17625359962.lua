@@ -13,6 +13,7 @@ local lplr = playersService.LocalPlayer
 local vain = shared.vain
 local entitylib = vain.Libraries.entity
 local targetinfo = vain.Libraries.targetinfo
+local whitelist = vain.Libraries.whitelist
 
 local function notif(...)
 	return vain:CreateNotification(...)
@@ -63,11 +64,19 @@ end
 -- enough: entitylib calls it when an entity is added and again whenever it re-evaluates
 -- Targetable, so every module that filters on Targetable picks this up for free.
 entitylib.targetCheck = function(entity)
-	if entity.TeamCheck then
-		return entity:TeamCheck()
-	end
 	if not entity.Player then
 		return true
+	end
+
+	-- Replacing the library's check means replacing all of it, and this half was missing:
+	-- ranked players were protected everywhere except here, so an Owner was as targetable
+	-- as anybody else in this game alone.
+	if not select(2, whitelist:get(entity.Player)) then
+		return false
+	end
+
+	if entity.TeamCheck then
+		return entity:TeamCheck()
 	end
 
 	local mine, theirs = teamOf(lplr), teamOf(entity.Player)

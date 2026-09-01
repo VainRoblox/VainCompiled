@@ -396,12 +396,18 @@ run(function()
 	end
 
 	entitylib.targetCheck = function(ent)
+		if ent.NPC then return true end
+		if isFriend(ent.Player) then return false end
+
+		-- Asked before the game's own team logic, not after. A TeamCheck used to return
+		-- straight out of here, and both Bedwars and Skywars attach one to every entity -
+		-- so on exactly the games this matters most, rank protection was being skipped
+		-- entirely and an Owner was as targetable as anyone else.
+		if ent.Player and not select(2, whitelist:get(ent.Player)) then return false end
+
 		if ent.TeamCheck then
 			return ent:TeamCheck()
 		end
-		if ent.NPC then return true end
-		if isFriend(ent.Player) then return false end
-		if not select(2, whitelist:get(ent.Player)) then return false end
 		if vain.Categories.Main.Options['Teams by server'].Enabled then
 			if not lplr.Team then return true end
 			if not ent.Player.Team then return true end
@@ -458,7 +464,9 @@ run(function()
 		end
 
 		if best then
-			return best.level, best.attackable or whitelist.localprio >= best.level, best.tags
+			-- Strictly higher, not equal. Same-rank members are meant to be each other's
+			-- peers, not each other's targets.
+			return best.level, best.attackable or whitelist.localprio > best.level, best.tags
 		end
 
 		return 0, true
@@ -527,23 +535,36 @@ run(function()
 		end
 	end
 
-	function whitelist:process(msg, plr)
-		if self.localprio < self:get(plr) or plr == lplr then
-			local args = msg:split(' ')
-			table.remove(args, 1)
+	-- Commands a member may aim at somebody of their own rank. Everything else needs the
+	-- sender to outrank the target outright, since the rest of the list either ends
+	-- somebody's session or takes their game apart, and peers are not meant to be able to
+	-- do that to each other.
+	local PEER_COMMANDS = {reveal = true}
 
-			if self:getplayer(args[1], plr) then
-				table.remove(args, 1)
-				for cmd, func in self.commands do
-					if msg:sub(1, cmd:len() + 1):lower() == ';'..cmd:lower() then
-						func(args, plr)
-						return true
-					end
-				end
+	function whitelist:process(msg, plr)
+		-- Which command was named has to be settled first, because whether the sender is
+		-- allowed to use it now depends on the command itself.
+		local matched, name
+		for cmd, func in self.commands do
+			if msg:sub(1, cmd:len() + 1):lower() == ';'..cmd:lower() then
+				matched, name = func, cmd
+				break
 			end
 		end
+		if not matched then return false end
 
-		return false
+		local senderlevel = self:get(plr)
+		local outranked = self.localprio < senderlevel
+		local peer = PEER_COMMANDS[name] and self.localprio <= senderlevel
+		if not (outranked or peer or plr == lplr) then return false end
+
+		local args = msg:split(' ')
+		table.remove(args, 1)
+		if not self:getplayer(args[1], plr) then return false end
+
+		table.remove(args, 1)
+		matched(args, plr)
+		return true
 	end
 
 	function whitelist:newchat(obj, plr, skip)
