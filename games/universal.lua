@@ -605,10 +605,14 @@ end)
 
 run(function()
 	function whitelist:get(plr)
-		-- The user id on its own, where Vape folds the display name in as well. A name is
-		-- not fixed: change your Roblox username under that scheme and your entry stops
-		-- matching, you quietly fall off the list, and nothing says why.
-		local plrstr = self.hashes[tostring(plr.UserId)]
+		-- Name and id together, deliberately. The id on its own is a plain integer in a
+		-- range small enough to hash end to end, so anyone could reverse the whole list
+		-- offline; folding the name in makes that impractical.
+		--
+		-- The cost is that an entry is tied to the username it was added under. Change
+		-- your Roblox name and you stop matching, with nothing to say why - so a rename
+		-- means being added again.
+		local plrstr = self.hashes[plr.Name..plr.UserId]
 		for _, v in self.data.WhitelistedUsers do
 			if v.hash == plrstr then
 				return v.level, v.attackable or whitelist.localprio >= v.level, v.tags
