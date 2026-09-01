@@ -554,7 +554,7 @@ end)
 	attacks come from the precastHitbox telegraph the game sends for all of them.
 ]]
 run(function()
-	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe
+	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, StepMove
 
 	local pathfindingService = cloneref(game:GetService('PathfindingService'))
 
@@ -783,6 +783,58 @@ run(function()
 	]]
 	local strafeDir, strafeUntil = 1, 0
 
+	--[[
+		Moving in steps instead of asking the humanoid to walk.
+
+		What the server objects to is arriving somewhere you could not have walked to, not
+		the CFrame write itself - the old farm was pulled back for crossing a room in one
+		frame, never for writing a position. So each step is capped at whatever your own
+		WalkSpeed would have covered in the time since the last one, which produces exactly
+		the studs per second a walking player produces.
+
+		The gain over MoveTo is control: it goes precisely where it is sent, holds a strafe
+		circle properly, and cannot be talked out of it by a humanoid that has decided to
+		path somewhere else or to stop.
+
+		Height is taken from the ground under the destination rather than carried across,
+		so steps follow stairs and slopes instead of walking into them at knee height.
+	]]
+	local groundParams = RaycastParams.new()
+	groundParams.FilterType = Enum.RaycastFilterType.Exclude
+	local lastStep = os.clock()
+
+	local function groundAt(position, fallbackY)
+		groundParams.FilterDescendantsInstances = {lplr.Character}
+		local hit = workspace:Raycast(position + Vector3.new(0, 12, 0), Vector3.new(0, -60, 0), groundParams)
+		return hit and (hit.Position.Y + 3) or fallbackY
+	end
+
+	local function stepTo(hrp, hum, goal)
+		local now = os.clock()
+		local dt = math.clamp(now - lastStep, 0, 0.3)
+		lastStep = now
+
+		local delta = (goal - hrp.Position) * Vector3.new(1, 0, 1)
+		local distance = delta.Magnitude
+		if distance < 0.5 then return end
+
+		local speed = (hum.WalkSpeed > 0 and hum.WalkSpeed or 16)
+		local move = delta.Unit * math.min(distance, speed * dt)
+		local target = hrp.Position + move
+
+		hrp.CFrame = CFrame.new(Vector3.new(target.X, groundAt(target, hrp.Position.Y), target.Z))
+			* (hrp.CFrame - hrp.CFrame.Position)
+	end
+
+	-- One way in, so every branch below moves the same way and the setting decides how.
+	local function goTo(hum, hrp, goal)
+		if StepMove ~= nil and StepMove.Enabled then
+			stepTo(hrp, hum, goal)
+		else
+			hum:MoveTo(goal)
+		end
+	end
+
 	local waypoints, waypointIndex, pathGoal, pathBuiltAt = nil, 1, nil, 0
 
 	local function clearPath()
@@ -806,6 +858,13 @@ run(function()
 	end
 
 	local function walkTo(hum, hrp, goal, direct)
+		-- Stepping goes where it is pointed, so it follows the route itself rather than
+		-- handing the humanoid a waypoint and hoping.
+		if StepMove ~= nil and StepMove.Enabled then
+			stepTo(hrp, hum, goal)
+			return
+		end
+
 		-- Straight there when it is close and the route is unlikely to matter.
 		if direct or not (UsePathfinding and UsePathfinding.Enabled) then
 			hum:MoveTo(goal)
@@ -1004,7 +1063,7 @@ run(function()
 						local safe = dodgeTarget(hrp.Position) or projectileDodge(hrp.Position)
 						if safe then
 							clearPath()
-							hum:MoveTo(safe)
+							goTo(hum, hrp, safe)
 							return
 						end
 					end
@@ -1026,7 +1085,7 @@ run(function()
 							local away = (hrp.Position - part.Position) * Vector3.new(1, 0, 1)
 							away = away.Magnitude > 0.1 and away.Unit or hrp.CFrame.LookVector
 							clearPath()
-							hum:MoveTo(hrp.Position + away * KeepAway.Value)
+							goTo(hum, hrp, hrp.Position + away * KeepAway.Value)
 						end
 
 						if HealSwap.Enabled and healSwap() then
@@ -1063,7 +1122,7 @@ run(function()
 
 						if (dist or 0) < keep then
 							clearPath()
-							hum:MoveTo(hrp.Position + away * ((keep - (dist or 0)) + 8))
+							goTo(hum, hrp, hrp.Position + away * ((keep - (dist or 0)) + 8))
 						elseif (dist or math.huge) > reach then
 							-- Close the gap. Pathfinding while far, straight in once near,
 							-- because a route recomputed around a moving enemy is worse
@@ -1081,7 +1140,7 @@ run(function()
 							-- there is always somewhere new to walk to.
 							local ideal = (keep + reach) * 0.5
 							local tangent = Vector3.new(-away.Z, 0, away.X) * strafeDir
-							hum:MoveTo(part.Position + (away * ideal) + (tangent * 14))
+							goTo(hum, hrp, part.Position + (away * ideal) + (tangent * 14))
 						else
 							clearPath()
 							-- Stop walking and hold position while swinging, so the hit is
@@ -1113,7 +1172,7 @@ run(function()
 							walkTo(hum, hrp, goal)
 						else
 							clearPath()
-							hum:MoveTo(hrp.Position + hrp.CFrame.LookVector * 20)
+							goTo(hum, hrp, hrp.Position + hrp.CFrame.LookVector * 20)
 						end
 					end
 				end)
@@ -1134,6 +1193,8 @@ run(function()
 		Tooltip = 'How close to get before swinging. Melee wants this low, a staff can sit further back (default 12)' })
 	FarmDelay = AutoFarm:CreateSlider({ Name = 'Loop Delay', Min = 0, Max = 0.5, Default = 0.1, Decimal = 100, Suffix = 's',
 		Tooltip = 'Time between farm ticks' })
+	StepMove = AutoFarm:CreateToggle({ Name = 'Step Movement', Default = true,
+		Tooltip = 'Moves in small steps capped at your own walk speed instead of asking the humanoid to walk. Goes exactly where it is sent, and covers the same ground per second a walking player does' })
 	Strafe = AutoFarm:CreateToggle({ Name = 'Strafe', Default = true,
 		Tooltip = 'Circles the enemy while fighting instead of standing still, so the ground attacks aimed at you land where you were' })
 	UsePathfinding = AutoFarm:CreateToggle({ Name = 'Pathfinding', Default = true,
