@@ -614,8 +614,8 @@ run(function()
 		second, so neither does this. A ledge that cannot be stepped onto is simply not
 		stepped onto, rather than being climbed in one frame.
 	]]
-	-- Generous enough to take stairs, a ledge, or the lip of a platform in stride. It was
-	-- four, which is barely a kerb, and any room with a step in it stopped the farm dead.
+	-- How much higher a destination may be before it stops being a step and starts being a
+	-- climb. The rate is handled separately, so this only decides what is reachable at all.
 	local MAX_RISE = 12
 	local MAX_DROP = 24
 
@@ -1295,14 +1295,33 @@ run(function()
 		local full = math.min(distance, speed * dt)
 		local direction = delta.Unit
 
+		--[[
+			Every move leaves through here, and none of them may travel further than a walk.
+
+			The budget used to cover the horizontal part only, while height was allowed to
+			change by whatever the ground demanded - so stepping onto a ledge moved twelve
+			studs upward in a single tick. The server measures the whole displacement, that
+			is nothing a walking player produces, and it pulled us straight back.
+
+			Clamping the finished vector keeps a climb honest: the same distance per second
+			whether it is spent going along or going up, so a step onto a ledge simply takes
+			a few ticks instead of one.
+		]]
+		local function place(desired)
+			local delta3 = desired - hrp.Position
+			if delta3.Magnitude > full then
+				desired = hrp.Position + delta3.Unit * full
+			end
+			hrp.CFrame = CFrame.new(desired) * (hrp.CFrame - hrp.CFrame.Position)
+		end
+
 		-- Shorter and shorter steps until one has floor under it. Standing still is the
 		-- last resort rather than the first answer, so a narrow ledge is still walkable.
 		for _, fraction in {1, 0.6, 0.3} do
 			local target = hrp.Position + direction * (full * fraction)
 			local y = groundAt(target, hrp.Position.Y)
 			if y then
-				hrp.CFrame = CFrame.new(Vector3.new(target.X, y, target.Z))
-					* (hrp.CFrame - hrp.CFrame.Position)
+				place(Vector3.new(target.X, y, target.Z))
 				return
 			end
 		end
@@ -1319,8 +1338,7 @@ run(function()
 		]]
 		local target = hrp.Position + direction * (full * 0.5)
 		local rise = math.clamp(goal.Y - hrp.Position.Y, -full, full)
-		hrp.CFrame = CFrame.new(Vector3.new(target.X, hrp.Position.Y + rise, target.Z))
-			* (hrp.CFrame - hrp.CFrame.Position)
+		place(Vector3.new(target.X, hrp.Position.Y + rise, target.Z))
 	end
 
 	--[[
