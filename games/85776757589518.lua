@@ -554,7 +554,7 @@ end)
 	attacks come from the precastHitbox telegraph the game sends for all of them.
 ]]
 run(function()
-	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, StepMove, Debug
+	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, StepMove, StepSpeed, Debug
 
 	--[[
 		Chatter, which the Debug toggle controls.
@@ -597,6 +597,95 @@ run(function()
 		return m.PrimaryPart or m:FindFirstChild('HumanoidRootPart') or m:FindFirstChild('Torso')
 			or m:FindFirstChild('UpperTorso') or m:FindFirstChildWhichIsA('BasePart')
 	end
+
+	local groundParams = RaycastParams.new()
+	groundParams.FilterType = Enum.RaycastFilterType.Exclude
+	local lastStep = os.clock()
+
+	--[[
+		The floor under a destination, and only the floor.
+
+		The one thing excluded here used to be our own character, so a step aimed at a spot
+		with a mob standing in it raycast onto the MOB and took its head for ground - which
+		is how dodging a circle turned into climbing on top of whoever cast it. Bodies are
+		skipped now, and so is anything a raycast should never have seen anyway.
+
+		The height is also clamped: a walking player cannot rise four studs in a tenth of a
+		second, so neither does this. A ledge that cannot be stepped onto is simply not
+		stepped onto, rather than being climbed in one frame.
+	]]
+	local MAX_RISE = 4
+	local MAX_DROP = 20
+
+	--[[
+		The floor to stand on, or nothing at all.
+
+		Carrying the old height across a gap is how you walk out over a ledge and fall: the
+		step lands in mid air at the height it left, and gravity does the rest. So a
+		destination with no floor under it is not somewhere to go, and neither is one at the
+		bottom of a drop - that is a fall, not a step, and the sudden change in height is
+		also exactly what the server pulls you back for.
+
+		Returning nothing rather than a guess lets the caller shorten the step and try
+		again, which is what edges along a walkway instead of stopping dead at it.
+	]]
+	local function groundAt(position, fallbackY)
+		local skip = {lplr.Character}
+		for _, m in enemyCache do
+			if m and m.Parent then
+				table.insert(skip, m)
+			end
+		end
+		groundParams.FilterDescendantsInstances = skip
+
+		local hit = workspace:Raycast(position + Vector3.new(0, 12, 0), Vector3.new(0, -80, 0), groundParams)
+		if not hit then return nil end
+
+		local y = hit.Position.Y + 3
+		if y > fallbackY + MAX_RISE then return nil end
+		if y < fallbackY - MAX_DROP then return nil end
+		return y
+	end
+
+	--[[
+		Getting back on the floor after leaving it.
+
+		Stepping refuses any destination without ground under it, so it never walks off an
+		edge - but it cannot help once something else has put you over one. Knocked off by
+		an attack, shoved by a pack, and every destination is now a long way below you, so
+		every step is refused and you simply keep going down.
+
+		So a fall is caught instead. Once the humanoid has been in freefall long enough that
+		it is not a jump, the floor beneath is found and it is put back on it. The drop is
+		bigger than a step, but it is downward and onto solid ground - which is where the
+		fall was heading anyway, only without the death at the end of it.
+	]]
+	local fallingSince
+
+	local function keepGrounded(hrp, hum)
+		local state = hum:GetState()
+		local falling = state == Enum.HumanoidStateType.Freefall
+
+		if not falling then
+			fallingSince = nil
+			return false
+		end
+
+		fallingSince = fallingSince or os.clock()
+		if os.clock() - fallingSince < 0.6 then return false end
+
+		groundParams.FilterDescendantsInstances = {lplr.Character}
+		local hit = workspace:Raycast(hrp.Position, Vector3.new(0, -600, 0), groundParams)
+		if not hit then return false end
+
+		fallingSince = nil
+		hrp.CFrame = CFrame.new(Vector3.new(hrp.Position.X, hit.Position.Y + 3, hrp.Position.Z))
+			* (hrp.CFrame - hrp.CFrame.Position)
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		say('caught a fall')
+		return true
+	end
+
 
 	local dangers = {}
 	local dodgeReady = false
@@ -827,8 +916,16 @@ run(function()
 		Among equally close options it takes the one furthest from the pack, since a dodge
 		that lands in the middle of the melee has only traded one kind of damage for another.
 	]]
-	local DODGE_RINGS = {14, 22, 32, 45, 60}
-	local DODGE_SAMPLES = 16
+	--[[
+		Tight rings, sampled finely.
+
+		The nearest ring that works is the one that costs the least fighting time, and a
+		finer sweep means the direction chosen is closer to the one actually wanted rather
+		than the nearest of sixteen. Both make the dodge read as a sidestep instead of a
+		trip across the room.
+	]]
+	local DODGE_RINGS = {8, 13, 19, 27, 38}
+	local DODGE_SAMPLES = 24
 
 	-- A zone backed by a model is measured from it each pass and is over when it goes.
 	local function liveZone(d)
@@ -854,7 +951,7 @@ run(function()
 		return false
 	end
 
-	local function dodgeTarget(pos)
+	local function dodgeTarget(pos, anchor, ideal)
 		local now = workspace:GetServerTimeNow()
 		for i = #dangers, 1, -1 do
 			local d = dangers[i]
@@ -871,16 +968,50 @@ run(function()
 				local angle = (i / DODGE_SAMPLES) * math.pi * 2
 				local candidate = pos + Vector3.new(math.cos(angle), 0, math.sin(angle)) * radius
 
-				if not anyDanger(candidate, margin + 3) then
-					-- Furthest from whatever is nearest to it.
-					local score = math.huge
+				-- Somewhere there is actually floor. Without this the search happily
+				-- returned spots over a ledge or inside geometry, the step refused them
+				-- every tick, and the farm stood still announcing a dodge it could not
+				-- take - which is exactly what standing still while logging looked like.
+				local footing = groundAt(candidate, pos.Y)
+
+				if footing and not anyDanger(candidate, margin + 3) then
+					--[[
+						Scored on staying in the fight, not on getting away from it.
+
+						Picking whichever safe spot was furthest from every enemy meant
+						every dodge was a retreat: it would leave the fight, walk back, and
+						lose more time to the walking than the attack would ever have cost.
+
+						So the spot that best keeps the target at fighting range wins, and
+						crowding is a penalty rather than the whole score - enough to stop
+						it stepping into the middle of a pack, not enough to send it to the
+						far side of the room.
+					]]
+					--[[
+						Weighted so that closing is cheap and backing off is expensive.
+
+						Scoring purely on how near the ideal range a spot is treats a step
+						back and a step in as equally good, and the ring behind is always
+						the emptier one - so it drifted away from the fight every time.
+						Overshooting inward costs a third of what falling back does, which
+						turns a dodge into an approach whenever the geometry allows it.
+					]]
+					local score = 0
+					if anchor then
+						local gap = (candidate - anchor).Magnitude
+						local want = ideal or 12
+						score = gap > want and (gap - want) * 1.5 or (want - gap) * 0.5
+					end
+
 					for _, m in enemyCache do
 						local part = m and m.Parent and enemyPart(m)
 						if part then
-							score = math.min(score, (part.Position - candidate).Magnitude)
+							local gap = (part.Position - candidate).Magnitude
+							if gap < 12 then score += (12 - gap) * 2 end
 						end
 					end
-					if not bestScore or score > bestScore then best, bestScore = candidate, score end
+
+					if not bestScore or score < bestScore then best, bestScore = candidate, score end
 				end
 			end
 			if best then return best end
@@ -1085,94 +1216,6 @@ run(function()
 		Height is taken from the ground under the destination rather than carried across,
 		so steps follow stairs and slopes instead of walking into them at knee height.
 	]]
-	local groundParams = RaycastParams.new()
-	groundParams.FilterType = Enum.RaycastFilterType.Exclude
-	local lastStep = os.clock()
-
-	--[[
-		The floor under a destination, and only the floor.
-
-		The one thing excluded here used to be our own character, so a step aimed at a spot
-		with a mob standing in it raycast onto the MOB and took its head for ground - which
-		is how dodging a circle turned into climbing on top of whoever cast it. Bodies are
-		skipped now, and so is anything a raycast should never have seen anyway.
-
-		The height is also clamped: a walking player cannot rise four studs in a tenth of a
-		second, so neither does this. A ledge that cannot be stepped onto is simply not
-		stepped onto, rather than being climbed in one frame.
-	]]
-	local MAX_RISE = 4
-	local MAX_DROP = 20
-
-	--[[
-		The floor to stand on, or nothing at all.
-
-		Carrying the old height across a gap is how you walk out over a ledge and fall: the
-		step lands in mid air at the height it left, and gravity does the rest. So a
-		destination with no floor under it is not somewhere to go, and neither is one at the
-		bottom of a drop - that is a fall, not a step, and the sudden change in height is
-		also exactly what the server pulls you back for.
-
-		Returning nothing rather than a guess lets the caller shorten the step and try
-		again, which is what edges along a walkway instead of stopping dead at it.
-	]]
-	local function groundAt(position, fallbackY)
-		local skip = {lplr.Character}
-		for _, m in enemyCache do
-			if m and m.Parent then
-				table.insert(skip, m)
-			end
-		end
-		groundParams.FilterDescendantsInstances = skip
-
-		local hit = workspace:Raycast(position + Vector3.new(0, 12, 0), Vector3.new(0, -80, 0), groundParams)
-		if not hit then return nil end
-
-		local y = hit.Position.Y + 3
-		if y > fallbackY + MAX_RISE then return nil end
-		if y < fallbackY - MAX_DROP then return nil end
-		return y
-	end
-
-	--[[
-		Getting back on the floor after leaving it.
-
-		Stepping refuses any destination without ground under it, so it never walks off an
-		edge - but it cannot help once something else has put you over one. Knocked off by
-		an attack, shoved by a pack, and every destination is now a long way below you, so
-		every step is refused and you simply keep going down.
-
-		So a fall is caught instead. Once the humanoid has been in freefall long enough that
-		it is not a jump, the floor beneath is found and it is put back on it. The drop is
-		bigger than a step, but it is downward and onto solid ground - which is where the
-		fall was heading anyway, only without the death at the end of it.
-	]]
-	local fallingSince
-
-	local function keepGrounded(hrp, hum)
-		local state = hum:GetState()
-		local falling = state == Enum.HumanoidStateType.Freefall
-
-		if not falling then
-			fallingSince = nil
-			return false
-		end
-
-		fallingSince = fallingSince or os.clock()
-		if os.clock() - fallingSince < 0.6 then return false end
-
-		groundParams.FilterDescendantsInstances = {lplr.Character}
-		local hit = workspace:Raycast(hrp.Position, Vector3.new(0, -600, 0), groundParams)
-		if not hit then return false end
-
-		fallingSince = nil
-		hrp.CFrame = CFrame.new(Vector3.new(hrp.Position.X, hit.Position.Y + 3, hrp.Position.Z))
-			* (hrp.CFrame - hrp.CFrame.Position)
-		hrp.AssemblyLinearVelocity = Vector3.zero
-		say('caught a fall')
-		return true
-	end
-
 	local function stepTo(hrp, hum, goal)
 		local now = os.clock()
 		local dt = math.clamp(now - lastStep, 0, 0.3)
@@ -1182,7 +1225,10 @@ run(function()
 		local distance = delta.Magnitude
 		if distance < 0.5 then return end
 
+		-- Your own walk speed by default, which is the pace the server expects. The slider
+		-- multiplies it, and anything above one is asking to be noticed.
 		local speed = (hum.WalkSpeed > 0 and hum.WalkSpeed or 16)
+			* (StepSpeed ~= nil and StepSpeed.Value or 1)
 		local full = math.min(distance, speed * dt)
 		local direction = delta.Unit
 
@@ -1459,11 +1505,15 @@ run(function()
 						return
 					end
 
+					local target, part, dist = nearestEnemy(hrp.Position)
+
 					-- DODGE first: standing in a telegraphed attack costs more than a turn
 					-- spent fighting, so this outranks everything below it.
 					if DodgeAttacks.Enabled then
 						watchProjectiles()
-						local safe = dodgeTarget(hrp.Position) or projectileDodge(hrp.Position)
+						local band = (math.min(KeepDistance.Value, AttackRange.Value - 2) + AttackRange.Value) * 0.5
+						local safe = dodgeTarget(hrp.Position, part and part.Position or nil, band)
+							or projectileDodge(hrp.Position)
 						if safe then
 							clearPath()
 							say(string.format('dodging to %.0f studs away', (safe - hrp.Position).Magnitude))
@@ -1502,7 +1552,6 @@ run(function()
 						return
 					end
 
-					local target, part, dist = nearestEnemy(hrp.Position)
 					if target and part then
 						local busy = char:FindFirstChild('busyCasting')
 						local reach = AttackRange.Value
@@ -1610,6 +1659,8 @@ run(function()
 		Tooltip = 'Reports every telegraph seen and every dodge taken, so a dodge that is not happening can be told apart from one that is happening and not helping' })
 	StepMove = AutoFarm:CreateToggle({ Name = 'Step Movement', Default = true,
 		Tooltip = 'Moves in small steps capped at your own walk speed instead of asking the humanoid to walk. Goes exactly where it is sent, and covers the same ground per second a walking player does' })
+	StepSpeed = AutoFarm:CreateSlider({ Name = 'Step Speed', Min = 1, Max = 3, Default = 1, Decimal = 10, Suffix = 'x',
+		Tooltip = 'Multiplies how far each step covers. 1 matches your real walk speed, which is what the server expects - raising it moves you faster than you could walk and is what gets noticed' })
 	Strafe = AutoFarm:CreateToggle({ Name = 'Strafe', Default = true,
 		Tooltip = 'Circles the enemy while fighting instead of standing still, so the ground attacks aimed at you land where you were' })
 	UsePathfinding = AutoFarm:CreateToggle({ Name = 'Pathfinding', Default = true,
