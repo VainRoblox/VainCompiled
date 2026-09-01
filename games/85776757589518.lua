@@ -675,7 +675,9 @@ run(function()
 		end
 
 		fallingSince = fallingSince or os.clock()
-		if os.clock() - fallingSince < 0.6 then return false end
+		-- Short enough to catch a fall before it becomes a drop, long enough that an
+		-- ordinary jump is left alone.
+		if os.clock() - fallingSince < 0.3 then return false end
 
 		groundParams.FilterDescendantsInstances = {lplr.Character}
 		local hit = workspace:Raycast(hrp.Position, Vector3.new(0, -600, 0), groundParams)
@@ -1370,6 +1372,20 @@ run(function()
 			other step so it stays a walk rather than a leap.
 		]]
 		local target = hrp.Position + direction * (full * 0.5)
+
+		--[[
+			Even here there has to be something out there.
+
+			This branch exists to climb a step the strict check refused, and it was the one
+			path in this function that never asked whether there was a floor at all - which
+			made it the way the farm walked off ledges. The search is deliberately deep,
+			because the whole point is to reach ground the ordinary limits called too far;
+			but no ground whatsoever means open air, and open air is a fall.
+		]]
+		groundParams.FilterDescendantsInstances = {lplr.Character}
+		local below = workspace:Raycast(target + Vector3.new(0, 12, 0), Vector3.new(0, -400, 0), groundParams)
+		if not below then return end
+
 		local rise = math.clamp(goal.Y - hrp.Position.Y, -full, full)
 		place(Vector3.new(target.X, hrp.Position.Y + rise, target.Z))
 	end
