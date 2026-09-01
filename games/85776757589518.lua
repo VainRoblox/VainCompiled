@@ -658,65 +658,51 @@ run(function()
 	end
 
 	--[[
-		The attacks that arrive as models.
+		Attack models, every part of them.
 
-		The telegraph module was never the whole story: a Dark Mage's lane is a MODEL called
-		npcMageSpikes, dropped straight into the workspace, and four mages make four of
-		them. Nothing about that goes through PrecastHitbox, which is why the hook sat at
-		zero telegraphs while the floor was covered in red.
+		These arrive as whole models dropped into the workspace - npcMageSpikes from a Dark
+		Mage, bigMageBeam from the demon - and rather than trying to work out which part
+		inside is the dangerous one, every part is treated as dangerous. Naming has already
+		proved a dead end twice: precast only exists in one dungeon, and matching words in
+		the model's name needs a list that is only ever as complete as what has been seen.
 
-		There is no single prefix to key on: the Dark Mage's is npcMageSpikes and the big
-		demon's is bigMageBeam. What they share is being named after the attack, so the
-		words are matched instead of a prefix, and anything with a Humanoid is skipped since
-		that is a mob rather than an attack. The zone is the model's own bounding box,
-		re-measured while it lives, because these grow into place as the warning plays.
-
-		A model that arrives and matches nothing is reported under Debug rather than being
-		ignored quietly - that is how the next attack nobody has seen yet gets named.
+		The one guard kept is that nothing counts unless there is something to fight. That
+		is what stops a repeat of the lobby, where scenery arriving in an empty world was
+		read as an attack and the farm stood dodging decorations before the match began.
 	]]
-	local ATTACK_WORDS = {
-		'npc', 'beam', 'spike', 'blast', 'slam', 'wave', 'aoe', 'laser', 'cone',
-		'ring', 'circle', 'explos', 'attack', 'strike', 'breath', 'nova', 'shock',
-		'flame', 'burn', 'bolt', 'crush', 'stomp', 'smash', 'swipe', 'hitbox',
-	}
-	local unnamed = {}
-
-	local function looksLikeAttack(name)
-		local lower = name:lower()
-		for _, word in ATTACK_WORDS do
-			if lower:find(word, 1, true) then return true end
-		end
-		return false
-	end
-
 	local function watchAttackModels()
 		workspace.ChildAdded:Connect(function(object)
 			if not object:IsA('Model') then return end
 			if object:FindFirstChildOfClass('Humanoid') then return end
+			if playersService:GetPlayerFromCharacter(object) then return end
 
-			if not looksLikeAttack(object.Name) then
-				if not unnamed[object.Name] then
-					unnamed[object.Name] = true
-					say('unmatched model: ' .. object.Name)
+			-- Nothing casts anything when there is nothing alive to cast it.
+			if #enemyCache == 0 then return end
+
+			local expire = workspace:GetServerTimeNow() + 12
+			local added = 0
+
+			for _, part in object:GetDescendants() do
+				if part:IsA('BasePart') then
+					-- Shape only exists on a plain Part; anything else is treated as a box.
+					local circle = part:IsA('Part') and part.Shape == Enum.PartType.Cylinder
+					table.insert(dangers, {
+						kind = circle and 'circle' or 'cube',
+						part = part,
+						cf = part.CFrame,
+						pos = part.Position,
+						size = part.Size,
+						radius = part.Size.Y * 0.5,
+						expire = expire,
+					})
+					added += 1
 				end
-				return
 			end
 
-			local ok, cf, size = pcall(function()
-				local boxCf, boxSize = object:GetBoundingBox()
-				return boxCf, boxSize
-			end)
-			if not ok or typeof(cf) ~= 'CFrame' then return end
-
-			table.insert(dangers, {
-				kind = 'cube',
-				model = object,
-				cf = cf,
-				size = size,
-				expire = workspace:GetServerTimeNow() + 10,
-			})
-			seenZones += 1
-			say('attack model: ' .. object.Name)
+			if added > 0 then
+				seenZones += added
+				say(string.format('attack %s: %d parts', object.Name, added))
+			end
 		end)
 	end
 
@@ -725,7 +711,7 @@ run(function()
 		dodgeReady = true
 
 		local watched, watchErr = pcall(watchAttackModels)
-		announce(watched and 'attack model watcher installed' or ('attack model watcher FAILED: ' .. tostring(watchErr)))
+		announce(watched and 'attack watcher installed' or ('attack watcher FAILED: ' .. tostring(watchErr)))
 
 
 		local hooked, how = pcall(hookPrecast, function(kind, a, b, delay)
@@ -836,15 +822,17 @@ run(function()
 
 	-- A zone backed by a model is measured from it each pass and is over when it goes.
 	local function liveZone(d)
-		if not d.model then return true end
-		if not d.model.Parent then return false end
+		if not d.part then return true end
+		if not d.part.Parent then return false end
 
-		local ok, cf, size = pcall(function()
-			local boxCf, boxSize = d.model:GetBoundingBox()
-			return boxCf, boxSize
-		end)
-		if ok and typeof(cf) == 'CFrame' then
-			d.cf, d.size = cf, size
+		-- Re-read every pass: these are tweened into place while the warning plays, so
+		-- where the zone was when it appeared is not where it lands.
+		if d.kind == 'circle' then
+			d.pos = d.part.Position
+			d.radius = d.part.Size.Y * 0.5
+		else
+			d.cf = d.part.CFrame
+			d.size = d.part.Size
 		end
 		return true
 	end
