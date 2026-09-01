@@ -5369,18 +5369,13 @@ run(function()
 		return setting ~= nil and setting.Enabled
 	end
 	
-	-- Icons are drawn at 32 and the strip around them at 36; everything below is those two
-	-- multiplied, so one slider moves the whole thing together.
-	local function scale()
-		return (Size and Size.Value or 100) / 100
-	end
-	
+	-- Icons are drawn at 32 and the strip around them at 36, so one slider moves both.
 	local function iconSize()
-		return math.round(32 * scale())
+		return math.round(32 * ((Size and Size.Value or 100) / 100))
 	end
 	
 	local function stripSize()
-		return math.round(36 * scale())
+		return math.round(36 * ((Size and Size.Value or 100) / 100))
 	end
 	
 	-- Which entry of the list an item matches, or nil for one that matches nothing. The
@@ -5396,65 +5391,6 @@ run(function()
 			end
 		end
 		return nil
-	end
-	
-	--[[
-		How many of an item there are, right now.
-	
-		store.inventories is a snapshot. It is rebuilt only when a player swaps their held
-		item or changes armor - those four things are all base watches for - so a count moving
-		on its own never reaches it and the numbers sat at whatever they were when you
-		injected.
-	
-		Each cached item keeps the folder Instance it came from, and that Instance's Amount
-		attribute is the thing that actually changes, so reading it is live without rebuilding
-		anything. An item whose Instance has left the folder has been used up, and is reported
-		gone rather than lingering at its last count.
-	]]
-	local function liveAmount(item)
-		local cached = tonumber(item.amount) or 1
-	
-		local tool = item.tool
-		if typeof(tool) ~= 'Instance' then return cached end
-	
-		-- Falls back to the cached count rather than reporting the item gone. The game
-		-- replaces these Instances as an inventory changes, so a snapshot taken when the
-		-- player was first seen goes stale on its own - treating unparented as "used up"
-		-- therefore deleted every icon a moment after it was drawn, which is why the display
-		-- emptied out entirely.
-		return tonumber(tool:GetAttribute('Amount')) or cached
-	end
-	
-	--[[
-		Folds anything newly picked up into the cached inventory.
-	
-		Only ever adds. Replacing the cache with a fresh read is what blanked this display
-		twice before: the read returns an empty inventory rather than an error when it cannot
-		resolve a player, and taking that at face value wiped every icon. Adding to what is
-		already there has no such failure - a read that comes back with nothing simply
-		contributes nothing, and what was on screen stays.
-	
-		Removal is handled by liveAmount above, which drops anything whose Instance has left
-		the folder, so entries cannot pile up either.
-	]]
-	local function mergeNewItems(plr, cached)
-		if type(cached.items) ~= 'table' or not bedwars.getInventory then return end
-	
-		local fresh = bedwars.getInventory(plr)
-		if type(fresh) ~= 'table' or type(fresh.items) ~= 'table' then return end
-	
-		local known = {}
-		for _, item in cached.items do
-			if typeof(item.tool) == 'Instance' then known[item.tool] = true end
-		end
-	
-		for _, item in fresh.items do
-			if typeof(item.tool) == 'Instance' and not known[item.tool] then
-				table.insert(cached.items, item)
-			end
-		end
-	
-		cached.hand = fresh.hand or cached.hand
 	end
 	
 	local function addIcon(frame, itemType, amount)
@@ -5515,7 +5451,6 @@ run(function()
 			billboard.Enabled = false
 			return
 		end
-		mergeNewItems(plr, inventory)
 	
 		for _, obj in frame:GetChildren() do
 			if obj:IsA('ImageLabel') and obj.Name ~= 'Blur' then
@@ -5531,13 +5466,12 @@ run(function()
 			local at = listed(item.itemType)
 			if not at then return end
 	
-			local have = liveAmount(item)
 			if not totals[item.itemType] then
 				totals[item.itemType] = 0
 				rank[item.itemType] = at
 				table.insert(order, item.itemType)
 			end
-			totals[item.itemType] += have
+			totals[item.itemType] += tonumber(item.amount) or 1
 		end
 	
 		if type(inventory.items) == 'table' then
@@ -5570,9 +5504,9 @@ run(function()
 	local function refreshAll()
 		for ent, entry in Entries do
 			if entry.Billboard.Parent and entry.Player and entry.Player.Parent then
-				-- Someone who outranks you is not read either. Knowing what they are carrying
-				-- is as much a use of them as aiming at them, so this follows the same rule
-				-- the other render modules do rather than being the one gap left open.
+				-- Someone who outranks you is not read either. Knowing what they carry is as
+				-- much a use of them as aiming at them, so this follows the same rule the
+				-- other render modules do.
 				if ent.Protected then
 					entry.Billboard.Enabled = false
 				else
@@ -5591,8 +5525,8 @@ run(function()
 		local billboard = Instance.new('BillboardGui')
 		billboard.Parent = Folder
 		billboard.Name = 'inventory'
-		-- Below the name, not through it. NameTags draws at the character's hip height plus
-		-- one, roughly 3.6 studs up, and this sat at 4 - just above it, so the two overlapped.
+		-- Below the name, not through it. NameTags draws at hip height plus one, about 3.6
+		-- studs up, and this sat at 4 - just above it, so the two overlapped.
 		billboard.StudsOffsetWorldSpace = Vector3.new(0, Height and Height.Value or 2.8, 0)
 		billboard.Size = UDim2.fromOffset(stripSize(), stripSize())
 		billboard.AlwaysOnTop = true
@@ -5699,10 +5633,7 @@ run(function()
 	Size = InventoryESP:CreateSlider({
 		Name = 'Size',
 		Tooltip = 'How big the icons are\nDefault is 100',
-		Min = 50,
-		Max = 250,
-		Default = 100,
-		Suffix = '%',
+		Min = 50, Max = 250, Default = 100, Suffix = '%',
 		Function = function()
 			task.spawn(refreshAll)
 		end
@@ -5710,11 +5641,7 @@ run(function()
 	Height = InventoryESP:CreateSlider({
 		Name = 'Height',
 		Tooltip = 'How far above the player it sits\nDefault is 2.8',
-		Min = 0,
-		Max = 8,
-		Default = 2.8,
-		Decimal = 10,
-		Suffix = 'studs',
+		Min = 0, Max = 8, Default = 2.8, Decimal = 10, Suffix = 'studs',
 		Function = function(value)
 			for _, entry in Entries do
 				entry.Billboard.StudsOffsetWorldSpace = Vector3.new(0, value, 0)
