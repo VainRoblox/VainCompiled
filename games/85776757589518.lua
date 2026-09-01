@@ -37,6 +37,7 @@ end
 local cloneref = cloneref or function(o) return o end
 local playersService = cloneref(game:GetService('Players'))
 local replicatedStorage = cloneref(game:GetService('ReplicatedStorage'))
+local runService = cloneref(game:GetService('RunService'))
 local lplr = playersService.LocalPlayer
 local vain = shared.vain
 
@@ -123,15 +124,49 @@ local PROJECTILE_RADIUS = 10
 local PROJECTILE_LOOKAHEAD = 1.5
 local PROJECTILE_STEP = 14
 local _projectileHook
+local _projectileSampler
 
+--[[
+	How fast a projectile is going, worked out by watching it rather than asking it.
+
+	Nearly everything this game throws is moved with TweenService - there are hundreds of
+	uses of it against a handful of the physics movers - and a tweened part reports an
+	AssemblyLinearVelocity of zero however fast it is crossing the room. Reading that
+	property was therefore rejecting every ranged attack in the game before it was ever
+	considered, which is why none of them were dodged.
+
+	Two positions a frame apart give the real answer whatever moved the part, so that is
+	what is kept. The engine's own value is still preferred when it is not zero, since a
+	genuinely physics-driven shot reports it exactly and for free.
+]]
 local function watchProjectiles()
 	if _projectileHook then return end
+
 	_projectileHook = workspace.DescendantAdded:Connect(function(object)
 		if not object:IsA('BasePart') then return end
 		-- Bodies are made of fast moving parts too, whenever their owner is running.
 		local model = object:FindFirstAncestorWhichIsA('Model')
 		if model and model:FindFirstChildOfClass('Humanoid') then return end
-		_incoming[object] = os.clock() + PROJECTILE_WATCH
+		_incoming[object] = {expiry = os.clock() + PROJECTILE_WATCH, pos = object.Position, at = os.clock()}
+	end)
+
+	-- Sampled every frame rather than once per farm tick: a shot is only in the air for
+	-- a moment, and a tenth of a second between readings is most of its flight.
+	_projectileSampler = runService.Heartbeat:Connect(function()
+		local now = os.clock()
+		for part, track in _incoming do
+			if now > track.expiry or not part.Parent then
+				_incoming[part] = nil
+				continue
+			end
+
+			local position = part.Position
+			local elapsed = now - track.at
+			if elapsed > 0 then
+				track.velocity = (position - track.pos) / elapsed
+			end
+			track.pos, track.at = position, now
+		end
 	end)
 end
 
@@ -141,13 +176,16 @@ end
 -- away it is now, so a shot passing wide is ignored and only one genuinely heading at you
 -- moves you.
 local function projectileDodge(pos)
-	for part, expiry in _incoming do
-		if os.clock() > expiry or not part.Parent then
+	for part, track in _incoming do
+		if os.clock() > track.expiry or not part.Parent then
 			_incoming[part] = nil
 			continue
 		end
 
 		local velocity = part.AssemblyLinearVelocity
+		if velocity.Magnitude < 1 then
+			velocity = track.velocity or Vector3.zero
+		end
 		if velocity.Magnitude < PROJECTILE_SPEED then continue end
 
 		local relative = part.Position - pos
