@@ -911,6 +911,8 @@ run(function()
 		QueryUtil = require(replicatedStorage['rbxts_include']['node_modules']['@easy-games']['game-core'].out).GameQueryUtil,
 		QueueCard = require(lplr.PlayerScripts.TS.controllers.global.queue.ui['queue-card']).QueueCard,
 		QueueMeta = require(replicatedStorage.TS.game['queue-meta']).QueueMeta,
+		RankController = Knit.Controllers.RankController,
+		RankMeta = require(replicatedStorage.TS.rank['rank-meta']).RankMeta,
 		Roact = require(replicatedStorage['rbxts_include']['node_modules']['@rbxts']['roact'].src),
 		RuntimeLib = require(replicatedStorage['rbxts_include'].RuntimeLib),
 		SoundList = require(replicatedStorage.TS.sound['game-sound']).GameSound,
@@ -5876,6 +5878,18 @@ run(function()
 	-- hidden half of a stacking effect - which mean nothing on a nametag.
 	local STATUS_INTERNAL = {'_ON_COOLDOWN$', '_INDICATOR$', '_SELF_STACK$', '^ANTI_', '^ANALYTICS', '^AFK_'}
 	
+	-- The weapon enchants, whose effect name does not contain the word 'enchant' the way the
+	-- armour and tool ones do. Kept here so an enchantment is still told apart from an
+	-- ordinary effect even if the enum cannot be read.
+	local STATUS_WEAPON_ENCHANT = {
+		fire_1 = true, static_1 = true, execute_3 = true, critical_strike_1 = true,
+		forest_1 = true, cloud_3 = true, soul_reaver = true, berserker_1 = true,
+		enchant_cleave = true
+	}
+	
+	-- Matched against the effect name rather than the enum member, for the same reason.
+	local STATUS_HIDDEN = {'_on_cooldown$', '_indicator$', '_self_stack$', '^anti_', '^afk_', '^analytics'}
+	
 	local StatusEnchant, StatusLabel
 	local StatusSig, StatusNext = {}, 0
 	
@@ -5893,19 +5907,24 @@ run(function()
 		since it is usually the friendlier word - Greasy rather than Greased - but it only
 		covers about two thirds of them, and none of the ones worth calling an enchantment.
 	]]
+	local function statusTitle(name)
+		local words = {}
+		for word in name:gsub('_%d+$', ''):gmatch('[^_]+') do
+			words[#words + 1] = word:sub(1, 1):upper() .. word:sub(2):lower()
+		end
+		return table.concat(words, ' ')
+	end
+	
 	local function classifyStatus()
 		if StatusLabel then return end
 		StatusEnchant, StatusLabel = {}, {}
 	
-		local function title(name)
-			local words = {}
-			for word in name:gsub('_%d+$', ''):gmatch('[^_]+') do
-				words[#words + 1] = word:sub(1, 1):upper() .. word:sub(2):lower()
-			end
-			return table.concat(words, ' ')
-		end
+		-- Nicer labels when the enum can be read, nothing worse than plainer wording when it
+		-- cannot. Everything below this point works either way.
+		local ok, enum = pcall(function() return bedwars.StatusEffectType end)
+		if not ok or type(enum) ~= 'table' then return end
 	
-		for name, value in bedwars.StatusEffectType do
+		for name, value in enum do
 			-- Members only. Some of these enums carry a reverse map alongside the forward one,
 			-- and a lowercase key there would otherwise read as an effect called GREASED.
 			if type(name) ~= 'string' or type(value) ~= 'string' or name ~= name:upper() then continue end
@@ -5924,8 +5943,8 @@ run(function()
 			local enchant = name:find('ENCHANT') ~= nil
 			StatusEnchant[value] = enchant
 	
-			local meta = bedwars.StatusEffectMeta[value]
-			StatusLabel[value] = (not enchant and meta and meta.displayName) or title((name:gsub('^.*ENCHANT_', ''):gsub('_ENCHANT$', '')))
+			local ok, meta = pcall(function() return bedwars.StatusEffectMeta[value] end)
+			StatusLabel[value] = (not enchant and ok and meta and meta.displayName) or statusTitle((name:gsub('^.*ENCHANT_', ''):gsub('_ENCHANT$', '')))
 		end
 	end
 	
@@ -5947,15 +5966,38 @@ run(function()
 			local name = key:sub(1, #STATUS_PREFIX) == STATUS_PREFIX and key:sub(#STATUS_PREFIX + 1) or nil
 			if not name or STATUS_COMPANION[name:match('_([%a]+)$') or ''] then continue end
 	
+			--[[
+				An effect the enum did not name still gets shown, under its own name tidied up.
+	
+				This is the whole reason enchantments were coming out blank: they are perfectly
+				ordinary status effects, so anything that stops the enum being read - a renamed
+				module, a Flamework wrapper that does not iterate - silently emptied the table
+				and every lookup missed. Nothing here depends on that table existing any more.
+			]]
 			local label = StatusLabel[name]
-			if not label then continue end
+			if not label then
+				local hidden = false
+				for _, pattern in STATUS_HIDDEN do
+					if name:find(pattern) then
+						hidden = true
+						break
+					end
+				end
+				if hidden then continue end
+				label = statusTitle(name)
+			end
 	
 			local stacks = attributes[key .. '_stacks']
 			if type(stacks) == 'number' and stacks > 1 then
 				label = label .. ' x' .. stacks
 			end
 	
-			local into = StatusEnchant[name] and enchants or effects
+			local enchant = StatusEnchant[name]
+			if enchant == nil then
+				enchant = name:find('enchant') ~= nil or STATUS_WEAPON_ENCHANT[name] or false
+			end
+	
+			local into = enchant and enchants or effects
 			into[#into + 1] = label
 		end
 	
@@ -5992,11 +6034,74 @@ run(function()
 		return text
 	end
 	
+	--[[
+		The in-game ranked division - Diamond, Platinum, Nightmare.
+	
+		It is on neither the player nor the character. The game asks the server for it through
+		a FetchRanks call and keeps the answers in its own RankController cache, so this asks
+		that same controller, once per player, and keeps the answer for the round.
+	
+		A player with no ranked history answers with nothing, stored as false so they are not
+		asked about again on every sweep.
+	]]
+	local Divisions = {}
+	local DivisionFetching = false
+	local DivisionsChanged = false
+	
+	local function divisionOf(plr)
+		local division = Divisions[plr.UserId]
+		if not division and division ~= 0 then return end
+	
+		local ok, meta = pcall(function() return bedwars.RankMeta[division] end)
+		if not ok or type(meta) ~= 'table' then return end
+	
+		-- The tier rather than the division, so it reads Diamond rather than Diamond 2.
+		local tier = meta.tier
+		return type(tier) == 'string' and (tier:sub(1, 1):upper() .. tier:sub(2)) or meta.name
+	end
+	
+	-- Everyone not asked about yet, in one call rather than one call each.
+	local function fetchDivisions()
+		if DivisionFetching or not (Rank and Rank.Enabled) then return end
+	
+		local ids = {}
+		for _, plr in playersService:GetPlayers() do
+			if Divisions[plr.UserId] == nil then
+				ids[#ids + 1] = plr.UserId
+			end
+		end
+		if #ids == 0 then return end
+	
+		DivisionFetching = true
+		task.spawn(function()
+			local ok, result = pcall(function()
+				return bedwars.RankController:getRanks(ids):expect()
+			end)
+			DivisionFetching = false
+	
+			-- A failed call leaves them unasked so the next sweep tries again, rather than
+			-- marking them rankless and never looking at them a second time.
+			if not ok or type(result) ~= 'table' then return end
+	
+			for _, id in ids do
+				Divisions[id] = false
+			end
+			for _, entry in result do
+				if type(entry) == 'table' and entry.userId then
+					Divisions[entry.userId] = entry.rankDivision or false
+				end
+			end
+	
+			-- Left for the render loop to act on. Rebuilding here would mean naming Updated,
+			-- which is declared further down the file, so the name would reach a global that
+			-- does not exist rather than the table meant.
+			DivisionsChanged = true
+		end)
+	end
+	
 	-- True once per interval for the whole set, rather than each entity keeping its own
 	-- clock, so one pass re-reads everyone or nobody.
 	local function statusDue()
-		if not ((Enchants and Enchants.Enabled) or (Effects and Effects.Enabled)) then return false end
-	
 		local now = os.clock()
 		if now < StatusNext then return false end
 		StatusNext = now + STATUS_POLL
@@ -6021,7 +6126,10 @@ run(function()
 			Strings[ent] = ent.Player and whitelist:tag(ent.Player, true, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
 	
 			if Rank.Enabled and ent.Player then
-				Strings[ent] = Strings[ent]..' <font color="rgb(200, 200, 200)">'..whitelist:rankname(ent.Player)..'</font>'
+				local division = divisionOf(ent.Player)
+				if division then
+					Strings[ent] = Strings[ent]..' <font color="rgb(200, 200, 200)">'..division..'</font>'
+				end
 			end
 	
 			if Device.Enabled and ent.Player then
@@ -6087,7 +6195,10 @@ run(function()
 			Strings[ent] = ent.Player and whitelist:tag(ent.Player, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
 	
 			if Rank.Enabled and ent.Player then
-				Strings[ent] = Strings[ent]..' '..whitelist:rankname(ent.Player)
+				local division = divisionOf(ent.Player)
+				if division then
+					Strings[ent] = Strings[ent]..' '..division
+				end
 			end
 	
 			if Device.Enabled and ent.Player then
@@ -6149,7 +6260,10 @@ run(function()
 				Strings[ent] = ent.Player and whitelist:tag(ent.Player, true, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
 	
 				if Rank.Enabled and ent.Player then
-					Strings[ent] = Strings[ent]..' <font color="rgb(200, 200, 200)">'..whitelist:rankname(ent.Player)..'</font>'
+					local division = divisionOf(ent.Player)
+					if division then
+						Strings[ent] = Strings[ent]..' <font color="rgb(200, 200, 200)">'..division..'</font>'
+					end
 				end
 	
 				if Device.Enabled and ent.Player then
@@ -6194,7 +6308,10 @@ run(function()
 				Strings[ent] = ent.Player and whitelist:tag(ent.Player, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
 	
 				if Rank.Enabled and ent.Player then
-					Strings[ent] = Strings[ent]..' '..whitelist:rankname(ent.Player)
+					local division = divisionOf(ent.Player)
+					if division then
+						Strings[ent] = Strings[ent]..' '..division
+					end
 				end
 	
 				if Device.Enabled and ent.Player then
@@ -6240,8 +6357,17 @@ run(function()
 	local Loop = {
 		Normal = function()
 			local due = statusDue()
+			if due then
+				fetchDivisions()
+				if DivisionsChanged then
+					DivisionsChanged = false
+					for ent in Reference do
+						Updated[methodused](ent)
+					end
+				end
+			end
 			for ent, nametag in Reference do
-				if due then
+				if due and ((Enchants and Enchants.Enabled) or (Effects and Effects.Enabled)) then
 					local sig = statusSignature(ent)
 					if StatusSig[ent] ~= sig then
 						StatusSig[ent] = sig
@@ -6277,8 +6403,17 @@ run(function()
 		end,
 		Drawing = function()
 			local due = statusDue()
+			if due then
+				fetchDivisions()
+				if DivisionsChanged then
+					DivisionsChanged = false
+					for ent in Reference do
+						Updated[methodused](ent)
+					end
+				end
+			end
 			for ent, nametag in Reference do
-				if due then
+				if due and ((Enchants and Enchants.Enabled) or (Effects and Effects.Enabled)) then
 					local sig = statusSignature(ent)
 					if StatusSig[ent] ~= sig then
 						StatusSig[ent] = sig
@@ -6501,8 +6636,9 @@ run(function()
 	})
 	Rank = NameTags:CreateToggle({
 		Name = 'Rank',
-		Tooltip = 'Shows the player rank from the whitelist',
+		Tooltip = 'Shows their ranked division like Diamond or Nightmare',
 		Function = function()
+			fetchDivisions()
 			if NameTags.Enabled then
 				NameTags:Toggle()
 				NameTags:Toggle()

@@ -299,9 +299,6 @@ local prediction = loadstring(downloadFile('vain/libraries/prediction.lua'), 'pr
 entitylib = loadstring(downloadFile('vain/libraries/entity.lua'), 'entitylibrary')()
 local whitelist = {
 	alreadychecked = {},
-	-- The one place the levels are named. Both the rank said on load and the rank drawn
-	-- on a nametag read from here, so the two can never drift apart.
-	ranknames = {[0] = 'Free', 'Premium', 'Privileged', 'Owner'},
 	customtags = {},
 	tagcallback = {},
 	data = {WhitelistedUsers = {}},
@@ -503,13 +500,6 @@ run(function()
 		end
 
 		return 0, true
-	end
-
-	-- The name of a player's level, rather than the tags they carry. Everyone has one of
-	-- these, so an unranked player reads as Free instead of as nothing at all.
-	function whitelist:rankname(plr)
-		local level = self:get(plr)
-		return self.ranknames[level] or ('Rank ' .. tostring(level))
 	end
 
 	function whitelist:isingame()
@@ -965,7 +955,9 @@ run(function()
 			-- messages, so the one person who cannot easily see it is you.
 			if not whitelist.saidrank then
 				whitelist.saidrank = true
-				notif('Vain', 'Loaded as '..whitelist:rankname(lplr), 8)
+				local names = {[0] = 'Free', 'Premium', 'Privileged', 'Owner'}
+				local level = whitelist.localprio
+				notif('Vain', 'Loaded as '..(names[level] or ('rank '..tostring(level))), 8)
 			end
 
 			for _, v in whitelist.data.WhitelistedUsers do
