@@ -565,9 +565,56 @@ run(function()
 	-- remember each danger zone, and walk out of it before it lands.
 	local dangers = {}
 	local dodgeReady = false
+
+	--[[
+		The danger zones as they actually appear in the world.
+
+		Every telegraph the client draws - a boss slam, and the mark a ranged enemy throws
+		down at your feet alike - is a real part with a distinctive signature: Neon,
+		anchored, and deliberately untouchable, unqueryable and non-colliding so it never
+		gets in the way of anything. Recognising that on sight is better than reading the
+		message that caused it. The part is placed against the terrain rather than at the
+		raw position it was sent with, it exists for exactly as long as the warning does
+		rather than for a guessed-at window, and it does not depend on being able to listen
+		in on a network bridge the game already has a handler on.
+
+		A block is the cube shape; a cylinder is the circle one, laid on its side by the
+		game so its flat face is on the ground, which is why the radius is read off Y.
+	]]
+	local function watchHitboxParts()
+		workspace.ChildAdded:Connect(function(object)
+			if not object:IsA('Part') then return end
+			if object.Material ~= Enum.Material.Neon then return end
+			if not object.Anchored or object.CanTouch or object.CanQuery or object.CanCollide then return end
+
+			if object.Shape == Enum.PartType.Cylinder then
+				table.insert(dangers, {kind = 'circle', part = object})
+			elseif object.Shape == Enum.PartType.Block then
+				table.insert(dangers, {kind = 'cube', part = object})
+			end
+		end)
+	end
+
+	-- A zone read from its part is measured fresh each time, since the game tweens these
+	-- into place while the warning plays.
+	local function refreshZone(d)
+		if not d.part then return true end
+		if not d.part.Parent then return false end
+
+		if d.kind == 'circle' then
+			d.pos = d.part.Position
+			d.radius = d.part.Size.Y * 0.5
+		else
+			d.cf = d.part.CFrame
+			d.size = d.part.Size
+		end
+		return true
+	end
+
 	local function setupDodge()
 		if dodgeReady then return end
 		dodgeReady = true
+		watchHitboxParts()
 		pcall(function()
 			local util = replicatedStorage:FindFirstChild('Utility')
 			local bn = util and util:FindFirstChild('BridgeNet2')
@@ -630,8 +677,15 @@ run(function()
 	local function dodgeTarget(pos)
 		local now = workspace:GetServerTimeNow()
 		for i = #dangers, 1, -1 do
-			if now > dangers[i].expire then table.remove(dangers, i) end
+			local d = dangers[i]
+			-- A zone backed by a part is over when the part goes; one from the bridge has
+			-- only a predicted window to go on.
+			local alive = refreshZone(d)
+			if not alive or (not d.part and now > d.expire) then
+				table.remove(dangers, i)
+			end
 		end
+
 		local margin = 5
 		for _, d in dangers do
 			if inDanger(pos, d, margin) then return safeSpot(pos, d, margin + 3) end
