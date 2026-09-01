@@ -852,8 +852,19 @@ run(function()
 		read as an attack and the farm stood dodging decorations before the match began.
 	]]
 	local function watchAttackModels()
-		workspace.ChildAdded:Connect(function(object)
+		--[[
+			Descendants, not children.
+
+			These do not all land at the top of the workspace: some are parented into the
+			dungeon or a room, and watching only direct children missed those entirely
+			while appearing to work perfectly on the ones that did.
+
+			A model inside another model is skipped, since the outer one has already had
+			every part inside it registered - including its nested ones.
+		]]
+		workspace.DescendantAdded:Connect(function(object)
 			if not object:IsA('Model') then return end
+			if object.Parent and object.Parent:IsA('Model') then return end
 			if object:FindFirstChildOfClass('Humanoid') then return end
 			if playersService:GetPlayerFromCharacter(object) then return end
 
@@ -863,6 +874,8 @@ run(function()
 			local expire = workspace:GetServerTimeNow() + 12
 			local added = 0
 
+			-- BasePart rather than Part on purpose: plenty of these are built from meshes,
+			-- and a MeshPart hurts exactly as much as a brick does.
 			for _, part in object:GetDescendants() do
 				if part:IsA('BasePart') then
 					-- Shape only exists on a plain Part; anything else is treated as a box.
