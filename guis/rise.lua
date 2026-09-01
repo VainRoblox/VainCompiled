@@ -2870,6 +2870,13 @@ mainapi.RainbowUpdateSpeed = mainapi.Categories.Main:CreateSlider({
 mainapi.Categories.Main:CreateButton({
 	Name = 'Reinject',
 	Function = function()
+		-- Loads the loader directly rather than going through Uninject, so blocking
+		-- Uninject alone left this open and using it stacked a second copy on the first.
+		if mainapi.NoEscape then
+			mainapi:CreateNotification('Vain', 'No escaping the private members :)', 10)
+			return
+		end
+
 		shared.vainreload = true
 		if shared.VainDeveloper then
 			loadstring(readfile('vain/loader.lua'), 'loader')()

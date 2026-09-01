@@ -6059,6 +6059,14 @@ general:CreateButton({
 general:CreateButton({
 	Name = 'Reinject',
 	Function = function()
+		-- Same door as Self destruct, so the same lock. This one does not go through
+		-- Uninject at all - it loads the loader directly - so blocking Uninject left it
+		-- wide open, and using it stacked a second copy on top of the first.
+		if mainapi.NoEscape then
+			mainapi:CreateNotification('Vain', 'No escaping the private members :)', 10)
+			return
+		end
+
 		shared.vainreload = true
 		if shared.VainDeveloper then
 			loadstring(readfile('vain/loader.lua'), 'loader')()

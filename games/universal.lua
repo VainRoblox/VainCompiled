@@ -530,6 +530,12 @@ run(function()
 			self:hook()
 
 			if self.localprio == 0 then
+				-- Flagged, not just swapped. Replacing Uninject only closes the door that
+				-- goes through Uninject: Reinject calls the loader itself, so it slipped
+				-- past and started a second copy while the first was still running -
+				-- which is worse than escaping, not better.
+				vain.NoEscape = true
+
 				olduninject = vain.Uninject
 				vain.Uninject = function()
 					notif('Vain', 'No escaping the private members :)', 10)
@@ -570,10 +576,21 @@ run(function()
 		return true
 	end
 
-	function whitelist:newchat(obj, plr, skip)
+	--[[
+		text is the message as it was actually sent, passed in separately.
+
+		obj is a TextChatMessageProperties, and reading the message off that only works
+		when this code built it. When the game's own handler has already returned one -
+		which it does whenever it adds a prefix of its own, as Bedwars does for teams -
+		that object is reused as-is, and its Text is empty, because a properties object
+		only carries the fields something wanted to override. Commands were being matched
+		against an empty string on exactly the games that prefix their chat, so none of
+		them ever ran.
+	]]
+	function whitelist:newchat(obj, plr, skip, text)
 		obj.PrefixText = self:tag(plr, true, true)..(obj.PrefixText or '')
 
-		if not skip and self:process(obj.Text, plr) then
+		if not skip and self:process(text or obj.Text, plr) then
 			obj.Visible = false
 		end
 	end
@@ -641,7 +658,7 @@ run(function()
 										data.Text = msg.Text
 									end
 
-									self:newchat(data, plr, msg.Status ~= Enum.TextChatMessageStatus.Success)
+									self:newchat(data, plr, msg.Status ~= Enum.TextChatMessageStatus.Success, msg.Text)
 								end
 
 								return data
