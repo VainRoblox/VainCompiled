@@ -5749,18 +5749,37 @@ run(function()
 		used instead. That is what lets a kit be added here by tag alone, and it is why the
 		newer kits below do not need an icon invented for them.
 	]]
+	--[[
+		The kits this covers, keyed by the id the game uses rather than the name it shows -
+		several were renamed and the old id stayed put, so Eldertree is still bigman and
+		Gompy is still ghost_catcher.
+	
+		Icon is optional. Where the collectible has an item that looks like it, that item's
+		icon reads better than anything else; where it does not, the kit's own render image
+		stands in, so a kit can be listed by tag alone.
+	
+		Match is for collectibles that carry no tag of their own. Wren's shadow coins are
+		ordinary item drops, sharing the ItemDrop tag with every other dropped thing on the
+		map, so they are told apart by name instead.
+	]]
 	local ESPKits = {
+		-- Alchemist
 		alchemist = {icon = 'wild_flower', tags = {'alchemist_ingedients'}},
-		axolotl = {tags = {'axolotl_data'}},
+		-- Beekeeper Beatrix
 		beekeeper = {icon = 'bee', tags = {'bee', 'flower-bee', 'beehive'}},
+		-- Eldertree
 		bigman = {icon = 'natures_essence_1', tags = {'treeOrb'}},
+		-- Wren
+		black_market_trader = {icon = 'shadow_coin', tags = {'ItemDrop'}, match = 'shadow_coin'},
+		-- Gompy
 		ghost_catcher = {icon = 'ghost_orb', tags = {'ghost'}},
-		jellyfish = {tags = {'jellyfish'}},
-		mage = {tags = {'ElementTome'}},
+		-- Metal Detector
 		metal_detector = {icon = 'iron', tags = {'hidden-metal'}},
-		sheep_herder = {icon = 'purple_hay_bale', tags = {'SheepModel', 'WoolSheep'}},
+		-- Death Adder
 		sorcerer = {icon = 'wild_flower', tags = {'alchemy_crystal'}},
-		spirit_catcher = {tags = {'spirit'}},
+		-- Grove
+		spirit_gardener = {tags = {'spirit'}},
+		-- Star Collector Stella
 		star_collector = {icon = 'crit_star', tags = {'stars'}}
 	}
 	
@@ -5863,13 +5882,16 @@ run(function()
 		table.clear(Connections)
 	end
 	
-	local function addKit(tag, icon)
+	local function addKit(tag, icon, match)
 		Connections[#Connections + 1] = collectionService:GetInstanceAddedSignal(tag):Connect(function(v)
+			if match and v.Name ~= match then return end
 			Added(v, icon)
 		end)
 		Connections[#Connections + 1] = collectionService:GetInstanceRemovedSignal(tag):Connect(Removed)
 		for _, v in collectionService:GetTagged(tag) do
-			Added(v, icon)
+			if not match or v.Name == match then
+				Added(v, icon)
+			end
 		end
 	end
 	
@@ -5899,7 +5921,7 @@ run(function()
 					if kit then
 						local icon = kit.icon and bedwars.getIcon({itemType = kit.icon}, true) or kitImage(store.equippedKit)
 						for _, tag in kit.tags do
-							addKit(tag, icon)
+							addKit(tag, icon, kit.match)
 						end
 					end
 				end
