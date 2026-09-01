@@ -769,42 +769,9 @@ run(function()
 		costs more than it corrects.
 	]]
 	local waypoints, waypointIndex, pathGoal, pathBuiltAt = nil, 1, nil, 0
-	local lastPos, lastMoved, walkBlind = nil, 0, 0
 
 	local function clearPath()
 		waypoints, waypointIndex, pathGoal = nil, 1, nil
-	end
-
-	--[[
-		Noticing when we are not actually going anywhere.
-
-		A route can be found and still not be walkable - a doorway the game has not opened
-		yet, a waypoint on the far side of a barrier, a ledge the humanoid will not step
-		off - and the loop has no way to tell that from walking, because it keeps being
-		asked to move and keeps agreeing to. So progress is measured instead: if the
-		character has not covered any ground in a while, the route is thrown away and it
-		walks straight at the goal for a few seconds, which is both what gets it round most
-		obstructions and what stops it standing still.
-	]]
-	local STUCK_AFTER = 1.5
-	local STUCK_DISTANCE = 3
-	local BLIND_FOR = 3
-
-	local function stuck(hrp)
-		local now = os.clock()
-		if not lastPos then
-			lastPos, lastMoved = hrp.Position, now
-			return false
-		end
-
-		if (hrp.Position - lastPos).Magnitude > STUCK_DISTANCE then
-			lastPos, lastMoved = hrp.Position, now
-			return false
-		end
-
-		if now - lastMoved < STUCK_AFTER then return false end
-		lastPos, lastMoved = hrp.Position, now
-		return true
 	end
 
 	local function buildPath(hrp, goal)
@@ -824,16 +791,8 @@ run(function()
 	end
 
 	local function walkTo(hum, hrp, goal, direct)
-		if stuck(hrp) then
-			-- Pathing has stopped helping, so stop asking it for a while.
-			clearPath()
-			walkBlind = os.clock() + BLIND_FOR
-			hum.Jump = true
-		end
-
-		-- Straight there when it is close, when the route is unlikely to matter, or while
-		-- a route has just been given up on.
-		if direct or os.clock() < walkBlind or not (UsePathfinding and UsePathfinding.Enabled) then
+		-- Straight there when it is close and the route is unlikely to matter.
+		if direct or not (UsePathfinding and UsePathfinding.Enabled) then
 			hum:MoveTo(goal)
 			return
 		end
