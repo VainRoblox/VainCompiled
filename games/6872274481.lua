@@ -10831,6 +10831,18 @@ kitRun(function()
         return true
     end
 
+    --[[
+        How much a single deposit actually adds.
+
+        It is not always one: the server can take several bees off the stack in one go, so
+        a hive sitting two below the limit could jump past it in a single deposit and the
+        limit would be a suggestion rather than a ceiling.
+
+        Learned from what the last deposit did rather than assumed, since it is not stated
+        anywhere, and starts at one so the first deposit is never held back.
+    ]]
+    local depositStep = 1
+
     local function ownHive(hive)
         return hive:GetAttribute('PlacedByUserId') == lplr.UserId
     end
@@ -10950,7 +10962,9 @@ kitRun(function()
 
         for _, hive in collectionService:GetTagged('beehive') do
             if not ownHive(hive) then continue end
-            if (hive:GetAttribute('Level') or 0) >= limit then continue end
+            -- Room for a whole deposit, not just room for one bee.
+            local level = hive:GetAttribute('Level') or 0
+            if level >= limit or level + depositStep > limit then continue end
 
             local part = partOf(hive)
             if not part then continue end
@@ -11000,6 +11014,11 @@ kitRun(function()
             or (best:GetAttribute('Level') or 0) > before
             or not best.Parent
             or not entitylib.isAlive
+
+        local after = best:GetAttribute('Level') or before
+        if after > before then
+            depositStep = after - before
+        end
 
         local delay = value(DepositDelay, 0.1)
         if delay > 0 then
