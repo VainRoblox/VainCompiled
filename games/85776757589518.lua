@@ -588,6 +588,11 @@ run(function()
 	-- 'precastHitbox' bridge: Cube {cframe,size} or Circle {position,radius}, each with
 	-- a delayUntilAttack lead time. We attach a second listener to that same bridge,
 	-- remember each danger zone, and walk out of it before it lands.
+	-- Declared here rather than beside the targeting code below, because the attack watcher
+	-- is built before that point and reads it: as a local further down it was simply not in
+	-- scope yet, so the watcher captured a nil and threw on every model that arrived.
+	local enemyCache, lastScan = {}, 0
+
 	local dangers = {}
 	local dodgeReady = false
 	local seenZones = 0
@@ -929,7 +934,6 @@ run(function()
 	end
 
 	-- cached list of enemy models (non-player Humanoids), refreshed periodically.
-	local enemyCache, lastScan = {}, 0
 	local function enemyPart(m)
 		return m.PrimaryPart or m:FindFirstChild('HumanoidRootPart') or m:FindFirstChild('Torso')
 			or m:FindFirstChild('UpperTorso') or m:FindFirstChildWhichIsA('BasePart')
