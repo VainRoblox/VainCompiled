@@ -554,7 +554,7 @@ end)
 	attacks come from the precastHitbox telegraph the game sends for all of them.
 ]]
 run(function()
-	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding
+	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding
 
 	local pathfindingService = cloneref(game:GetService('PathfindingService'))
 
@@ -583,9 +583,12 @@ run(function()
 	]]
 	local function watchHitboxParts()
 		workspace.ChildAdded:Connect(function(object)
+			-- Material and colour are deliberately not tested: the caller passes a
+			-- properties table that is applied over the part after it is built, and a red
+			-- lane is exactly that. What no ordinary piece of map does is sit there
+			-- anchored while being invisible to both collision and raycasts.
 			if not object:IsA('Part') then return end
-			if object.Material ~= Enum.Material.Neon then return end
-			if not object.Anchored or object.CanTouch or object.CanQuery or object.CanCollide then return end
+			if not object.Anchored or object.CanQuery or object.CanCollide then return end
 
 			if object.Shape == Enum.PartType.Cylinder then
 				table.insert(dangers, {kind = 'circle', part = object})
@@ -611,10 +614,52 @@ run(function()
 		return true
 	end
 
+	--[[
+		The telegraph taken at its source.
+
+		The module the game draws these with returns the very table it dispatches through,
+		and its own handler looks the shape up on that table each time one arrives - so
+		replacing the two entries on it puts us in front of every warning, with the exact
+		numbers the game is about to draw, before it draws anything. No second listener on
+		a bridge the game already owns, and nothing to recognise by sight.
+	]]
+	local function hookPrecast(note)
+		local modules = replicatedStorage:FindFirstChild('modules')
+		local module = modules and modules:FindFirstChild('PrecastHitbox')
+		if not module then return end
+
+		local precast = require(module)
+		if type(precast) ~= 'table' then return end
+
+		local oldCube, oldCircle = rawget(precast, 'Cube'), rawget(precast, 'Circle')
+		if oldCube then
+			precast.Cube = function(cframe, size, delay, startTime, properties)
+				note('cube', cframe, size, delay, startTime)
+				return oldCube(cframe, size, delay, startTime, properties)
+			end
+		end
+		if oldCircle then
+			precast.Circle = function(position, radius, delay, startTime, properties)
+				note('circle', position, radius, delay, startTime)
+				return oldCircle(position, radius, delay, startTime, properties)
+			end
+		end
+	end
+
 	local function setupDodge()
 		if dodgeReady then return end
 		dodgeReady = true
 		watchHitboxParts()
+
+		pcall(hookPrecast, function(kind, a, b, delay, startTime)
+			local start = tonumber(startTime) or workspace:GetServerTimeNow()
+			local expire = start + (tonumber(delay) or 0.3) + 0.4
+			if kind == 'cube' and typeof(a) == 'CFrame' and typeof(b) == 'Vector3' then
+				table.insert(dangers, {kind = 'cube', cf = a, size = b, expire = expire})
+			elseif kind == 'circle' and typeof(a) == 'Vector3' and tonumber(b) then
+				table.insert(dangers, {kind = 'circle', pos = a, radius = tonumber(b), expire = expire})
+			end
+		end)
 		pcall(function()
 			local util = replicatedStorage:FindFirstChild('Utility')
 			local bn = util and util:FindFirstChild('BridgeNet2')
@@ -1020,7 +1065,27 @@ run(function()
 						local busy = char:FindFirstChild('busyCasting')
 						local reach = AttackRange.Value
 
-						if (dist or math.huge) > reach then
+						--[[
+							Fight from a band, not from a spot.
+
+							Walking to attack range and standing there is what was getting
+							us killed: melee enemies close the last few studs themselves
+							and then simply hit us until the HP threshold noticed, by which
+							point a pack had already surrounded us.
+
+							So there is a near edge as well as a far one. Inside it, back
+							off - while still swinging, since anything already in reach
+							stays in reach as we give ground. Held below the far edge so
+							the two can never cross and leave nowhere to stand.
+						]]
+						local keep = math.min(KeepDistance.Value, reach - 2)
+						local away = (hrp.Position - part.Position) * Vector3.new(1, 0, 1)
+						away = away.Magnitude > 0.1 and away.Unit or hrp.CFrame.LookVector
+
+						if (dist or 0) < keep then
+							clearPath()
+							hum:MoveTo(hrp.Position + away * ((keep - (dist or 0)) + 8))
+						elseif (dist or math.huge) > reach then
 							-- Close the gap. Pathfinding while far, straight in once near,
 							-- because a route recomputed around a moving enemy is worse
 							-- than walking at it.
@@ -1030,8 +1095,8 @@ run(function()
 							-- Stop walking and hold position while swinging, so the hit is
 							-- thrown from where the server already believes we are.
 							hum:MoveTo(hrp.Position)
-							faceNearest()
 						end
+						faceNearest()
 
 						if (dist or math.huge) <= reach and not (busy and busy.Value ~= false) then
 							swing(char, weaponUsed)
@@ -1056,6 +1121,8 @@ run(function()
 		Tooltip = 'Back away and stop fighting once your HP drops below this' })
 	RecoverHP = AutoFarm:CreateSlider({ Name = 'Resume at HP', Min = 20, Max = 100, Default = 85, Suffix = '%',
 		Tooltip = 'Return to the fight once HP recovers to this' })
+	KeepDistance = AutoFarm:CreateSlider({ Name = 'Keep Distance', Min = 0, Max = 50, Default = 9, Suffix = ' studs',
+		Tooltip = 'Never let an enemy get closer than this while fighting - back away instead, still attacking. Held below Attack Range (default 9)' })
 	KeepAway = AutoFarm:CreateSlider({ Name = 'Keep Away', Min = 20, Max = 200, Default = 70, Suffix = ' studs',
 		Tooltip = 'How far to put between you and the nearest enemy while recovering (default 70)' })
 	AttackRange = AutoFarm:CreateSlider({ Name = 'Attack Range', Min = 4, Max = 60, Default = 12, Suffix = ' studs',
