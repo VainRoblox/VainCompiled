@@ -3990,9 +3990,6 @@ run(function()
 	local function Added(ent)
 		if not Targets.Players.Enabled and ent.Player then return end
 		if not Targets.NPCs.Enabled and ent.NPC then return end
-		-- Never drawn, whatever the settings say - showing where somebody is, is itself a
-		-- use of them.
-		if ent.Protected then return end
 		if Teammates.Enabled and (not ent.Targetable) and (not ent.Friend) then return end
 		if vain.ThreadFix then
 			setthreadidentity(8)
@@ -4215,9 +4212,6 @@ run(function()
 		Drawing2D = function(ent)
 			if not Targets.Players.Enabled and ent.Player then return end
 			if not Targets.NPCs.Enabled and ent.NPC then return end
-			-- Never drawn, whatever the settings say - showing where somebody is, is itself
-			-- a use of them.
-			if ent.Protected then return end
 			if Teammates.Enabled and (not ent.Targetable) and (not ent.Friend) then return end
 			if vain.ThreadFix then
 				setthreadidentity(8)
@@ -4284,9 +4278,6 @@ run(function()
 		Drawing3D = function(ent)
 			if not Targets.Players.Enabled and ent.Player then return end
 			if not Targets.NPCs.Enabled and ent.NPC then return end
-			-- Never drawn, whatever the settings say - showing where somebody is, is itself
-			-- a use of them.
-			if ent.Protected then return end
 			if Teammates.Enabled and (not ent.Targetable) and (not ent.Friend) then return end
 			if vain.ThreadFix then
 				setthreadidentity(8)
@@ -4316,9 +4307,6 @@ run(function()
 		DrawingSkeleton = function(ent)
 			if not Targets.Players.Enabled and ent.Player then return end
 			if not Targets.NPCs.Enabled and ent.NPC then return end
-			-- Never drawn, whatever the settings say - showing where somebody is, is itself
-			-- a use of them.
-			if ent.Protected then return end
 			if Teammates.Enabled and (not ent.Targetable) and (not ent.Friend) then return end
 			if vain.ThreadFix then
 				setthreadidentity(8)
@@ -6072,9 +6060,6 @@ run(function()
 	local function Added(ent)
 		if not Targets.Players.Enabled and ent.Player then return end
 		if not Targets.NPCs.Enabled and ent.NPC then return end
-		-- Never drawn, whatever the settings say - showing where somebody is, is itself a
-		-- use of them.
-		if ent.Protected then return end
 		if Teammates.Enabled and (not ent.Targetable) and (not ent.Friend) then return end
 		if vain.ThreadFix then
 			setthreadidentity(8)
