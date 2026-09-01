@@ -709,16 +709,63 @@ run(function()
 		end
 	end
 
+	--[[
+		Somewhere clear of everything, not out of one thing.
+
+		Stepping out of the zone you happen to be standing in is only a dodge when there is
+		one zone. Four mages casting at once lay overlapping lanes across the whole floor,
+		and the way out of the first is usually well inside the second - which is what
+		"it does not really dodge" looks like from the outside.
+
+		So instead of asking a zone where its edge is, this asks the floor where it is safe:
+		rings of candidate spots at growing distance, nearest ring first, and the first ring
+		with anything clear of EVERY zone wins. That works the same for a lane, a ring, or
+		nine of them at once, without knowing which enemy cast what.
+
+		Among equally close options it takes the one furthest from the pack, since a dodge
+		that lands in the middle of the melee has only traded one kind of damage for another.
+	]]
+	local DODGE_RINGS = {14, 22, 32, 45, 60}
+	local DODGE_SAMPLES = 16
+
+	local function anyDanger(pos, margin)
+		for _, d in dangers do
+			if inDanger(pos, d, margin) then return true end
+		end
+		return false
+	end
+
 	local function dodgeTarget(pos)
 		local now = workspace:GetServerTimeNow()
 		for i = #dangers, 1, -1 do
 			if now > dangers[i].expire then table.remove(dangers, i) end
 		end
+		if #dangers == 0 then return nil end
 
 		local margin = 5
-		for _, d in dangers do
-			if inDanger(pos, d, margin) then return safeSpot(pos, d, margin + 3) end
+		if not anyDanger(pos, margin) then return nil end
+
+		for _, radius in DODGE_RINGS do
+			local best, bestScore
+			for i = 0, DODGE_SAMPLES - 1 do
+				local angle = (i / DODGE_SAMPLES) * math.pi * 2
+				local candidate = pos + Vector3.new(math.cos(angle), 0, math.sin(angle)) * radius
+
+				if not anyDanger(candidate, margin + 3) then
+					-- Furthest from whatever is nearest to it.
+					local score = math.huge
+					for _, m in enemyCache do
+						local part = m and m.Parent and enemyPart(m)
+						if part then
+							score = math.min(score, (part.Position - candidate).Magnitude)
+						end
+					end
+					if not bestScore or score > bestScore then best, bestScore = candidate, score end
+				end
+			end
+			if best then return best end
 		end
+
 		return nil
 	end
 
