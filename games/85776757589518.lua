@@ -1025,6 +1025,35 @@ run(function()
 
 		refreshBarriers()
 
+		--[[
+			Straight out first, before sweeping for somewhere nice.
+
+			Rings only offer points on a circle, and the shortest way out of a long lane is
+			rarely on one - it will happily pick a spot the same distance away that runs
+			along the lane rather than across it. The way out of a box is perpendicular to
+			its nearest face, and out of a ring is directly outward, which is the shortest
+			escape that exists and therefore the only one that beats a timer.
+
+			Each zone we are standing in is asked where its edge is, and the nearest answer
+			that is legal wins. Only if none of them are does the sweep below run, which is
+			for the awkward case where every direct exit is blocked or inside another zone.
+		]]
+		local quickest, quickestDist
+		for _, d in dangers do
+			if inDanger(pos, d, margin) then
+				local exit = safeSpot(pos, d, margin + 3)
+				local travel = (exit - pos).Magnitude
+				if (not quickestDist or travel < quickestDist)
+					and groundAt(exit, pos.Y)
+					and not anyDanger(exit, margin + 3)
+					and not insideBarrier(exit, 2)
+					and not crossesBarrier(pos, exit) then
+					quickest, quickestDist = exit, travel
+				end
+			end
+		end
+		if quickest then return quickest end
+
 		for _, radius in DODGE_RINGS do
 			local best, bestScore
 			for i = 0, DODGE_SAMPLES - 1 do
@@ -1062,11 +1091,14 @@ run(function()
 						Overshooting inward costs a third of what falling back does, which
 						turns a dodge into an approach whenever the geometry allows it.
 					]]
-					local score = 0
+					-- How long it takes to get there comes first: a spot that is perfect and
+					-- unreachable in time is worth nothing.
+					local score = (candidate - pos).Magnitude * 1.5
+
 					if anchor then
 						local gap = (candidate - anchor).Magnitude
 						local want = ideal or 12
-						score = gap > want and (gap - want) * 1.5 or (want - gap) * 0.5
+						score += gap > want and (gap - want) * 1.5 or (want - gap) * 0.5
 					end
 
 					for _, m in enemyCache do
