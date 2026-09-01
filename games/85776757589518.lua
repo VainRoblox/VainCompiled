@@ -614,8 +614,10 @@ run(function()
 		second, so neither does this. A ledge that cannot be stepped onto is simply not
 		stepped onto, rather than being climbed in one frame.
 	]]
-	local MAX_RISE = 4
-	local MAX_DROP = 20
+	-- Generous enough to take stairs, a ledge, or the lip of a platform in stride. It was
+	-- four, which is barely a kerb, and any room with a step in it stopped the farm dead.
+	local MAX_RISE = 12
+	local MAX_DROP = 24
 
 	--[[
 		The floor to stand on, or nothing at all.
@@ -1243,6 +1245,21 @@ run(function()
 				return
 			end
 		end
+
+		--[[
+			Nothing underfoot anywhere along the way, so climb toward where we are going.
+
+			Refusing to move at all was the safe answer and the wrong one: it is what left
+			the farm announcing a dodge every tick and never taking it, because the spot it
+			had chosen was up a step, across a gap, or on a platform above. Following the
+			destination's own height instead means a ledge can be climbed onto and a fall
+			can be climbed out of, and it is bounded by the same per-tick budget as any
+			other step so it stays a walk rather than a leap.
+		]]
+		local target = hrp.Position + direction * (full * 0.5)
+		local rise = math.clamp(goal.Y - hrp.Position.Y, -full, full)
+		hrp.CFrame = CFrame.new(Vector3.new(target.X, hrp.Position.Y + rise, target.Z))
+			* (hrp.CFrame - hrp.CFrame.Position)
 	end
 
 	--[[
