@@ -846,6 +846,20 @@ run(function()
 		if weaponUsed then weaponUsed:FireServer() end
 	end
 	local function castAbilities(abilityUsed)
+		--[[
+			The game's own ability scripts reach for Character.Humanoid by name and without
+			waiting, so firing one during a respawn - character parented, humanoid not yet -
+			throws inside their code rather than ours. It happens on its own often enough to
+			appear before Vain has even loaded, but there is no reason to add to it.
+
+			Checked by name rather than by class for the same reason: that is the lookup
+			their script actually performs.
+		]]
+		local char = lplr.Character
+		if not (char and char:FindFirstChild('Humanoid') and char:FindFirstChild('HumanoidRootPart')) then
+			return
+		end
+
 		for _, slot in { 'q', 'e' } do
 			for _, child in lplr.Backpack:GetChildren() do
 				if child:FindFirstChild('abilitySlot') and child.abilitySlot.Value == slot then
