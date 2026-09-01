@@ -10843,23 +10843,36 @@ kitRun(function()
         return tool ~= nil and tool.Name == itemType
     end
 
-    local function findItem(itemType)
-        for _, item in store.inventory.inventory.items do
-            if item.itemType == itemType then
-                return item
+    local function hotbarSlot(itemType)
+        for i, v in store.inventory.hotbar do
+            if v.item and v.item.itemType == itemType then
+                return i - 1
             end
         end
     end
 
-    -- The net is what the game's own hand controller insists on before it will send a
-    -- pickup, so the server has every reason to throw one away that arrives without it.
+    --[[
+        The net is what the game's own hand controller insists on before it will send a
+        pickup, so the server has every reason to throw one away that arrives without it.
+
+        Both halves of the switch are needed, which is why doing only the second did
+        nothing: selecting the hotbar slot is what the game itself does, and sending the
+        equip is what tells the server. A kit item like the net sits in the hotbar, so
+        looking for it in the carried items alone never found it either.
+    ]]
     local function equipNet()
         if heldIs('bee_net') then return true end
 
-        local net = findItem('bee_net')
-        if not net or not net.tool then return false end
+        local net = getItem('bee_net')
+        local slot = hotbarSlot('bee_net')
+        if not net and not slot then return false end
 
-        switchItem(net.tool)
+        if slot then
+            hotbarSwitch(slot)
+        end
+        if net and net.tool then
+            switchItem(net.tool)
+        end
         return true
     end
 
@@ -10930,6 +10943,8 @@ kitRun(function()
         local prompt = best:FindFirstChildOfClass('ProximityPrompt')
         if not prompt then return end
 
+        local before = store.hand and store.hand.amount or 0
+
         if fireproximityprompt then
             fireproximityprompt(prompt)
         else
@@ -10937,6 +10952,23 @@ kitRun(function()
             task.wait(prompt.HoldDuration)
             prompt:InputHoldEnd()
         end
+
+        --[[
+            One bee per trip, and this is what holds it to one.
+
+            Firing the prompt and carrying on meant coming back around a tenth of a second
+            later, long before the server had taken the bee and the hand had caught up, so
+            the prompt went off again and a second bee went with it. The count in hand
+            dropping is the only thing that actually says a deposit landed.
+
+            Bounded, so a deposit the server turns down does not wedge the loop here.
+        ]]
+        local deadline = os.clock() + 1
+        repeat
+            task.wait(0.05)
+        until os.clock() >= deadline
+            or not heldIs('bee')
+            or (store.hand and store.hand.amount or 0) < before
 
         local delay = value(DepositDelay, 0.1)
         if delay > 0 then
