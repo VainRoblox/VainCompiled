@@ -621,9 +621,49 @@ run(function()
 		return workspace:GetServerTimeNow() + math.clamp(tonumber(delay) or 0.3, 0.1, 6) + 0.5
 	end
 
+	--[[
+		The zones as they appear on the floor, whoever drew them.
+
+		The hook above covers everything that goes through the game's own telegraph module,
+		which is every enemy that uses it - but that is one code path, and anything drawn
+		another way would never be seen. So the floor is watched as well.
+
+		The signature is exact on purpose. A telegraph is anchored, and deliberately
+		invisible to collision, raycasts AND touch, because it is decoration that must not
+		interfere with anything - the damage is applied server side. That last combination
+		is what no ordinary piece of map has: an earlier version of this dropped the
+		collision test, matched the room's barrier wall, and treated the doorway as a
+		permanent danger zone, which parked the farm for good.
+
+		A hard lifetime is kept for the same reason. A zone lasts as long as its part or
+		eight seconds, whichever comes first, so a mistake here can never hold us still
+		indefinitely again.
+	]]
+	local function watchTelegraphs()
+		workspace.ChildAdded:Connect(function(object)
+			if not object:IsA('Part') then return end
+			if not object.Anchored then return end
+			if object.CanCollide or object.CanQuery or object.CanTouch then return end
+
+			local kind
+			if object.Shape == Enum.PartType.Cylinder then
+				kind = 'circle'
+			elseif object.Shape == Enum.PartType.Block then
+				kind = 'cube'
+			else
+				return
+			end
+
+			local zone = {kind = kind, part = object, expire = workspace:GetServerTimeNow() + 8}
+			table.insert(dangers, zone)
+			say(kind == 'circle' and 'floor ring seen' or 'floor lane seen')
+		end)
+	end
+
 	local function setupDodge()
 		if dodgeReady then return end
 		dodgeReady = true
+		watchTelegraphs()
 
 		local hooked, hookErr = pcall(hookPrecast, function(kind, a, b, delay)
 			if kind == 'cube' and typeof(a) == 'CFrame' and typeof(b) == 'Vector3' then
@@ -728,6 +768,22 @@ run(function()
 	local DODGE_RINGS = {14, 22, 32, 45, 60}
 	local DODGE_SAMPLES = 16
 
+	-- A zone read off a part is re-measured each time, since the game tweens these into
+	-- place while the warning plays, and is finished the moment the part goes.
+	local function liveZone(d)
+		if not d.part then return true end
+		if not d.part.Parent then return false end
+
+		if d.kind == 'circle' then
+			d.pos = d.part.Position
+			d.radius = d.part.Size.Y * 0.5
+		else
+			d.cf = d.part.CFrame
+			d.size = d.part.Size
+		end
+		return true
+	end
+
 	local function anyDanger(pos, margin)
 		for _, d in dangers do
 			if inDanger(pos, d, margin) then return true end
@@ -738,7 +794,8 @@ run(function()
 	local function dodgeTarget(pos)
 		local now = workspace:GetServerTimeNow()
 		for i = #dangers, 1, -1 do
-			if now > dangers[i].expire then table.remove(dangers, i) end
+			local d = dangers[i]
+			if now > d.expire or not liveZone(d) then table.remove(dangers, i) end
 		end
 		if #dangers == 0 then return nil end
 
@@ -973,7 +1030,20 @@ run(function()
 		stepped onto, rather than being climbed in one frame.
 	]]
 	local MAX_RISE = 4
+	local MAX_DROP = 20
 
+	--[[
+		The floor to stand on, or nothing at all.
+
+		Carrying the old height across a gap is how you walk out over a ledge and fall: the
+		step lands in mid air at the height it left, and gravity does the rest. So a
+		destination with no floor under it is not somewhere to go, and neither is one at the
+		bottom of a drop - that is a fall, not a step, and the sudden change in height is
+		also exactly what the server pulls you back for.
+
+		Returning nothing rather than a guess lets the caller shorten the step and try
+		again, which is what edges along a walkway instead of stopping dead at it.
+	]]
 	local function groundAt(position, fallbackY)
 		local skip = {lplr.Character}
 		for _, m in enemyCache do
@@ -983,11 +1053,12 @@ run(function()
 		end
 		groundParams.FilterDescendantsInstances = skip
 
-		local hit = workspace:Raycast(position + Vector3.new(0, 12, 0), Vector3.new(0, -60, 0), groundParams)
-		if not hit then return fallbackY end
+		local hit = workspace:Raycast(position + Vector3.new(0, 12, 0), Vector3.new(0, -80, 0), groundParams)
+		if not hit then return nil end
 
 		local y = hit.Position.Y + 3
-		if y > fallbackY + MAX_RISE then return fallbackY end
+		if y > fallbackY + MAX_RISE then return nil end
+		if y < fallbackY - MAX_DROP then return nil end
 		return y
 	end
 
@@ -1001,11 +1072,20 @@ run(function()
 		if distance < 0.5 then return end
 
 		local speed = (hum.WalkSpeed > 0 and hum.WalkSpeed or 16)
-		local move = delta.Unit * math.min(distance, speed * dt)
-		local target = hrp.Position + move
+		local full = math.min(distance, speed * dt)
+		local direction = delta.Unit
 
-		hrp.CFrame = CFrame.new(Vector3.new(target.X, groundAt(target, hrp.Position.Y), target.Z))
-			* (hrp.CFrame - hrp.CFrame.Position)
+		-- Shorter and shorter steps until one has floor under it. Standing still is the
+		-- last resort rather than the first answer, so a narrow ledge is still walkable.
+		for _, fraction in {1, 0.6, 0.3} do
+			local target = hrp.Position + direction * (full * fraction)
+			local y = groundAt(target, hrp.Position.Y)
+			if y then
+				hrp.CFrame = CFrame.new(Vector3.new(target.X, y, target.Z))
+					* (hrp.CFrame - hrp.CFrame.Position)
+				return
+			end
+		end
 	end
 
 	--[[
