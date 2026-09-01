@@ -6787,6 +6787,16 @@ run(function()
 		]]
 		local order, totals = {}, {}
 		for _, item in chestitems do
+			--[[
+				A child with no Amount is not an item.
+	
+				Every item the game builds is given one, defaulting to 1, so anything in the
+				folder without it is the chest's own furniture rather than loot. Counting those
+				as one apiece drew a phantom entry with a blank icon and a made-up count.
+			]]
+			local amount = item:GetAttribute('Amount')
+			if type(amount) ~= 'number' then continue end
+	
 			-- ShowAll displays all items regardless of the list; otherwise use the filter
 			local shouldShow = on(ShowAll) or table.find(List.ListEnabled, item.Name) or nearStorageItem(item.Name)
 			if not shouldShow then continue end
@@ -6795,8 +6805,7 @@ run(function()
 				order[#order + 1] = item.Name
 				totals[item.Name] = 0
 			end
-			-- An item carrying no amount at all is one of itself.
-			totals[item.Name] = totals[item.Name] + (item:GetAttribute('Amount') or 1)
+			totals[item.Name] = totals[item.Name] + amount
 		end
 	
 		for _, name in order do
@@ -6808,6 +6817,11 @@ run(function()
 			blockimage.Parent = v.Frame
 	
 			if on(ShowAmount) then
+				-- An endless supply reads as a symbol rather than as 'inf', and a count that
+				-- is not a number at all is left off instead of printed as nonsense.
+				local total = totals[name]
+				local text = total == total and (math.abs(total) == math.huge and '\u{221E}' or tostring(total)) or nil
+	
 				local textlabel = Instance.new('TextLabel')
 				textlabel.Name = 'Amount'
 				textlabel.Size = UDim2.fromOffset(16, 16)
@@ -6816,7 +6830,8 @@ run(function()
 				textlabel.BackgroundTransparency = 0.3
 				textlabel.TextColor3 = Color3.new(1, 1, 1)
 				textlabel.TextSize = 12
-				textlabel.Text = tostring(totals[name])
+				textlabel.Text = text or ''
+				textlabel.Visible = text ~= nil
 				textlabel.Parent = blockimage
 				local corner = Instance.new('UICorner')
 				corner.CornerRadius = UDim.new(0, 2)
