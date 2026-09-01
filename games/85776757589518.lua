@@ -859,12 +859,14 @@ run(function()
 			dungeon or a room, and watching only direct children missed those entirely
 			while appearing to work perfectly on the ones that did.
 
-			A model inside another model is skipped, since the outer one has already had
-			every part inside it registered - including its nested ones.
+			Nested models are NOT skipped. That filter was added to avoid registering the
+			same parts twice and it threw away real attacks instead - the spikes that
+			arrive inside another model were exactly the case it dropped. Registering a
+			part twice costs nothing, since both copies expire together and standing
+			outside a zone twice is the same as standing outside it once.
 		]]
 		workspace.DescendantAdded:Connect(function(object)
 			if not object:IsA('Model') then return end
-			if object.Parent and object.Parent:IsA('Model') then return end
 			if object:FindFirstChildOfClass('Humanoid') then return end
 			if playersService:GetPlayerFromCharacter(object) then return end
 
