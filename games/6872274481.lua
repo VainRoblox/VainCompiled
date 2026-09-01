@@ -5412,13 +5412,17 @@ run(function()
 		gone rather than lingering at its last count.
 	]]
 	local function liveAmount(item)
-		local tool = item.tool
-		if typeof(tool) ~= 'Instance' then
-			return tonumber(item.amount) or 1
-		end
-		if not tool.Parent then return nil end
+		local cached = tonumber(item.amount) or 1
 	
-		return tonumber(tool:GetAttribute('Amount')) or tonumber(item.amount) or 1
+		local tool = item.tool
+		if typeof(tool) ~= 'Instance' then return cached end
+	
+		-- Falls back to the cached count rather than reporting the item gone. The game
+		-- replaces these Instances as an inventory changes, so a snapshot taken when the
+		-- player was first seen goes stale on its own - treating unparented as "used up"
+		-- therefore deleted every icon a moment after it was drawn, which is why the display
+		-- emptied out entirely.
+		return tonumber(tool:GetAttribute('Amount')) or cached
 	end
 	
 	--[[
@@ -5528,8 +5532,6 @@ run(function()
 			if not at then return end
 	
 			local have = liveAmount(item)
-			if not have then return end
-	
 			if not totals[item.itemType] then
 				totals[item.itemType] = 0
 				rank[item.itemType] = at
