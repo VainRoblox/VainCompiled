@@ -627,6 +627,48 @@ run(function()
 		self.hooked = true
 
 		if textChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+			--[[
+				Commands are read from the plain MessageReceived event as well as from the
+				callback hook below.
+
+				The hook is the only thing that can add a tag to a message or hide a
+				command from chat, but it can only attach to a callback the game has
+				actually set on TextChatService - and a game is free never to set one.
+				Bedwars sets OnIncomingMessage on its Clan channel and nowhere else, so
+				there was nothing to hook, the hook silently never installed, and no
+				command has ever run there. It also needs getcallbackvalue and hookfunction
+				from the executor, which is a second way to end up with nothing.
+
+				This event needs neither. It cannot hide the message or draw the tag, so it
+				does not replace the hook - it just means the commands themselves work
+				everywhere.
+
+				Messages are remembered by id so one arriving through both paths still only
+				runs once, and the table is emptied once it grows rather than kept forever.
+			]]
+			local processed = {}
+			local count = 0
+
+			function self:once(message, plr)
+				local id = message.MessageId or message
+				if processed[id] then return false end
+
+				if count > 200 then
+					table.clear(processed)
+					count = 0
+				end
+				processed[id] = true
+				count += 1
+				return true
+			end
+
+			vain:Clean(textChatService.MessageReceived:Connect(function(message)
+				local plr = message.TextSource and playersService:GetPlayerByUserId(message.TextSource.UserId)
+				if not plr or not self:once(message, plr) then return end
+
+				self:process(message.Text, plr)
+			end))
+
 			if getcallbackvalue and restorefunction and hookfunction then
 				local old
 				task.spawn(function()
@@ -658,7 +700,13 @@ run(function()
 										data.Text = msg.Text
 									end
 
-									self:newchat(data, plr, msg.Status ~= Enum.TextChatMessageStatus.Success, msg.Text)
+									if self:once(msg, plr) then
+										self:newchat(data, plr, msg.Status ~= Enum.TextChatMessageStatus.Success, msg.Text)
+									else
+										-- Already run by the event above; this pass is only
+										-- here to draw the tag.
+										data.PrefixText = self:tag(plr, true, true)..(data.PrefixText or '')
+									end
 								end
 
 								return data
