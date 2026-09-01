@@ -554,7 +554,15 @@ end)
 	attacks come from the precastHitbox telegraph the game sends for all of them.
 ]]
 run(function()
-	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, StepMove
+	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, StepMove, Debug
+
+	local function say(text)
+		if not (Debug ~= nil and Debug.Enabled) then return end
+		if vain and vain.CreateNotification then
+			vain:CreateNotification('Auto Farm', text, 4, 'info')
+		end
+		warn('[Auto Farm] ' .. text)
+	end
 
 	local pathfindingService = cloneref(game:GetService('PathfindingService'))
 
@@ -598,19 +606,35 @@ run(function()
 		end
 	end
 
+	--[[
+		How long a warning is worth avoiding.
+
+		This used to be worked out from the startTime the server sent, compared against
+		GetServerTimeNow. If that field is on any other clock - tick, os.clock, a count
+		since the fight began - every zone is born already expired and swept away before it
+		can be stepped out of, which looks exactly like the dodge not working at all.
+
+		We are told about the warning as it is cast, so now is a better start than any
+		number in the message, and the message is only trusted for how long to wait.
+	]]
+	local function windowFor(delay)
+		return workspace:GetServerTimeNow() + math.clamp(tonumber(delay) or 0.3, 0.1, 6) + 0.5
+	end
+
 	local function setupDodge()
 		if dodgeReady then return end
 		dodgeReady = true
 
-		pcall(hookPrecast, function(kind, a, b, delay, startTime)
-			local start = tonumber(startTime) or workspace:GetServerTimeNow()
-			local expire = start + (tonumber(delay) or 0.3) + 0.4
+		local hooked, hookErr = pcall(hookPrecast, function(kind, a, b, delay)
 			if kind == 'cube' and typeof(a) == 'CFrame' and typeof(b) == 'Vector3' then
-				table.insert(dangers, {kind = 'cube', cf = a, size = b, expire = expire})
+				table.insert(dangers, {kind = 'cube', cf = a, size = b, expire = windowFor(delay)})
+				say(string.format('cube telegraph %.0fx%.0f in %.1fs', b.X, b.Z, tonumber(delay) or 0))
 			elseif kind == 'circle' and typeof(a) == 'Vector3' and tonumber(b) then
-				table.insert(dangers, {kind = 'circle', pos = a, radius = tonumber(b), expire = expire})
+				table.insert(dangers, {kind = 'circle', pos = a, radius = tonumber(b), expire = windowFor(delay)})
+				say(string.format('circle telegraph r=%.0f in %.1fs', tonumber(b), tonumber(delay) or 0))
 			end
 		end)
+		say(hooked and 'precast hook installed' or ('precast hook FAILED: ' .. tostring(hookErr)))
 		pcall(function()
 			local util = replicatedStorage:FindFirstChild('Utility')
 			local bn = util and util:FindFirstChild('BridgeNet2')
@@ -619,9 +643,7 @@ run(function()
 			local bridge = BridgeNet2.ReferenceBridge('precastHitbox')
 			bridge:Connect(function(data)
 				if type(data) ~= 'table' then return end
-				local start = tonumber(data.startTime) or workspace:GetServerTimeNow()
-				local delay = tonumber(data.delayUntilAttack) or 0.3
-				local expire = start + delay + 0.4
+				local expire = windowFor(data.delayUntilAttack)
 				if typeof(data.cframe) == 'CFrame' and typeof(data.size) == 'Vector3' then
 					table.insert(dangers, { kind = 'cube', cf = data.cframe, size = data.size, expire = expire })
 				elseif typeof(data.position) == 'Vector3' and tonumber(data.radius) then
@@ -1189,6 +1211,7 @@ run(function()
 						local safe = dodgeTarget(hrp.Position) or projectileDodge(hrp.Position)
 						if safe then
 							clearPath()
+							say(string.format('dodging to %.0f studs away', (safe - hrp.Position).Magnitude))
 							goTo(hum, hrp, safe)
 							return
 						end
@@ -1328,6 +1351,8 @@ run(function()
 		Tooltip = 'How close to get before swinging. Melee wants this low, a staff can sit further back (default 12)' })
 	FarmDelay = AutoFarm:CreateSlider({ Name = 'Loop Delay', Min = 0, Max = 0.5, Default = 0.1, Decimal = 100, Suffix = 's',
 		Tooltip = 'Time between farm ticks' })
+	Debug = AutoFarm:CreateToggle({ Name = 'Debug', Default = false,
+		Tooltip = 'Reports every telegraph seen and every dodge taken, so a dodge that is not happening can be told apart from one that is happening and not helping' })
 	StepMove = AutoFarm:CreateToggle({ Name = 'Step Movement', Default = true,
 		Tooltip = 'Moves in small steps capped at your own walk speed instead of asking the humanoid to walk. Goes exactly where it is sent, and covers the same ground per second a walking player does' })
 	Strafe = AutoFarm:CreateToggle({ Name = 'Strafe', Default = true,
