@@ -10867,32 +10867,32 @@ kitRun(function()
         return placer and placer:GetAttribute('Team')
     end
 
+    --[[
+        The colour of the team a hive belongs to.
+
+        Taken from the owner's own TeamColor, which is what the rest of Vain colours by -
+        so a hive reads the same as the nametags above the players who own it. The queue's
+        team list was the wrong source: its ids and a player's team are not numbered from
+        the same end, so a blue team came out orange.
+
+        Anyone still in the server on that team will do when whoever placed it has left.
+    ]]
     local function hiveColor(hive)
+        local placer = playersService:GetPlayerByUserId(hive:GetAttribute('PlacedByUserId') or 0)
+        if placer and tostring(placer.TeamColor) ~= 'White' then
+            return placer.TeamColor.Color
+        end
+
         local team = hiveTeam(hive)
-        if not team then return Color3.new(1, 1, 1) end
-
-        local queue = bedwars.QueueMeta[store.queueType]
-        local teams = queue and queue.teams
-        if not teams then return Color3.new(1, 1, 1) end
-
-        --[[
-            The team a player carries is a number; the id on a queue's team is a string,
-            and the two are not always numbered from the same end. Matching on the id is
-            tried first and position second, because reading the colour off the wrong team
-            is worse than leaving it plain.
-        ]]
-        local entry
-        for _, t in teams do
-            if tonumber(t.id) == team then
-                entry = t
-                break
+        if team then
+            for _, plr in playersService:GetPlayers() do
+                if plr:GetAttribute('Team') == team and tostring(plr.TeamColor) ~= 'White' then
+                    return plr.TeamColor.Color
+                end
             end
         end
-        entry = entry or teams[team + 1] or teams[team]
 
-        local hex = entry and entry.colorHex
-        if type(hex) ~= 'number' then return Color3.new(1, 1, 1) end
-        return Color3.fromRGB(math.floor(hex / 65536) % 256, math.floor(hex / 256) % 256, hex % 256)
+        return Color3.new(1, 1, 1)
     end
 
     --[[
