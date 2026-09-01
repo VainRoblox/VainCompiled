@@ -865,6 +865,7 @@ run(function()
 		AppController = require(replicatedStorage['rbxts_include']['node_modules']['@easy-games']['game-core'].out.client.controllers['app-controller']).AppController,
 		BedBreakEffectMeta = require(replicatedStorage.TS.locker['bed-break-effect']['bed-break-effect-meta']).BedBreakEffectMeta,
 		BedwarsKitMeta = require(replicatedStorage.TS.games.bedwars.kit['bedwars-kit-meta']).BedwarsKitMeta,
+		BeeNetController = Knit.Controllers.BeeNetController,
 		BlockBreaker = Knit.Controllers.BlockBreakController.blockBreaker,
 		BlockController = require(replicatedStorage['rbxts_include']['node_modules']['@easy-games']['block-engine'].out).BlockEngine,
 		BlockEngine = require(lplr.PlayerScripts.TS.lib['block-engine']['client-block-engine']).ClientBlockEngine,
@@ -10899,13 +10900,24 @@ kitRun(function()
         local teams = queue and queue.teams
         if not teams then return Color3.new(1, 1, 1) end
 
-        for _, entry in teams do
-            if tonumber(entry.id) == team and type(entry.colorHex) == 'number' then
-                local hex = entry.colorHex
-                return Color3.fromRGB(math.floor(hex / 65536) % 256, math.floor(hex / 256) % 256, hex % 256)
+        --[[
+            The team a player carries is a number; the id on a queue's team is a string,
+            and the two are not always numbered from the same end. Matching on the id is
+            tried first and position second, because reading the colour off the wrong team
+            is worse than leaving it plain.
+        ]]
+        local entry
+        for _, t in teams do
+            if tonumber(t.id) == team then
+                entry = t
+                break
             end
         end
-        return Color3.new(1, 1, 1)
+        entry = entry or teams[team + 1] or teams[team]
+
+        local hex = entry and entry.colorHex
+        if type(hex) ~= 'number' then return Color3.new(1, 1, 1) end
+        return Color3.fromRGB(math.floor(hex / 65536) % 256, math.floor(hex / 256) % 256, hex % 256)
     end
 
     --[[
@@ -10941,7 +10953,22 @@ kitRun(function()
             if on(LimitToItem) and not heldIs('bee_net') then return end
             if on(EquipNet) and not equipNet() then return end
 
-            bedwars.Client:Get('PickUpBee'):SendToServer({beeId = id})
+            --[[
+                Caught the way the game catches.
+
+                Sending the remote by hand delivers the id and nothing else - no swing
+                animation, no sound, and none of whatever else the controller does on the
+                way. Calling the controller runs the same path your own swing would, which
+                is both likelier to be accepted and indistinguishable from playing.
+
+                The raw send stays as a fallback for when the controller cannot be reached.
+            ]]
+            local sent = bedwars.BeeNetController and pcall(function()
+                bedwars.BeeNetController:trigger(lplr, v)
+            end)
+            if not sent then
+                bedwars.Client:Get('PickUpBee'):SendToServer({beeId = id})
+            end
 
             local delay = value(CollectDelay, 0.1)
             if delay > 0 then
@@ -11203,7 +11230,10 @@ kitRun(function()
     HiveESP = Beekeeper:CreateToggle({
         Name = 'Beehive ESP',
         Tooltip = 'Shows how many bees each hive is holding',
-        Function = function()
+        Function = function(callback)
+            if ShowOwn and ShowOwn.Object then ShowOwn.Object.Visible = callback end
+            if Background and Background.Object then Background.Object.Visible = callback end
+            if Color and Color.Object then Color.Object.Visible = callback and Background.Enabled end
             if Beekeeper.Enabled then
                 Beekeeper:Toggle()
                 Beekeeper:Toggle()
