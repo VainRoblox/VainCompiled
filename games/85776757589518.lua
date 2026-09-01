@@ -1134,6 +1134,45 @@ run(function()
 		return y
 	end
 
+	--[[
+		Getting back on the floor after leaving it.
+
+		Stepping refuses any destination without ground under it, so it never walks off an
+		edge - but it cannot help once something else has put you over one. Knocked off by
+		an attack, shoved by a pack, and every destination is now a long way below you, so
+		every step is refused and you simply keep going down.
+
+		So a fall is caught instead. Once the humanoid has been in freefall long enough that
+		it is not a jump, the floor beneath is found and it is put back on it. The drop is
+		bigger than a step, but it is downward and onto solid ground - which is where the
+		fall was heading anyway, only without the death at the end of it.
+	]]
+	local fallingSince
+
+	local function keepGrounded(hrp, hum)
+		local state = hum:GetState()
+		local falling = state == Enum.HumanoidStateType.Freefall
+
+		if not falling then
+			fallingSince = nil
+			return false
+		end
+
+		fallingSince = fallingSince or os.clock()
+		if os.clock() - fallingSince < 0.6 then return false end
+
+		groundParams.FilterDescendantsInstances = {lplr.Character}
+		local hit = workspace:Raycast(hrp.Position, Vector3.new(0, -600, 0), groundParams)
+		if not hit then return false end
+
+		fallingSince = nil
+		hrp.CFrame = CFrame.new(Vector3.new(hrp.Position.X, hit.Position.Y + 3, hrp.Position.Z))
+			* (hrp.CFrame - hrp.CFrame.Position)
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		say('caught a fall')
+		return true
+	end
+
 	local function stepTo(hrp, hum, goal)
 		local now = os.clock()
 		local dt = math.clamp(now - lastStep, 0, 0.3)
@@ -1413,6 +1452,12 @@ run(function()
 
 					local peaceful = lplr:FindFirstChild('peaceful')
 					if peaceful and peaceful.Value == true then return end
+
+					-- Before anything else: being in the air outranks every plan that
+					-- assumes standing on something.
+					if StepMove ~= nil and StepMove.Enabled and keepGrounded(hrp, hum) then
+						return
+					end
 
 					-- DODGE first: standing in a telegraphed attack costs more than a turn
 					-- spent fighting, so this outranks everything below it.
