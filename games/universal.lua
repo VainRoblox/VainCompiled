@@ -508,7 +508,10 @@ run(function()
 			return true
 		end
 
-		if arg == 'others' and plr ~= lplr then
+		-- Everyone but whoever sent it. Named 'all' because that is what it reads as in
+		-- chat, though the sender is deliberately not included - a command worth aiming at
+		-- a room is rarely one you want coming back at yourself.
+		if arg == 'all' and plr ~= lplr then
 			return true
 		end
 
