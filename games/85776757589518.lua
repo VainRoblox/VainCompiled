@@ -593,6 +593,11 @@ run(function()
 	-- scope yet, so the watcher captured a nil and threw on every model that arrived.
 	local enemyCache, lastScan = {}, 0
 
+	local function enemyPart(m)
+		return m.PrimaryPart or m:FindFirstChild('HumanoidRootPart') or m:FindFirstChild('Torso')
+			or m:FindFirstChild('UpperTorso') or m:FindFirstChildWhichIsA('BasePart')
+	end
+
 	local dangers = {}
 	local dodgeReady = false
 	local seenZones = 0
@@ -934,10 +939,6 @@ run(function()
 	end
 
 	-- cached list of enemy models (non-player Humanoids), refreshed periodically.
-	local function enemyPart(m)
-		return m.PrimaryPart or m:FindFirstChild('HumanoidRootPart') or m:FindFirstChild('Torso')
-			or m:FindFirstChild('UpperTorso') or m:FindFirstChildWhichIsA('BasePart')
-	end
 	local function rescan()
 		enemyCache = {}
 		pcall(function()
