@@ -39,7 +39,8 @@ local vain = shared.vain
 vain.Renames = vain.Renames or {Modules = {}, Options = {}}
 for old, new in {
 	Breaker = 'Nuker',
-	['Better Spectating'] = 'BetterSpectating'
+	['Better Spectating'] = 'BetterSpectating',
+	AutoAdetunde = 'Adetunde'
 } do
 	vain.Renames.Modules[old] = new
 end
@@ -5346,6 +5347,7 @@ run(function()
 	local Size
 	local Gap
 	local ShowAll
+	local Teammates
 	
 	-- The things worth knowing an enemy has. Seeded straight into the item list, so they can
 	-- be switched off or removed there like anything else rather than being nine settings of
@@ -5559,7 +5561,9 @@ run(function()
 				-- Someone who outranks you is not read either. Knowing what they carry is as
 				-- much a use of them as aiming at them, so this follows the same rule the
 				-- other render modules do.
-				if ent.Protected then
+				-- Teammates share your stock rather than stand between you and it, so what
+				-- they carry is noise on the screen rather than anything to act on.
+				if ent.Protected or (on(Teammates) and bedwars.sameTeam(entry.Player)) then
 					entry.Shown = false
 				else
 					refreshAdornee(entry, entry.Player)
@@ -5732,6 +5736,14 @@ run(function()
 		Name = 'Gap',
 		Tooltip = 'Pixels between the name and the icons\nDefault is 2',
 		Min = 0, Max = 40, Default = 2, Suffix = 'px'
+	})
+	Teammates = InventoryESP:CreateToggle({
+		Name = 'Ignore Teammates',
+		Tooltip = 'Hides what players on your own team are carrying',
+		Function = function()
+			task.spawn(refreshAll)
+		end,
+		Default = true
 	})
 	ShowAll = InventoryESP:CreateToggle({
 		Name = 'Show All',
@@ -8092,6 +8104,7 @@ run(function()
 	local Priority
 	local Notify
 	local KeepJump
+	local KeepMoving
 	
 	-- How long after firing an upgrade to treat the player as "upgrading". The block is
 	-- brief, and keeping the window tight matters: leaps and dashes legitimately zero
@@ -8099,6 +8112,7 @@ run(function()
 	local JUMP_WINDOW = 2
 	local upgradingUntil = 0
 	local lastJumpHeight, lastJumpPower
+	local lastWalkSpeed
 	
 	-- Level costs are the same for all three tracks: 2, 5 then 12 frost crystals
 	-- (FrostyHammerBalance.{ATTACK,SPEED,SHIELD}_LEVEL{1,2,3}_COST).
@@ -8171,12 +8185,13 @@ run(function()
 	end
 	
 	AutoAdetunde = vain.Categories.Kit:CreateModule({
-		Name = 'AutoAdetunde',
+		Name = 'Adetunde',
 		Function = function(callback)
 			if callback then
 				upgradingUntil = 0
 				AutoAdetunde:Clean(runService.RenderStepped:Connect(function()
-					if not (KeepJump.Enabled and entitylib.isAlive) then return end
+					if not entitylib.isAlive then return end
+					if not (KeepJump.Enabled or KeepMoving.Enabled) then return end
 					local humanoid = entitylib.character.Humanoid
 	
 					-- Remember the last non-zero values so there is something real to put
@@ -8184,15 +8199,37 @@ run(function()
 					-- both adjust these.
 					if humanoid.JumpHeight > 0 then lastJumpHeight = humanoid.JumpHeight end
 					if humanoid.JumpPower > 0 then lastJumpPower = humanoid.JumpPower end
+					if humanoid.WalkSpeed > 0 then lastWalkSpeed = humanoid.WalkSpeed end
 	
-					-- Only inside the upgrade window, so abilities that zero jumping on
-					-- purpose are left alone.
+					-- Only inside the upgrade window, so abilities that zero jumping or
+					-- movement on purpose are left alone.
 					if tick() >= upgradingUntil then return end
-					if lastJumpHeight and humanoid.JumpHeight <= 0 then
-						humanoid.JumpHeight = lastJumpHeight
+	
+					if KeepJump.Enabled then
+						if lastJumpHeight and humanoid.JumpHeight <= 0 then
+							humanoid.JumpHeight = lastJumpHeight
+						end
+						if lastJumpPower and humanoid.JumpPower <= 0 then
+							humanoid.JumpPower = lastJumpPower
+						end
 					end
-					if lastJumpPower and humanoid.JumpPower <= 0 then
-						humanoid.JumpPower = lastJumpPower
+	
+					--[[
+						Buying an upgrade roots you in place for the moment it takes. Speed is
+						put back the same way jumping is, and the two flags that root a
+						character without touching speed are cleared alongside it - either one
+						of those on its own is enough to leave you standing still.
+					]]
+					if KeepMoving.Enabled then
+						if lastWalkSpeed and humanoid.WalkSpeed <= 0 then
+							humanoid.WalkSpeed = lastWalkSpeed
+						end
+						if not humanoid.AutoRotate then
+							humanoid.AutoRotate = true
+						end
+						if humanoid.PlatformStand then
+							humanoid.PlatformStand = false
+						end
 					end
 				end))
 	
@@ -8215,7 +8252,7 @@ run(function()
 						upgradingUntil = tick() + JUMP_WINDOW
 						bedwars.Client:Get('UpgradeFrostyHammer'):CallServerAsync(upgrade):andThen(function(result)
 							if result ~= false and Notify.Enabled then
-								notif('AutoAdetunde', 'Upgraded '..tostring(upgrade):lower()..' to '..level, 3)
+								notif('Adetunde', 'Upgraded '..tostring(upgrade):lower()..' to '..level, 3)
 							end
 						end)
 					end)
@@ -8242,6 +8279,11 @@ run(function()
 	KeepJump = AutoAdetunde:CreateToggle({
 		Name = 'Keep Jump',
 		Tooltip = 'Restores your jump if buying an upgrade takes it away',
+		Default = true
+	})
+	KeepMoving = AutoAdetunde:CreateToggle({
+		Name = 'Keep Moving',
+		Tooltip = 'Lets you keep walking while an upgrade is bought',
 		Default = true
 	})
 	Notify = AutoAdetunde:CreateToggle({
