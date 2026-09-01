@@ -256,12 +256,16 @@ run(function()
 	end
 
 	entitylib.targetCheck = function(entity)
+		if entity.NPC then return true end
+		if isFriend(entity.Player) then return false end
+
+		-- Asked before the team logic. Returning on a TeamCheck first skipped it entirely
+		-- for any entity that has one.
+		if entity.Player and not select(2, whitelist:get(entity.Player)) then return false end
+
 		if entity.TeamCheck then
 			return entity:TeamCheck()
 		end
-		if entity.NPC then return true end
-		if isFriend(entity.Player) then return false end
-		if not select(2, whitelist:get(entity.Player)) then return false end
 		if vain.Categories.Main.Options['Teams by server'].Enabled then
 			return lplr.Team ~= entity.Player.Team and entity.Player.Team ~= teams.Neutral
 		end

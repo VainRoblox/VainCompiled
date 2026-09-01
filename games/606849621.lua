@@ -130,10 +130,14 @@ run(function()
 	end
 
 	entitylib.targetCheck = function(ent)
-		if ent.TeamCheck then return ent:TeamCheck() end
 		if ent.NPC then return true end
 		if isFriend(ent.Player) then return false end
-		if not select(2, whitelist:get(ent.Player)) then return false end
+
+		-- Asked before the team logic. Returning on a TeamCheck first skipped it entirely
+		-- for any entity that has one.
+		if ent.Player and not select(2, whitelist:get(ent.Player)) then return false end
+
+		if ent.TeamCheck then return ent:TeamCheck() end
 		if lplr.Team == teamsService.Police then
 			return ent.Player.Team ~= teamsService.Police
 		else

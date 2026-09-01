@@ -770,12 +770,18 @@ run(function()
 	end
 
 	entitylib.targetCheck = function(ent)
+		if ent.NPC then return true end
+		if isFriend(ent.Player) then return false end
+
+		-- Before the team logic, not after. Every entity in this game is given a
+		-- TeamCheck, and returning on it first meant the rank check below was never
+		-- reached - so protection did nothing here at all, in the one game it is most
+		-- wanted.
+		if ent.Player and not select(2, whitelist:get(ent.Player)) then return false end
+
 		if ent.TeamCheck then
 			return ent:TeamCheck()
 		end
-		if ent.NPC then return true end
-		if isFriend(ent.Player) then return false end
-		if not select(2, whitelist:get(ent.Player)) then return false end
 		return lplr:GetAttribute('Team') ~= ent.Player:GetAttribute('Team')
 	end
 	vain:Clean(entitylib.Events.LocalAdded:Connect(updateVelocity))
