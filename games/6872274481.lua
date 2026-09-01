@@ -5552,7 +5552,14 @@ run(function()
 	local function refreshAll()
 		for ent, entry in Entries do
 			if entry.Billboard.Parent and entry.Player and entry.Player.Parent then
-				refreshAdornee(entry.Billboard, entry.Player)
+				-- Someone who outranks you is not read either. Knowing what they are carrying
+				-- is as much a use of them as aiming at them, so this follows the same rule
+				-- the other render modules do rather than being the one gap left open.
+				if ent.Protected then
+					entry.Billboard.Enabled = false
+				else
+					refreshAdornee(entry.Billboard, entry.Player)
+				end
 			else
 				entry.Billboard:Destroy()
 				Entries[ent] = nil
