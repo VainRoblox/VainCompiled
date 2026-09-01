@@ -831,6 +831,16 @@ run(function()
 			whitelist.data = suc and type(res) == 'table' and res or whitelist.data
 			whitelist.localprio = whitelist:get(lplr)
 
+			-- Said once, the first time a list actually loads. Nothing else tells you what
+			-- rank you have: the tag is drawn over other people's heads and on your chat
+			-- messages, so the one person who cannot easily see it is you.
+			if not whitelist.saidrank then
+				whitelist.saidrank = true
+				local names = {[0] = 'Free', 'Premium', 'Privileged', 'Owner'}
+				local level = whitelist.localprio
+				notif('Vain', 'Loaded as '..(names[level] or ('rank '..tostring(level))), 8)
+			end
+
 			for _, v in whitelist.data.WhitelistedUsers do
 				if v.tags then
 					for _, tag in v.tags do
