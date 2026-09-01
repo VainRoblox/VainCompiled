@@ -566,6 +566,38 @@ run(function()
 	local dangers = {}
 	local dodgeReady = false
 
+	--[[
+		The telegraph taken at its source.
+
+		The module the game draws these with returns the very table it dispatches through,
+		and its own handler looks the shape up on that table each time one arrives - so
+		replacing the two entries on it puts us in front of every warning, with the exact
+		numbers the game is about to draw, before it draws anything. No second listener on
+		a bridge the game already owns, and nothing to recognise by sight.
+	]]
+	local function hookPrecast(note)
+		local modules = replicatedStorage:FindFirstChild('modules')
+		local module = modules and modules:FindFirstChild('PrecastHitbox')
+		if not module then return end
+
+		local precast = require(module)
+		if type(precast) ~= 'table' then return end
+
+		local oldCube, oldCircle = rawget(precast, 'Cube'), rawget(precast, 'Circle')
+		if oldCube then
+			precast.Cube = function(cframe, size, delay, startTime, properties)
+				note('cube', cframe, size, delay, startTime)
+				return oldCube(cframe, size, delay, startTime, properties)
+			end
+		end
+		if oldCircle then
+			precast.Circle = function(position, radius, delay, startTime, properties)
+				note('circle', position, radius, delay, startTime)
+				return oldCircle(position, radius, delay, startTime, properties)
+			end
+		end
+	end
+
 	local function setupDodge()
 		if dodgeReady then return end
 		dodgeReady = true
@@ -737,10 +769,42 @@ run(function()
 		costs more than it corrects.
 	]]
 	local waypoints, waypointIndex, pathGoal, pathBuiltAt = nil, 1, nil, 0
-	local lastPos, lastProgress = nil, 0
+	local lastPos, lastMoved, walkBlind = nil, 0, 0
 
 	local function clearPath()
 		waypoints, waypointIndex, pathGoal = nil, 1, nil
+	end
+
+	--[[
+		Noticing when we are not actually going anywhere.
+
+		A route can be found and still not be walkable - a doorway the game has not opened
+		yet, a waypoint on the far side of a barrier, a ledge the humanoid will not step
+		off - and the loop has no way to tell that from walking, because it keeps being
+		asked to move and keeps agreeing to. So progress is measured instead: if the
+		character has not covered any ground in a while, the route is thrown away and it
+		walks straight at the goal for a few seconds, which is both what gets it round most
+		obstructions and what stops it standing still.
+	]]
+	local STUCK_AFTER = 1.5
+	local STUCK_DISTANCE = 3
+	local BLIND_FOR = 3
+
+	local function stuck(hrp)
+		local now = os.clock()
+		if not lastPos then
+			lastPos, lastMoved = hrp.Position, now
+			return false
+		end
+
+		if (hrp.Position - lastPos).Magnitude > STUCK_DISTANCE then
+			lastPos, lastMoved = hrp.Position, now
+			return false
+		end
+
+		if now - lastMoved < STUCK_AFTER then return false end
+		lastPos, lastMoved = hrp.Position, now
+		return true
 	end
 
 	local function buildPath(hrp, goal)
@@ -760,8 +824,16 @@ run(function()
 	end
 
 	local function walkTo(hum, hrp, goal, direct)
-		-- Straight there when it is close and the route is unlikely to matter.
-		if direct or not (UsePathfinding and UsePathfinding.Enabled) then
+		if stuck(hrp) then
+			-- Pathing has stopped helping, so stop asking it for a while.
+			clearPath()
+			walkBlind = os.clock() + BLIND_FOR
+			hum.Jump = true
+		end
+
+		-- Straight there when it is close, when the route is unlikely to matter, or while
+		-- a route has just been given up on.
+		if direct or os.clock() < walkBlind or not (UsePathfinding and UsePathfinding.Enabled) then
 			hum:MoveTo(goal)
 			return
 		end
