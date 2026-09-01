@@ -554,7 +554,7 @@ end)
 	attacks come from the precastHitbox telegraph the game sends for all of them.
 ]]
 run(function()
-	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, StepMove, StepSpeed, Debug
+	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, StepMove, Debug
 
 	--[[
 		Chatter, which the Debug toggle controls.
@@ -1227,10 +1227,8 @@ run(function()
 		local distance = delta.Magnitude
 		if distance < 0.5 then return end
 
-		-- Your own walk speed by default, which is the pace the server expects. The slider
-		-- multiplies it, and anything above one is asking to be noticed.
+		-- Your own walk speed, which is the pace the server expects to see covered.
 		local speed = (hum.WalkSpeed > 0 and hum.WalkSpeed or 16)
-			* (StepSpeed ~= nil and StepSpeed.Value or 1)
 		local full = math.min(distance, speed * dt)
 		local direction = delta.Unit
 
@@ -1676,8 +1674,6 @@ run(function()
 		Tooltip = 'Reports every telegraph seen and every dodge taken, so a dodge that is not happening can be told apart from one that is happening and not helping' })
 	StepMove = AutoFarm:CreateToggle({ Name = 'Step Movement', Default = true,
 		Tooltip = 'Moves in small steps capped at your own walk speed instead of asking the humanoid to walk. Goes exactly where it is sent, and covers the same ground per second a walking player does' })
-	StepSpeed = AutoFarm:CreateSlider({ Name = 'Step Speed', Min = 1, Max = 3, Default = 1, Decimal = 10, Suffix = 'x',
-		Tooltip = 'Multiplies how far each step covers. 1 matches your real walk speed, which is what the server expects - raising it moves you faster than you could walk and is what gets noticed' })
 	Strafe = AutoFarm:CreateToggle({ Name = 'Strafe', Default = true,
 		Tooltip = 'Circles the enemy while fighting instead of standing still, so the ground attacks aimed at you land where you were' })
 	UsePathfinding = AutoFarm:CreateToggle({ Name = 'Pathfinding', Default = true,
