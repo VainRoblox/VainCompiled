@@ -615,8 +615,9 @@ run(function()
 		stepped onto, rather than being climbed in one frame.
 	]]
 	-- How much higher a destination may be before it stops being a step and starts being a
-	-- climb. The rate is handled separately, so this only decides what is reachable at all.
-	local MAX_RISE = 12
+	-- climb. Kept low on purpose: raising it let the farm haul itself up onto things it had
+	-- no business standing on, which is what was drawing the correction.
+	local MAX_RISE = 4
 	local MAX_DROP = 24
 
 	--[[
