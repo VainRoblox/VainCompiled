@@ -145,33 +145,63 @@ end
 -- joins later. Guarded by vain.Categories.Watchlist existing since only the "new"
 -- GUI theme creates that category right now.
 if vain.Categories.Watchlist then
+	-- Who has already been announced, so a rescan does not say it twice.
+	local notified = {}
+
 	local function notifyWatchlist(plr, left)
-		if table.find(vain.Categories.Watchlist.ListEnabled, plr.Name) then
-			local text = left
-				and (plr.DisplayName..' (@'..plr.Name..') has left the server.')
-				or (plr.DisplayName..' (@'..plr.Name..') is in the server!')
-			notif('Vain', text, 10, 'alert')
+		if not table.find(vain.Categories.Watchlist.ListEnabled, plr.Name) then return end
+
+		if left then
+			notified[plr] = nil
+			notif('Vain', plr.DisplayName..' (@'..plr.Name..') has left the server.', 10, 'alert')
+			return
 		end
+
+		-- Once per player per visit. The list is scanned again whenever it changes, and
+		-- without this, editing it would re-announce everyone already in the server.
+		if notified[plr] then return end
+		notified[plr] = true
+		notif('Vain', plr.DisplayName..' (@'..plr.Name..') is in the server!', 10, 'alert')
 	end
 
-	-- Deferred, not immediate: base.lua runs before finishLoading() calls vain:Load()
-	-- (see main.lua), which is what actually populates Watchlist.ListEnabled from the
-	-- save file - scanning right here would always see it empty, so nobody already in
-	-- the server would ever match. A couple seconds is comfortably more than Load()
-	-- (a local file read + a few property sets) ever takes. This is the ONLY scan of
-	-- current players - everything else is purely event-driven (PlayerAdded/
-	-- PlayerRemoving), no polling/interval anywhere.
-	task.spawn(function()
-		task.wait(2)
+	local function scanWatchlist()
 		for _, plr in playersService:GetPlayers() do
 			notifyWatchlist(plr)
 		end
+	end
+
+	--[[
+		Anyone already here has to be found by looking, since no join event will fire for
+		them - and the looking has to happen after the saved list has loaded.
+
+		Waiting a fixed two seconds and hoping was not enough. base.lua runs before
+		vain:Load() fills the list in, so a scan that lands early sees an empty list,
+		matches nobody, and silently never mentions the people who were already in the
+		server. On a slow load that is every time.
+
+		So it looks more than once, and again whenever the list itself changes - which
+		also means adding a name while sitting in a server tells you about them straight
+		away instead of only after they leave and come back. Repeats are free because
+		notifyWatchlist only speaks once per player.
+	]]
+	task.spawn(function()
+		for _, delay in {0.5, 2, 5, 10} do
+			task.wait(delay)
+			if vain.Loaded == nil then return end
+			scanWatchlist()
+		end
 	end)
+
+	if vain.Categories.Watchlist.Update then
+		vain:Clean(vain.Categories.Watchlist.Update.Event:Connect(scanWatchlist))
+	end
+
 	vain:Clean(playersService.PlayerAdded:Connect(function(plr)
 		notifyWatchlist(plr)
 	end))
 	vain:Clean(playersService.PlayerRemoving:Connect(function(plr)
 		notifyWatchlist(plr, true)
+		notified[plr] = nil
 	end))
 end
 
