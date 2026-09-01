@@ -5353,6 +5353,7 @@ run(function()
 		'fireball',
 		'tnt',
 		'tesla_trap',
+		'glue_projectile',
 		'snap_trap',
 		'golden_apple'
 	}
@@ -5549,9 +5550,19 @@ run(function()
 		local billboard = Instance.new('BillboardGui')
 		billboard.Parent = Folder
 		billboard.Name = 'inventory'
-		-- Below the name, not through it. NameTags draws at hip height plus one, about 3.6
-		-- studs up, and this sat at 4 - just above it, so the two overlapped.
-		billboard.StudsOffsetWorldSpace = Vector3.new(0, Height and Height.Value or 2.8, 0)
+		--[[
+			Anchored to the same point the name is drawn at, then pushed down in screen space.
+	
+			The two are projected differently: NameTags works out a screen position itself,
+			while this is a billboard offset in world studs. A gap measured in studs is worth
+			a lot of pixels up close and almost none far away, so no fixed value can hold them
+			apart - it overlapped at distance and drifted apart nearby.
+	
+			ExtentsOffset is applied after projection, in multiples of the billboard's own
+			size, so a value here means the same number of pixels at any range.
+		]]
+		billboard.StudsOffsetWorldSpace = Vector3.new(0, ent.HipHeight and (ent.HipHeight + 1) or 3.6, 0)
+		billboard.ExtentsOffset = Vector3.new(0, -(Height and Height.Value or 1.4), 0)
 		billboard.Size = UDim2.fromOffset(stripSize(), stripSize())
 		billboard.AlwaysOnTop = true
 		billboard.ClipsDescendants = false
@@ -5663,12 +5674,12 @@ run(function()
 		end
 	})
 	Height = InventoryESP:CreateSlider({
-		Name = 'Height',
-		Tooltip = 'How far above the player it sits\nDefault is 2.8',
-		Min = 0, Max = 8, Default = 2.8, Decimal = 10, Suffix = 'studs',
+		Name = 'Gap',
+		Tooltip = 'How far below the name it sits\nDefault is 1.4',
+		Min = 0, Max = 5, Default = 1.4, Decimal = 10,
 		Function = function(value)
 			for _, entry in Entries do
-				entry.Billboard.StudsOffsetWorldSpace = Vector3.new(0, value, 0)
+				entry.Billboard.ExtentsOffset = Vector3.new(0, -value, 0)
 			end
 		end
 	})
