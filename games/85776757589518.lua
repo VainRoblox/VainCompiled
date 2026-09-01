@@ -554,7 +554,7 @@ end)
 	attacks come from the precastHitbox telegraph the game sends for all of them.
 ]]
 run(function()
-	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, StepMove, Debug
+	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, StepMove, Fly, Debug
 
 	--[[
 		Chatter, which the Debug toggle controls.
@@ -1321,6 +1321,29 @@ run(function()
 		local dt = math.clamp(now - lastStep, 0, 0.3)
 		lastStep = now
 
+		--[[
+			Flying, which is the same move without the floor.
+
+			Every awkward thing in this function exists because a walker needs somewhere to
+			put its feet: ledges to refuse, corners to slide around, steps to shorten. None
+			of that applies in the air, so the goal is simply travelled towards in three
+			dimensions - including up to an enemy standing above you - at exactly the pace a
+			walk would have covered. The distance per second the server sees is unchanged;
+			only the need for ground beneath it goes away.
+		]]
+		if Fly ~= nil and Fly.Enabled then
+			local direct = goal - hrp.Position
+			local range = direct.Magnitude
+			if range < 0.5 then return end
+
+			local speed = (hum.WalkSpeed > 0 and hum.WalkSpeed or 16)
+			local travel = math.min(range, speed * dt)
+			hrp.CFrame = CFrame.new(hrp.Position + direct.Unit * travel)
+				* (hrp.CFrame - hrp.CFrame.Position)
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			return
+		end
+
 		local delta = (goal - hrp.Position) * Vector3.new(1, 0, 1)
 		local distance = delta.Magnitude
 		if distance < 0.5 then return end
@@ -1703,7 +1726,9 @@ run(function()
 
 					-- Before anything else: being in the air outranks every plan that
 					-- assumes standing on something.
-					if StepMove ~= nil and StepMove.Enabled and keepGrounded(hrp, hum) then
+					if StepMove ~= nil and StepMove.Enabled
+						and not (Fly ~= nil and Fly.Enabled)
+						and keepGrounded(hrp, hum) then
 						return
 					end
 
@@ -1861,6 +1886,8 @@ run(function()
 		Tooltip = 'Reports every telegraph seen and every dodge taken, so a dodge that is not happening can be told apart from one that is happening and not helping' })
 	StepMove = AutoFarm:CreateToggle({ Name = 'Step Movement', Default = true,
 		Tooltip = 'Moves in small steps capped at your own walk speed instead of asking the humanoid to walk. Goes exactly where it is sent, and covers the same ground per second a walking player does' })
+	Fly = AutoFarm:CreateToggle({ Name = 'Fly', Default = false,
+		Tooltip = 'Moves through the air instead of along the ground, rising to an enemy that is above you. Still limited to your walk speed, so the ground it covers per second is unchanged - it simply stops needing a floor, which is what the ledges and corners were costing' })
 	Strafe = AutoFarm:CreateToggle({ Name = 'Strafe', Default = true,
 		Tooltip = 'Circles the enemy while fighting instead of standing still, so the ground attacks aimed at you land where you were' })
 	UsePathfinding = AutoFarm:CreateToggle({ Name = 'Pathfinding', Default = true,
