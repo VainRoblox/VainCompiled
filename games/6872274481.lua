@@ -5740,16 +5740,35 @@ run(function()
 	local Folder = Instance.new('Folder')
 	Folder.Parent = vain.gui
 	
+	--[[
+		Every kit whose gimmick is picking things up off the map, and the tags its things
+		carry. Several of them scatter more than one kind, so tags are a list.
+	
+		Icon is optional. Where the collectible has an item that looks like it, that item's
+		icon reads better than anything else; where it does not, the kit's own render image is
+		used instead. That is what lets a kit be added here by tag alone, and it is why the
+		newer kits below do not need an icon invented for them.
+	]]
 	local ESPKits = {
-		alchemist = {'alchemist_ingedients', 'wild_flower'},
-		beekeeper = {'bee', 'bee'},
-		bigman = {'treeOrb', 'natures_essence_1'},
-		ghost_catcher = {'ghost', 'ghost_orb'},
-		metal_detector = {'hidden-metal', 'iron'},
-		sheep_herder = {'SheepModel', 'purple_hay_bale'},
-		sorcerer = {'alchemy_crystal', 'wild_flower'},
-		star_collector = {'stars', 'crit_star'}
+		alchemist = {icon = 'wild_flower', tags = {'alchemist_ingedients'}},
+		axolotl = {tags = {'axolotl_data'}},
+		beekeeper = {icon = 'bee', tags = {'bee', 'flower-bee', 'beehive'}},
+		bigman = {icon = 'natures_essence_1', tags = {'treeOrb'}},
+		ghost_catcher = {icon = 'ghost_orb', tags = {'ghost'}},
+		jellyfish = {tags = {'jellyfish'}},
+		mage = {tags = {'ElementTome'}},
+		metal_detector = {icon = 'iron', tags = {'hidden-metal'}},
+		sheep_herder = {icon = 'purple_hay_bale', tags = {'SheepModel', 'WoolSheep'}},
+		sorcerer = {icon = 'wild_flower', tags = {'alchemy_crystal'}},
+		spirit_catcher = {tags = {'spirit'}},
+		star_collector = {icon = 'crit_star', tags = {'stars'}}
 	}
+	
+	-- The kit's own portrait, for the collectibles that have no item standing in for them.
+	local function kitImage(kit)
+		local meta = bedwars.BedwarsKitMeta[kit]
+		return meta and meta.renderImage or ''
+	end
 	
 	-- Settings are created after CreateModule returns, so they can still be nil while this
 	-- file is executing - and the module can be switched on inside that window when the GUI
@@ -5775,6 +5794,24 @@ run(function()
 		if v:IsA('Model') then return v.PrimaryPart or v:FindFirstChildWhichIsA('BasePart', true) end
 	end
 	
+	--[[
+		How far above the object's own middle to sit.
+	
+		This used to be a flat three studs, which is most of a player's height - so on a bee
+		lying on the floor the icon floated well clear of it with nothing to say what it was
+		pointing at. Measured from the thing itself instead, the icon rests on top of whatever
+		it marks, whether that is a bee or a sheep.
+	]]
+	local function iconHeight(v, adornee)
+		local size
+		if v:IsA('Model') then
+			local ok, extents = pcall(v.GetExtentsSize, v)
+			size = ok and extents or nil
+		end
+		size = size or adornee.Size
+		return math.clamp(size.Y * 0.5, 0.5, 4)
+	end
+	
 	local function Added(v, icon)
 		local adornee = adorneeOf(v)
 		if not adornee or Reference[v] then return end
@@ -5782,7 +5819,7 @@ run(function()
 		local billboard = Instance.new('BillboardGui')
 		billboard.Parent = Folder
 		billboard.Name = icon
-		billboard.StudsOffsetWorldSpace = Vector3.new(0, 3, 0)
+		billboard.StudsOffsetWorldSpace = Vector3.new(0, iconHeight(v, adornee), 0)
 		billboard.Size = UDim2.fromOffset(36, 36)
 		billboard.AlwaysOnTop = true
 		billboard.ClipsDescendants = false
@@ -5796,7 +5833,7 @@ run(function()
 		image.BackgroundColor3 = backgroundColor()
 		image.BackgroundTransparency = 1 - (on(Background) and (Color.Opacity or 0.5) or 0)
 		image.BorderSizePixel = 0
-		image.Image = bedwars.getIcon({itemType = icon}, true)
+		image.Image = icon
 		image.Parent = billboard
 		local uicorner = Instance.new('UICorner')
 		uicorner.CornerRadius = UDim.new(0, 4)
@@ -5858,8 +5895,12 @@ run(function()
 					for v in Reference do
 						Removed(v)
 					end
+	
 					if kit then
-						addKit(kit[1], kit[2])
+						local icon = kit.icon and bedwars.getIcon({itemType = kit.icon}, true) or kitImage(store.equippedKit)
+						for _, tag in kit.tags do
+							addKit(tag, icon)
+						end
 					end
 				end
 	
