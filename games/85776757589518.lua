@@ -657,9 +657,75 @@ run(function()
 		return how
 	end
 
+	--[[
+		The attacks that arrive as models.
+
+		The telegraph module was never the whole story: a Dark Mage's lane is a MODEL called
+		npcMageSpikes, dropped straight into the workspace, and four mages make four of
+		them. Nothing about that goes through PrecastHitbox, which is why the hook sat at
+		zero telegraphs while the floor was covered in red.
+
+		There is no single prefix to key on: the Dark Mage's is npcMageSpikes and the big
+		demon's is bigMageBeam. What they share is being named after the attack, so the
+		words are matched instead of a prefix, and anything with a Humanoid is skipped since
+		that is a mob rather than an attack. The zone is the model's own bounding box,
+		re-measured while it lives, because these grow into place as the warning plays.
+
+		A model that arrives and matches nothing is reported under Debug rather than being
+		ignored quietly - that is how the next attack nobody has seen yet gets named.
+	]]
+	local ATTACK_WORDS = {
+		'npc', 'beam', 'spike', 'blast', 'slam', 'wave', 'aoe', 'laser', 'cone',
+		'ring', 'circle', 'explos', 'attack', 'strike', 'breath', 'nova', 'shock',
+		'flame', 'burn', 'bolt', 'crush', 'stomp', 'smash', 'swipe', 'hitbox',
+	}
+	local unnamed = {}
+
+	local function looksLikeAttack(name)
+		local lower = name:lower()
+		for _, word in ATTACK_WORDS do
+			if lower:find(word, 1, true) then return true end
+		end
+		return false
+	end
+
+	local function watchAttackModels()
+		workspace.ChildAdded:Connect(function(object)
+			if not object:IsA('Model') then return end
+			if object:FindFirstChildOfClass('Humanoid') then return end
+
+			if not looksLikeAttack(object.Name) then
+				if not unnamed[object.Name] then
+					unnamed[object.Name] = true
+					say('unmatched model: ' .. object.Name)
+				end
+				return
+			end
+
+			local ok, cf, size = pcall(function()
+				local boxCf, boxSize = object:GetBoundingBox()
+				return boxCf, boxSize
+			end)
+			if not ok or typeof(cf) ~= 'CFrame' then return end
+
+			table.insert(dangers, {
+				kind = 'cube',
+				model = object,
+				cf = cf,
+				size = size,
+				expire = workspace:GetServerTimeNow() + 10,
+			})
+			seenZones += 1
+			say('attack model: ' .. object.Name)
+		end)
+	end
+
 	local function setupDodge()
 		if dodgeReady then return end
 		dodgeReady = true
+
+		local watched, watchErr = pcall(watchAttackModels)
+		announce(watched and 'attack model watcher installed' or ('attack model watcher FAILED: ' .. tostring(watchErr)))
 
 
 		local hooked, how = pcall(hookPrecast, function(kind, a, b, delay)
@@ -768,6 +834,21 @@ run(function()
 	local DODGE_RINGS = {14, 22, 32, 45, 60}
 	local DODGE_SAMPLES = 16
 
+	-- A zone backed by a model is measured from it each pass and is over when it goes.
+	local function liveZone(d)
+		if not d.model then return true end
+		if not d.model.Parent then return false end
+
+		local ok, cf, size = pcall(function()
+			local boxCf, boxSize = d.model:GetBoundingBox()
+			return boxCf, boxSize
+		end)
+		if ok and typeof(cf) == 'CFrame' then
+			d.cf, d.size = cf, size
+		end
+		return true
+	end
+
 	local function anyDanger(pos, margin)
 		for _, d in dangers do
 			if inDanger(pos, d, margin) then return true end
@@ -778,7 +859,8 @@ run(function()
 	local function dodgeTarget(pos)
 		local now = workspace:GetServerTimeNow()
 		for i = #dangers, 1, -1 do
-			if now > dangers[i].expire then table.remove(dangers, i) end
+			local d = dangers[i]
+			if now > d.expire or not liveZone(d) then table.remove(dangers, i) end
 		end
 		if #dangers == 0 then return nil end
 
