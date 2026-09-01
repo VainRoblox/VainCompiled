@@ -601,42 +601,60 @@ run(function()
 		numbers the game is about to draw, before it draws anything. No second listener on
 		a bridge the game already owns, and nothing to recognise by sight.
 	]]
-	local function hookPrecast(note)
+	--[[
+		Finding the table the game is actually dispatching through.
+
+		Requiring the module looked right and did nothing: an executor keeps its own module
+		cache, so `require` hands back a FRESH copy of PrecastHitbox - its own Cube and
+		Circle, its own bridge connection - while the game carries on calling the original.
+		The hook installed perfectly and never received a single telegraph, which is exactly
+		what was reported.
+
+		So the live table is looked for among everything already in memory instead: it is
+		the one holding both a Cube and a Circle function, and it is the one the game's own
+		handler indexes each time a warning arrives. Requiring stays as a fallback for
+		executors without getgc, where it is better than nothing even if it is a copy.
+	]]
+	local function findPrecast()
+		if getgc then
+			local ok, found = pcall(function()
+				for _, value in getgc(true) do
+					if type(value) == 'table'
+						and type(rawget(value, 'Cube')) == 'function'
+						and type(rawget(value, 'Circle')) == 'function' then
+						return value
+					end
+				end
+			end)
+			if ok and found then return found, 'live table' end
+		end
+
 		local modules = replicatedStorage:FindFirstChild('modules')
 		local module = modules and modules:FindFirstChild('PrecastHitbox')
-		if not module then return end
+		if not module then return nil end
 
-		local precast = require(module)
-		if type(precast) ~= 'table' then return end
-
-		local oldCube, oldCircle = rawget(precast, 'Cube'), rawget(precast, 'Circle')
-		if oldCube then
-			precast.Cube = function(cframe, size, delay, startTime, properties)
-				note('cube', cframe, size, delay, startTime)
-				return oldCube(cframe, size, delay, startTime, properties)
-			end
-		end
-		if oldCircle then
-			precast.Circle = function(position, radius, delay, startTime, properties)
-				note('circle', position, radius, delay, startTime)
-				return oldCircle(position, radius, delay, startTime, properties)
-			end
-		end
+		local ok, required = pcall(require, module)
+		if ok and type(required) == 'table' then return required, 'required copy' end
+		return nil
 	end
 
-	--[[
-		How long a warning is worth avoiding.
+	local function hookPrecast(note)
+		local precast, how = findPrecast()
+		if not precast then error('PrecastHitbox not found', 0) end
 
-		This used to be worked out from the startTime the server sent, compared against
-		GetServerTimeNow. If that field is on any other clock - tick, os.clock, a count
-		since the fight began - every zone is born already expired and swept away before it
-		can be stepped out of, which looks exactly like the dodge not working at all.
+		local oldCube, oldCircle = rawget(precast, 'Cube'), rawget(precast, 'Circle')
+		if not (oldCube and oldCircle) then error('PrecastHitbox has no Cube/Circle', 0) end
 
-		We are told about the warning as it is cast, so now is a better start than any
-		number in the message, and the message is only trusted for how long to wait.
-	]]
-	local function windowFor(delay)
-		return workspace:GetServerTimeNow() + math.clamp(tonumber(delay) or 0.3, 0.1, 6) + 0.5
+		precast.Cube = function(cframe, size, delay, startTime, properties)
+			note('cube', cframe, size, delay, startTime)
+			return oldCube(cframe, size, delay, startTime, properties)
+		end
+		precast.Circle = function(position, radius, delay, startTime, properties)
+			note('circle', position, radius, delay, startTime)
+			return oldCircle(position, radius, delay, startTime, properties)
+		end
+
+		return how
 	end
 
 	local function setupDodge()
@@ -644,7 +662,7 @@ run(function()
 		dodgeReady = true
 
 
-		local hooked, hookErr = pcall(hookPrecast, function(kind, a, b, delay)
+		local hooked, how = pcall(hookPrecast, function(kind, a, b, delay)
 			if kind == 'cube' and typeof(a) == 'CFrame' and typeof(b) == 'Vector3' then
 				table.insert(dangers, {kind = 'cube', cf = a, size = b, expire = windowFor(delay)})
 				seenZones += 1
@@ -655,7 +673,8 @@ run(function()
 				say(string.format('circle telegraph r=%.0f in %.1fs', tonumber(b), tonumber(delay) or 0))
 			end
 		end)
-		announce(hooked and 'telegraph hook installed' or ('telegraph hook FAILED: ' .. tostring(hookErr)))
+		announce(hooked and ('telegraph hook installed via ' .. tostring(how))
+			or ('telegraph hook FAILED: ' .. tostring(how)))
 		pcall(function()
 			local util = replicatedStorage:FindFirstChild('Utility')
 			local bn = util and util:FindFirstChild('BridgeNet2')
