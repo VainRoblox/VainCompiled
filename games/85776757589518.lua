@@ -1062,6 +1062,11 @@ run(function()
 
 		refreshBarriers()
 
+		-- Flying needs no floor, and demanding one is why it never dodged: every candidate
+		-- was thrown out for having nothing underneath it, which is the normal state of
+		-- affairs when you are in the air.
+		local needFooting = mode() ~= 'Fly'
+
 		--[[
 			Straight out first, before sweeping for somewhere nice.
 
@@ -1081,7 +1086,7 @@ run(function()
 				local exit = safeSpot(pos, d, margin + 3)
 				local travel = (exit - pos).Magnitude
 				if (not quickestDist or travel < quickestDist)
-					and groundAt(exit, pos.Y)
+					and (not needFooting or groundAt(exit, pos.Y))
 					and not anyDanger(exit, margin + 3)
 					and not insideBarrier(exit, 2)
 					and not crossesBarrier(pos, exit) then
@@ -1101,7 +1106,7 @@ run(function()
 				-- returned spots over a ledge or inside geometry, the step refused them
 				-- every tick, and the farm stood still announcing a dodge it could not
 				-- take - which is exactly what standing still while logging looked like.
-				local footing = groundAt(candidate, pos.Y)
+				local footing = not needFooting or groundAt(candidate, pos.Y)
 
 				if footing
 					and not anyDanger(candidate, margin + 3)
@@ -1485,18 +1490,34 @@ run(function()
 		the farm tick; getting there is left to a heartbeat, which covers the same ground
 		per second in sixty small pieces rather than ten large ones.
 	]]
-	local moveGoal
+	local moveGoal, moveSetAt = nil, 0
 
-	local lastGoal
+	--[[
+		Kept fresh, both ways.
+
+		Walking only reissued the order when the destination had moved more than a few
+		studs, which sounds thrifty and is why it stood still: a strafe circle at a fixed
+		radius rarely moves its target that far, so the humanoid finished the walk it had
+		been given and was never given another. Reissuing on a timer as well fixes that,
+		and costs nothing - MoveTo to where you are already heading is free.
+
+		Flying and stepping had the mirror image. The destination is set by the farm tick
+		and acted on by the heartbeat, so a tick that sets nothing leaves the heartbeat
+		flying at whatever it was told last - which is how it ended up hovering over the
+		spot where something used to be. A destination nobody has renewed is dropped.
+	]]
+	local lastGoal, lastIssued = nil, 0
+
 	local function goTo(hum, hrp, goal)
 		if moving() then
-			moveGoal = goal
+			moveGoal, moveSetAt = goal, os.clock()
 			return
 		end
 		moveGoal = nil
 
-		if not lastGoal or (goal - lastGoal).Magnitude > 4 then
-			lastGoal = goal
+		local now = os.clock()
+		if not lastGoal or (goal - lastGoal).Magnitude > 4 or now - lastIssued > 0.25 then
+			lastGoal, lastIssued = goal, now
 			hum:MoveTo(goal)
 		end
 	end
@@ -1718,6 +1739,12 @@ run(function()
 
 			AutoFarm:Clean(runService.Heartbeat:Connect(function()
 				if not moving() or not moveGoal then return end
+				-- Nobody has renewed this in a while, so it is somewhere we used to want
+				-- to be rather than somewhere we are going.
+				if os.clock() - moveSetAt > 1 then
+					moveGoal = nil
+					return
+				end
 				local char = lplr.Character
 				local hrp = char and char:FindFirstChild('HumanoidRootPart')
 				local hum = char and char:FindFirstChildOfClass('Humanoid')
