@@ -10845,9 +10845,30 @@ kitRun(function()
         numbers rather than indexed directly. White when the team cannot be worked out,
         which reads as no answer rather than as a wrong one.
     ]]
-    local function hiveColor(hive)
+    --[[
+        Which team a hive belongs to.
+
+        Read off the block itself first. A hive cannot be broken by its own team, and that
+        is recorded on it as a Team<N>NoBreak attribute, so the block states its own side
+        without anyone having to still be in the server. Whoever placed it is the fallback,
+        for the case where the attribute is absent.
+    ]]
+    local function hiveTeam(hive)
+        local found
+        for name in hive:GetAttributes() do
+            local id = tonumber(name:match('^Team(%d+)NoBreak$'))
+            if id and (not found or id < found) then
+                found = id
+            end
+        end
+        if found then return found end
+
         local placer = playersService:GetPlayerByUserId(hive:GetAttribute('PlacedByUserId') or 0)
-        local team = placer and placer:GetAttribute('Team')
+        return placer and placer:GetAttribute('Team')
+    end
+
+    local function hiveColor(hive)
+        local team = hiveTeam(hive)
         if not team then return Color3.new(1, 1, 1) end
 
         local queue = bedwars.QueueMeta[store.queueType]
@@ -11036,13 +11057,21 @@ kitRun(function()
         corner.CornerRadius = UDim.new(0, 4)
         corner.Parent = frame
 
+        --[[
+            A fixed size rather than a scaled one.
+
+            TextScaled sizes the text to fill the box, so a single digit was blown up to a
+            different size than two and drawn well outside the plate - which is why a count
+            under ten looked like it was not there at all.
+        ]]
         local label = Instance.new('TextLabel')
         label.Name = 'Level'
         label.Size = UDim2.fromScale(1, 1)
         label.BackgroundTransparency = 1
         label.TextColor3 = hiveColor(hive)
         label.TextStrokeTransparency = 0.4
-        label.TextScaled = true
+        label.TextSize = 20
+        label.FontFace = uipallet.FontSemiBold
         label.RichText = true
         label.Parent = frame
 
@@ -11065,6 +11094,7 @@ kitRun(function()
             end
 
             label.Text = table.concat(parts, ' ')
+            label.TextColor3 = hiveColor(hive)
             billboard.Enabled = #parts > 0
         end
         refresh()
