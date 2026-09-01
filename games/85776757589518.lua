@@ -556,12 +556,29 @@ end)
 run(function()
 	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, StepMove, Debug
 
+	--[[
+		Chatter, which the Debug toggle controls.
+
+		Anything that happens repeatedly - a telegraph seen, a dodge taken - is quiet unless
+		asked for. It is called from setupDodge though, which runs once when the module is
+		switched on, so turning Debug on afterwards would never show the one thing worth
+		knowing: whether the hook installed at all.
+	]]
 	local function say(text)
 		if not (Debug ~= nil and Debug.Enabled) then return end
 		if vain and vain.CreateNotification then
 			vain:CreateNotification('Auto Farm', text, 4, 'info')
 		end
 		warn('[Auto Farm] ' .. text)
+	end
+
+	-- Said once each, whatever the toggle says, because a hook that failed to install is
+	-- not chatter - it is the difference between dodging and not.
+	local function announce(text)
+		warn('[Auto Farm] ' .. text)
+		if vain and vain.CreateNotification then
+			vain:CreateNotification('Auto Farm', text, 6, 'info')
+		end
 	end
 
 	local pathfindingService = cloneref(game:GetService('PathfindingService'))
@@ -573,6 +590,7 @@ run(function()
 	-- remember each danger zone, and walk out of it before it lands.
 	local dangers = {}
 	local dodgeReady = false
+	local seenZones = 0
 
 	--[[
 		The telegraph taken at its source.
@@ -621,60 +639,23 @@ run(function()
 		return workspace:GetServerTimeNow() + math.clamp(tonumber(delay) or 0.3, 0.1, 6) + 0.5
 	end
 
-	--[[
-		The zones as they appear on the floor, whoever drew them.
-
-		The hook above covers everything that goes through the game's own telegraph module,
-		which is every enemy that uses it - but that is one code path, and anything drawn
-		another way would never be seen. So the floor is watched as well.
-
-		The signature is exact on purpose. A telegraph is anchored, and deliberately
-		invisible to collision, raycasts AND touch, because it is decoration that must not
-		interfere with anything - the damage is applied server side. That last combination
-		is what no ordinary piece of map has: an earlier version of this dropped the
-		collision test, matched the room's barrier wall, and treated the doorway as a
-		permanent danger zone, which parked the farm for good.
-
-		A hard lifetime is kept for the same reason. A zone lasts as long as its part or
-		eight seconds, whichever comes first, so a mistake here can never hold us still
-		indefinitely again.
-	]]
-	local function watchTelegraphs()
-		workspace.ChildAdded:Connect(function(object)
-			if not object:IsA('Part') then return end
-			if not object.Anchored then return end
-			if object.CanCollide or object.CanQuery or object.CanTouch then return end
-
-			local kind
-			if object.Shape == Enum.PartType.Cylinder then
-				kind = 'circle'
-			elseif object.Shape == Enum.PartType.Block then
-				kind = 'cube'
-			else
-				return
-			end
-
-			local zone = {kind = kind, part = object, expire = workspace:GetServerTimeNow() + 8}
-			table.insert(dangers, zone)
-			say(kind == 'circle' and 'floor ring seen' or 'floor lane seen')
-		end)
-	end
-
 	local function setupDodge()
 		if dodgeReady then return end
 		dodgeReady = true
-		watchTelegraphs()
+
 
 		local hooked, hookErr = pcall(hookPrecast, function(kind, a, b, delay)
 			if kind == 'cube' and typeof(a) == 'CFrame' and typeof(b) == 'Vector3' then
 				table.insert(dangers, {kind = 'cube', cf = a, size = b, expire = windowFor(delay)})
+				seenZones += 1
 				say(string.format('cube telegraph %.0fx%.0f in %.1fs', b.X, b.Z, tonumber(delay) or 0))
 			elseif kind == 'circle' and typeof(a) == 'Vector3' and tonumber(b) then
 				table.insert(dangers, {kind = 'circle', pos = a, radius = tonumber(b), expire = windowFor(delay)})
+				seenZones += 1
 				say(string.format('circle telegraph r=%.0f in %.1fs', tonumber(b), tonumber(delay) or 0))
 			end
 		end)
-		say(hooked and 'precast hook installed' or ('precast hook FAILED: ' .. tostring(hookErr)))
+		announce(hooked and 'telegraph hook installed' or ('telegraph hook FAILED: ' .. tostring(hookErr)))
 		pcall(function()
 			local util = replicatedStorage:FindFirstChild('Utility')
 			local bn = util and util:FindFirstChild('BridgeNet2')
@@ -768,22 +749,6 @@ run(function()
 	local DODGE_RINGS = {14, 22, 32, 45, 60}
 	local DODGE_SAMPLES = 16
 
-	-- A zone read off a part is re-measured each time, since the game tweens these into
-	-- place while the warning plays, and is finished the moment the part goes.
-	local function liveZone(d)
-		if not d.part then return true end
-		if not d.part.Parent then return false end
-
-		if d.kind == 'circle' then
-			d.pos = d.part.Position
-			d.radius = d.part.Size.Y * 0.5
-		else
-			d.cf = d.part.CFrame
-			d.size = d.part.Size
-		end
-		return true
-	end
-
 	local function anyDanger(pos, margin)
 		for _, d in dangers do
 			if inDanger(pos, d, margin) then return true end
@@ -794,8 +759,7 @@ run(function()
 	local function dodgeTarget(pos)
 		local now = workspace:GetServerTimeNow()
 		for i = #dangers, 1, -1 do
-			local d = dangers[i]
-			if now > d.expire or not liveZone(d) then table.remove(dangers, i) end
+			if now > dangers[i].expire then table.remove(dangers, i) end
 		end
 		if #dangers == 0 then return nil end
 
@@ -1334,6 +1298,17 @@ run(function()
 				end
 				warn('[Auto Farm] ' .. err)
 			end
+
+			-- Counted so the two failure modes read differently: never seeing a telegraph is
+			-- a detection problem, seeing them and still being hit is a movement one.
+			task.spawn(function()
+				while AutoFarm.Enabled do
+					task.wait(5)
+					if Debug ~= nil and Debug.Enabled then
+						warn(string.format('[Auto Farm] %d telegraphs seen, %d live now', seenZones, #dangers))
+					end
+				end
+			end)
 
 			repeat
 				local ok, err = pcall(function()
