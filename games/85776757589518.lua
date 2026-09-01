@@ -500,15 +500,31 @@ end)
 -- and bursts it with weapon swing + both abilities. Safety: if HP drops below the
 -- threshold it floats high out of reach and waits to recover, so it never dies.
 -- When a room is clear it walks forward to trigger the next one.
+--[[
+	Clears a dungeon on foot.
+
+	Everything here moves the character the way the game does: the humanoid is asked to
+	walk, and that is all. No CFrame is written, nothing is anchored or platform-stood,
+	and WalkSpeed and JumpPower are never touched - the server rubber-bands anything that
+	arrives somewhere it could not have walked to, so the older version's hovering beside
+	enemies and floating a hundred and fifty studs up to heal is exactly what it now
+	refuses.
+
+	Nothing here is per-dungeon or per-boss either, and it does not need to be. Enemies are
+	whatever has a living Humanoid under an enemyFolder, so every mob in every dungeon is
+	already covered; the boss is found from the game's own fightingBoss flag; and area
+	attacks come from the precastHitbox telegraph the game sends for all of them.
+]]
 run(function()
-	local AutoFarm, SafeHP, RecoverHP, HoverHeight, EnemyOffset, FarmDelay, UseTeleport, HealSwap, DodgeAttacks, BossHeight
+	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding
+
+	local pathfindingService = cloneref(game:GetService('PathfindingService'))
 
 	-- ── Boss detection + attack dodging ────────────────────────────────────
 	-- Every boss/enemy AREA attack is telegraphed to the client over a BridgeNet2
 	-- 'precastHitbox' bridge: Cube {cframe,size} or Circle {position,radius}, each with
 	-- a delayUntilAttack lead time. We attach a second listener to that same bridge,
-	-- remember each danger zone, and step out of it before it lands. This dodges EVERY
-	-- boss's telegraphed attacks without hardcoding a single boss.
+	-- remember each danger zone, and walk out of it before it lands.
 	local dangers = {}
 	local dodgeReady = false
 	local function setupDodge()
@@ -524,7 +540,7 @@ run(function()
 				if type(data) ~= 'table' then return end
 				local start = tonumber(data.startTime) or workspace:GetServerTimeNow()
 				local delay = tonumber(data.delayUntilAttack) or 0.3
-				local expire = start + delay + 0.4 -- stay clear until just after the hit resolves
+				local expire = start + delay + 0.4
 				if typeof(data.cframe) == 'CFrame' and typeof(data.size) == 'Vector3' then
 					table.insert(dangers, { kind = 'cube', cf = data.cframe, size = data.size, expire = expire })
 				elseif typeof(data.position) == 'Vector3' and tonumber(data.radius) then
@@ -534,7 +550,6 @@ run(function()
 		end)
 	end
 
-	-- boss fight active? the bossRoom's fightingBoss flag is the game's own signal.
 	local function bossActive()
 		local dungeon = workspace:FindFirstChild('dungeon')
 		local bossRoom = dungeon and dungeon:FindFirstChild('bossRoom')
@@ -542,7 +557,6 @@ run(function()
 		return fb ~= nil and fb:IsA('BoolValue') and fb.Value == true
 	end
 
-	-- is pos inside danger zone d (with a horizontal safety margin)?
 	local function inDanger(pos, d, margin)
 		if d.kind == 'circle' then
 			local dx, dz = pos.X - d.pos.X, pos.Z - d.pos.Z
@@ -555,7 +569,6 @@ run(function()
 		end
 	end
 
-	-- nearest position OUTSIDE danger zone d (horizontal push-out).
 	local function safeSpot(pos, d, margin)
 		if d.kind == 'circle' then
 			local dir = Vector3.new(pos.X - d.pos.X, 0, pos.Z - d.pos.Z)
@@ -576,7 +589,6 @@ run(function()
 		end
 	end
 
-	-- purge expired zones; if we're standing in one, return where to step to (else nil).
 	local function dodgeTarget(pos)
 		local now = workspace:GetServerTimeNow()
 		for i = #dangers, 1, -1 do
@@ -636,8 +648,6 @@ run(function()
 			for _, d in workspace:GetDescendants() do
 				if d:IsA('Humanoid') and d.Health > 0 then
 					local m = d.Parent
-					-- only real dungeon mobs: a Model living under an 'enemyFolder'
-					-- (NOT town NPCs, players, pets or decorations).
 					if m and m:IsA('Model') and enemyPart(m)
 						and not playersService:GetPlayerFromCharacter(m)
 						and m:FindFirstAncestor('enemyFolder') then
@@ -662,20 +672,116 @@ run(function()
 				if not bestDist or dist < bestDist then best, bestPart, bestDist = m, part, dist end
 			end
 		end
-		return best, bestPart
+		return best, bestPart, bestDist
+	end
+
+	--[[
+		Walking, and only walking.
+
+		Short hops are handed straight to the humanoid, which is what a player holding a
+		key produces. Anything further, or anything the humanoid has stopped making
+		progress towards, is routed through the game's own pathfinder so corridors, stairs
+		and doorways are followed rather than walked into.
+
+		The path is recomputed sparingly: enemies move, and rebuilding a route every tick
+		costs more than it corrects.
+	]]
+	local waypoints, waypointIndex, pathGoal, pathBuiltAt = nil, 1, nil, 0
+	local lastPos, lastProgress = nil, 0
+
+	local function clearPath()
+		waypoints, waypointIndex, pathGoal = nil, 1, nil
+	end
+
+	local function buildPath(hrp, goal)
+		local path = pathfindingService:CreatePath({
+			AgentRadius = 3,
+			AgentHeight = 6,
+			AgentCanJump = true,
+			WaypointSpacing = 8
+		})
+		local ok = pcall(path.ComputeAsync, path, hrp.Position, goal)
+		if ok and path.Status == Enum.PathStatus.Success then
+			waypoints, waypointIndex, pathGoal, pathBuiltAt = path:GetWaypoints(), 2, goal, os.clock()
+			return true
+		end
+		clearPath()
+		return false
+	end
+
+	local function walkTo(hum, hrp, goal, direct)
+		-- Straight there when it is close and the route is unlikely to matter.
+		if direct or not (UsePathfinding and UsePathfinding.Enabled) then
+			hum:MoveTo(goal)
+			return
+		end
+
+		local stale = not waypoints
+			or not pathGoal
+			or (pathGoal - goal).Magnitude > 12
+			or os.clock() - pathBuiltAt > 3
+			or waypointIndex > #waypoints
+
+		if stale and not buildPath(hrp, goal) then
+			-- No route found - walk at it anyway rather than standing still.
+			hum:MoveTo(goal)
+			return
+		end
+
+		local wp = waypoints[waypointIndex]
+		if not wp then
+			clearPath()
+			hum:MoveTo(goal)
+			return
+		end
+
+		if wp.Action == Enum.PathWaypointAction.Jump then
+			hum.Jump = true
+		end
+
+		if (Vector3.new(wp.Position.X, hrp.Position.Y, wp.Position.Z) - hrp.Position).Magnitude < 5 then
+			waypointIndex += 1
+		end
+		hum:MoveTo(wp.Position)
+	end
+
+	--[[
+		Where to go once a room is empty.
+
+		Rooms are streamed in by the server as the run progresses, so there is no map to
+		read ahead of time - only whatever is currently under workspace.dungeon. The one
+		furthest from where the run started is the one being opened up, so that is the way
+		forward. Falling back to walking ahead keeps it moving if that lookup finds
+		nothing rather than leaving it standing in a cleared room.
+	]]
+	local runOrigin
+	local function nextRoomGoal(hrp)
+		local dungeon = workspace:FindFirstChild('dungeon')
+		if not dungeon then return nil end
+
+		local best, bestDist
+		for _, room in dungeon:GetChildren() do
+			local ok, pivot = pcall(function() return room:GetPivot().Position end)
+			if ok and pivot then
+				local dist = (pivot - runOrigin).Magnitude
+				if not bestDist or dist > bestDist then best, bestDist = pivot, dist end
+			end
+		end
+
+		-- Already standing in the furthest room, so there is nothing further to aim at.
+		if best and (best - hrp.Position).Magnitude < 15 then return nil end
+		return best
 	end
 
 	-- Heal-swap: when HP is low, if the inventory has heal spell(s), save the current
 	-- loadout, switch to the best spell-power (mage) weapon + 1-2 heal spells, cast them
-	-- to full HP while floating safe, then restore the original loadout. Returns false
-	-- (so the caller falls back to float-and-regen) if there's no heal spell.
+	-- to full HP while backing away, then restore the original loadout.
 	local function healSwap()
 		local getStorage, equip, abilityUsed = remote('reloadInvy'), remote('equipItem'), remote('abilityUsed')
 		if not (getStorage and equip and abilityUsed) then return false end
 		local storage = getStorage:InvokeServer()
 		if type(storage) ~= 'table' or type(storage.abilities) ~= 'table' then return false end
 
-		-- heal spells in inventory (detected by name, e.g. "Chain Heal" / "Universal Heal")
 		local heals = {}
 		for id, item in pairs(storage.abilities) do
 			if tostring(fv(item, 'name') or ''):lower():find('heal') then
@@ -684,7 +790,6 @@ run(function()
 		end
 		if #heals == 0 then return false end
 
-		-- remember the current loadout (weapon + q/e abilities), whatever set it is
 		local savedWeapon, savedQ, savedE
 		if type(storage.weapons) == 'table' then
 			for id, item in pairs(storage.weapons) do
@@ -699,7 +804,6 @@ run(function()
 			end
 		end
 
-		-- switch to the best spell-power weapon + the heal spell(s)
 		local bestW, bestSP
 		if type(storage.weapons) == 'table' then
 			for id, item in pairs(storage.weapons) do
@@ -712,7 +816,6 @@ run(function()
 		if #heals >= 2 then pcall(function() equip:InvokeServer('ability', heals[2], 'e') end) end
 		task.wait(0.4)
 
-		-- cast the heals until full HP (staying floated out of reach)
 		local t0 = os.clock()
 		while AutoFarm.Enabled and os.clock() - t0 < 12 do
 			local char = lplr.Character
@@ -720,7 +823,16 @@ run(function()
 			local hrp = char and char:FindFirstChild('HumanoidRootPart')
 			if not (hum and hrp) then break end
 			if hum.MaxHealth > 0 and hum.Health / hum.MaxHealth >= 0.98 then break end
-			hrp.CFrame = CFrame.new(hrp.Position.X, hrp.Position.Y + HoverHeight.Value, hrp.Position.Z)
+
+			-- Still backing away while casting, so healing is done at a distance rather
+			-- than standing in the fight waiting for it to land.
+			local _, part = nearestEnemy(hrp.Position)
+			if part then
+				local away = (hrp.Position - part.Position) * Vector3.new(1, 0, 1)
+				away = away.Magnitude > 0.1 and away.Unit or hrp.CFrame.LookVector
+				hum:MoveTo(hrp.Position + away * 20)
+			end
+
 			for _, slot in { 'q', 'e' } do
 				for _, child in lplr.Backpack:GetChildren() do
 					if child:FindFirstChild('abilitySlot') and child.abilitySlot.Value == slot then
@@ -736,7 +848,6 @@ run(function()
 			task.wait(0.2)
 		end
 
-		-- restore the original loadout (mage or warrior — whatever it was)
 		if savedWeapon then pcall(function() equip:InvokeServer('weapon', savedWeapon) end) end
 		if savedQ then pcall(function() equip:InvokeServer('ability', savedQ, 'q') end) end
 		if savedE then pcall(function() equip:InvokeServer('ability', savedE, 'e') end) end
@@ -745,139 +856,126 @@ run(function()
 
 	AutoFarm = vain.Categories.Blatant:CreateModule({
 		Name = 'Auto Farm',
-		Tooltip = 'Clears the whole dungeon automatically: kills every enemy with your weapon + Q/E, and floats to safety to recover HP so you never die. Teleports onto enemies (may trip anti-cheat on some servers).',
+		Tooltip = 'Walks the dungeon and clears it: fights every enemy with your weapon and Q/E, dodges telegraphed attacks, and backs off to recover when hurt',
 		Function = function(callback)
 			if not callback then return end
+
+			setupDodge()
+			clearPath()
+
 			local weaponUsed = remote('weaponUsed')
 			local abilityUsed = remote('abilityUsed')
 			local retreating = false
+
+			local startChar = lplr.Character
+			local startHrp = startChar and startChar:FindFirstChild('HumanoidRootPart')
+			runOrigin = startHrp and startHrp.Position or Vector3.zero
+
 			repeat
 				pcall(function()
 					local char = lplr.Character
 					local hrp = char and char:FindFirstChild('HumanoidRootPart')
 					local hum = char and char:FindFirstChildOfClass('Humanoid')
 					if not (char and hrp and hum) then return end
+
 					local peaceful = lplr:FindFirstChild('peaceful')
-					if peaceful and peaceful.Value == true then return end -- in town/lobby, nothing to farm
-					
-					-- DODGE (top priority): if we're standing in a telegraphed attack, get out NOW.
+					if peaceful and peaceful.Value == true then return end
+
+					-- DODGE first: standing in a telegraphed attack costs more than a turn
+					-- spent fighting, so this outranks everything below it.
 					if DodgeAttacks.Enabled then
 						watchProjectiles()
-						-- Area attacks first, since standing in one is the bigger hit, then
-						-- anything thrown - which the bridge does not tell us about.
 						local safe = dodgeTarget(hrp.Position) or projectileDodge(hrp.Position)
 						if safe then
-							hum.PlatformStand = false
-							hrp.Anchored = false
-							hrp.CFrame = CFrame.new(safe)
-							hrp.AssemblyLinearVelocity = Vector3.zero
+							clearPath()
+							hum:MoveTo(safe)
 							return
 						end
 					end
 
-					-- safety: drop into retreat below SafeHP, resume once RecoverHP reached
 					local hpFrac = hum.MaxHealth > 0 and hum.Health / hum.MaxHealth or 1
 					if hpFrac <= SafeHP.Value / 100 then retreating = true end
+
 					if retreating then
-						hum.PlatformStand = true
-						hrp.Anchored = false
-						hrp.CFrame = CFrame.new(hrp.Position.X, hrp.Position.Y + HoverHeight.Value, hrp.Position.Z)
-						hrp.AssemblyLinearVelocity = Vector3.zero
-						-- heal-swap first (heals to full + restores loadout); if it can't
-						-- (no heal spell owned) fall back to waiting for natural regen.
+						--[[
+							Backing off on foot.
+
+							The old version floated out of reach, which is the one thing the
+							server will not have. Walking away from whatever is nearest is
+							the honest version of the same idea: it buys distance rather
+							than immunity, so Keep Away decides how much.
+						]]
+						local _, part, dist = nearestEnemy(hrp.Position)
+						if part and (dist or 0) < KeepAway.Value then
+							local away = (hrp.Position - part.Position) * Vector3.new(1, 0, 1)
+							away = away.Magnitude > 0.1 and away.Unit or hrp.CFrame.LookVector
+							clearPath()
+							hum:MoveTo(hrp.Position + away * KeepAway.Value)
+						end
+
 						if HealSwap.Enabled and healSwap() then
 							retreating = false
-							hum.PlatformStand = false
-							hrp.Anchored = false
 							return
 						end
 						if hpFrac >= math.min(RecoverHP.Value / 100, 0.98) then
 							retreating = false
-							hum.PlatformStand = false
-							hrp.Anchored = false
 						end
 						return
 					end
 
-					local target, part = nearestEnemy(hrp.Position)
+					local target, part, dist = nearestEnemy(hrp.Position)
 					if target and part then
 						local busy = char:FindFirstChild('busyCasting')
-						if UseTeleport.Enabled then
-							-- hover beside the enemy and FACE it in full 3D (pitch on X AND Y so
-							-- swing + abilities travel INTO it, not over its head).
-							local ep = part.Position
-							local dir = (hrp.Position - ep) * Vector3.new(1, 0, 1)
-							dir = dir.Magnitude > 0.1 and dir.Unit or Vector3.new(0, 0, 1)
-							-- while a boss is being fought, hover higher (bosses have big ground attacks)
-							local height = bossActive() and BossHeight.Value or EnemyOffset.Value
-							local myPos = ep + dir * 4 + Vector3.new(0, height, 0)
-							hrp.Anchored = false
-							-- PlatformStand disables the Humanoid's auto-upright, so the pitched
-							-- look-at HOLDS instead of snapping back every frame (that snap-back
-							-- was the "Y axis is buggy" jitter). It is NOT anchoring, so the game
-							-- still sees us as a live target and combat works both ways.
-							hum.PlatformStand = true
-							hrp.CFrame = CFrame.lookAt(myPos, ep)
-							hrp.AssemblyLinearVelocity = Vector3.zero
+						local reach = AttackRange.Value
+
+						if (dist or math.huge) > reach then
+							-- Close the gap. Pathfinding while far, straight in once near,
+							-- because a route recomputed around a moving enemy is worse
+							-- than walking at it.
+							walkTo(hum, hrp, part.Position, (dist or 0) < 25)
 						else
-							hrp.Anchored = false
-							hum.PlatformStand = false
-							-- Same reason as above: walking toward an enemy while still
-							-- carrying a throw means fighting it the whole way.
-							hrp.AssemblyLinearVelocity = Vector3.zero
-							hum:Move((part.Position - hrp.Position) * Vector3.new(1, 0, 1))
+							clearPath()
+							-- Stop walking and hold position while swinging, so the hit is
+							-- thrown from where the server already believes we are.
+							hum:MoveTo(hrp.Position)
 							faceNearest()
 						end
-						if not (busy and busy.Value ~= false) then
+
+						if (dist or math.huge) <= reach and not (busy and busy.Value ~= false) then
 							swing(char, weaponUsed)
 							castAbilities(abilityUsed)
 						end
 					else
-						-- room clear: unanchor and nudge forward to trigger the next room
-						hrp.Anchored = false
-						hum.PlatformStand = false
-
-						-- Knockback is shed before nudging, and this is what stops the farm
-						-- running away with itself. Every other branch zeroes velocity;
-						-- this one did not, so being knocked while no enemy was in range
-						-- left the throw still carrying you - and since it carries you
-						-- further from the enemies, the next pass finds none either and
-						-- nudges again. That feedback is the "flies off and never comes
-						-- back" case: nothing was wrong with the teleport, there was just
-						-- nothing left to teleport to.
-						hrp.AssemblyLinearVelocity = Vector3.zero
-						hum:Move(hrp.CFrame.LookVector * Vector3.new(1, 0, 1))
+						-- Room clear: head for whatever the server has opened up.
+						local goal = nextRoomGoal(hrp)
+						if goal then
+							walkTo(hum, hrp, goal)
+						else
+							clearPath()
+							hum:MoveTo(hrp.Position + hrp.CFrame.LookVector * 20)
+						end
 					end
 				end)
 				task.wait(FarmDelay.Value)
 			until not AutoFarm.Enabled
-			pcall(function()
-				local ch = lplr.Character
-				local hum = ch and ch:FindFirstChildOfClass('Humanoid')
-				local hrp = ch and ch:FindFirstChild('HumanoidRootPart')
-				if hum then hum.PlatformStand = false end
-				if hrp then hrp.Anchored = false end -- never leave the character stuck anchored
-			end)
 		end,
 	})
-	SafeHP = AutoFarm:CreateSlider({ Name = 'Retreat below HP', Min = 5, Max = 90, Default = 55, Suffix = '%',
-		Tooltip = 'Anchor high out of reach and stop fighting when your HP drops below this. Raise it if you still die.' })
+	SafeHP = AutoFarm:CreateSlider({ Name = 'Retreat below HP', Min = 5, Max = 90, Default = 45, Suffix = '%',
+		Tooltip = 'Back away and stop fighting once your HP drops below this' })
 	RecoverHP = AutoFarm:CreateSlider({ Name = 'Resume at HP', Min = 20, Max = 100, Default = 85, Suffix = '%',
-		Tooltip = 'Come back down and resume once HP recovers to this.' })
-	HoverHeight = AutoFarm:CreateSlider({ Name = 'Retreat Height', Min = 20, Max = 400, Default = 150, Suffix = ' studs',
-		Tooltip = 'How high to float above the map while recovering (out of enemy reach).' })
-	EnemyOffset = AutoFarm:CreateSlider({ Name = 'Attack Height', Min = 0, Max = 30, Default = 8, Suffix = ' studs',
-		Tooltip = 'Studs above each enemy. The character now pitches to aim DOWN at the enemy (held by PlatformStand), so you can hover safely up here and abilities still land. Lower it toward 0 if you want your short-range swing to connect too.' })
+		Tooltip = 'Return to the fight once HP recovers to this' })
+	KeepAway = AutoFarm:CreateSlider({ Name = 'Keep Away', Min = 20, Max = 200, Default = 70, Suffix = ' studs',
+		Tooltip = 'How far to put between you and the nearest enemy while recovering (default 70)' })
+	AttackRange = AutoFarm:CreateSlider({ Name = 'Attack Range', Min = 4, Max = 60, Default = 12, Suffix = ' studs',
+		Tooltip = 'How close to get before swinging. Melee wants this low, a staff can sit further back (default 12)' })
 	FarmDelay = AutoFarm:CreateSlider({ Name = 'Loop Delay', Min = 0, Max = 0.5, Default = 0.1, Decimal = 100, Suffix = 's',
-		Tooltip = 'Time between farm ticks (attack + reposition).' })
-	UseTeleport = AutoFarm:CreateToggle({ Name = 'Teleport to Enemies', Default = true,
-		Tooltip = 'On: instantly reposition onto each enemy (fast, may trip anti-cheat). Off: walk to them (slower, safer).' })
+		Tooltip = 'Time between farm ticks' })
+	UsePathfinding = AutoFarm:CreateToggle({ Name = 'Pathfinding', Default = true,
+		Tooltip = "Follows the game's own navigation around corners and up stairs instead of walking into walls. Turn off only if it gets stuck" })
 	HealSwap = AutoFarm:CreateToggle({ Name = 'Heal Swap when low', Default = true,
-		Tooltip = 'When low, if you own a heal spell: swap to best spell-power weapon + 1-2 heals, heal to full, then restore your set. Requires the game to allow mid-run equipping.' })
-		DodgeAttacks = AutoFarm:CreateToggle({ Name = 'Dodge Attacks', Default = true,
-			Tooltip = "Reads the game's own attack telegraphs (the neon danger zones bosses/enemies cast) and steps you out before they hit. Works on every boss, no per-boss setup." })
-		BossHeight = AutoFarm:CreateSlider({ Name = 'Boss Attack Height', Min = 0, Max = 60, Default = 16, Suffix = ' studs',
-			Tooltip = 'Attack height used automatically while a boss is being fought - bosses have bigger ground attacks, so it hovers higher than the normal Attack Height. Combined with Dodge Attacks you should take little to no damage.' })
+		Tooltip = 'When low, if you own a heal spell: swap to best spell-power weapon and heals, heal to full while backing off, then restore your set' })
+	DodgeAttacks = AutoFarm:CreateToggle({ Name = 'Dodge Attacks', Default = true,
+		Tooltip = "Reads the game's own attack telegraphs and walks you out before they land. Works on every boss, no per-boss setup" })
 end)
 
 --VAINEOF
