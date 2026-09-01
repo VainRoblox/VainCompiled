@@ -5352,6 +5352,9 @@ run(function()
 		'telepearl',
 		'fireball',
 		'tnt',
+		'tesla_trap',
+		'snap_trap',
+		'gloop',
 		'golden_apple'
 	}
 	-- ent -> {Billboard = BillboardGui, Player = Player}
@@ -6036,6 +6039,15 @@ run(function()
 	local Loop = {
 		Normal = function()
 			for ent, nametag in Reference do
+				-- Hidden here rather than refused at creation. Someone who outranks you is not
+				-- drawn, but that can change - they can join your team, or the whitelist can
+				-- load a moment after they did - and a tag that was never built cannot come
+				-- back. Every other reason a tag is hidden is decided here too.
+				if ent.Protected then
+					nametag.Visible = false
+					continue
+				end
+	
 				if DistanceCheck.Enabled then
 					local distance = entitylib.isAlive and (entitylib.character.RootPart.Position - ent.RootPart.Position).Magnitude or math.huge
 					if distance < DistanceLimit.ValueMin or distance > DistanceLimit.ValueMax then
@@ -6064,6 +6076,12 @@ run(function()
 		end,
 		Drawing = function()
 			for ent, nametag in Reference do
+				if ent.Protected then
+					nametag.Text.Visible = false
+					nametag.BG.Visible = false
+					continue
+				end
+	
 				if DistanceCheck.Enabled then
 					local distance = entitylib.isAlive and (entitylib.character.RootPart.Position - ent.RootPart.Position).Magnitude or math.huge
 					if distance < DistanceLimit.ValueMin or distance > DistanceLimit.ValueMax then
