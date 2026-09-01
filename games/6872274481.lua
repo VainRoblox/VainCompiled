@@ -10787,936 +10787,376 @@ end)
 
 kitRun(function()
     local Beekeeper
-    local CollectionToggle
-	local LimitToNet
-	local maxBeehiveLevel = 10
-    local maxedBeehives = {}
-    local maxedNotificationSent = {}
-    local CollectionDelay
-    local DelaySlider
-    local RangeSlider
-    local ESPToggle
-    local BeesESP
-    local BeesNotify
-    local BeesBackground
-    local BeesColor
-    local BeehiveESP
-    local ShowOtherBeehives
-    local BeehiveBackground
-    local BeehiveColor
-    local AutoDeposit
-    local DepositDelay
-    local DepositDelaySlider
+    local Collect
+    local EquipNet
+    local CollectRange
+    local CollectDelay
+    local Deposit
     local DepositRange
-    local ESPLimitToNet  
-    local collectionRunning = false
-    local depositRunning = false
-    local BeesFolder = Instance.new('Folder')
-    BeesFolder.Parent = vain.gui
-    local BeehiveFolder = Instance.new('Folder')
-    BeehiveFolder.Parent = vain.gui
-    local BeesReference = {}
-    local BeehiveReference = {}
-    local lastNotification = 0
-    local spawnQueue = {}
-    local notificationCooldown = 1
+    local DepositDelay
+    local HiveESP
+    local ShowOthers
+    local Background
+    local Color = {}
+    local Reference = {}
+    local Folder = Instance.new('Folder')
+    Folder.Parent = vain.gui
 
-    local function sendNotification(count)
-        notif("Bee ESP", string.format("%d bees spawned", count), 3)
+    -- Settings are created after CreateModule returns, so they can still be nil while
+    -- this file is executing - and the module can be switched on inside that window when
+    -- the GUI restores a saved config.
+    local function on(setting)
+        return setting ~= nil and setting.Enabled
     end
 
-    local function processSpawnQueue()
-        if #spawnQueue > 0 then
-            local currentTime = tick()
-            if currentTime - lastNotification >= notificationCooldown then
-                sendNotification(#spawnQueue)
-                lastNotification = currentTime
-                spawnQueue = {}
-            else
-                task.delay(notificationCooldown - (currentTime - lastNotification), function()
-                    if #spawnQueue > 0 then
-                        sendNotification(#spawnQueue)
-                        spawnQueue = {}
-                    end
-                end)
+    local function value(setting, fallback)
+        return setting ~= nil and setting.Value or fallback
+    end
+
+    --[[
+        A wild bee, as opposed to one already tamed.
+
+        Both carry the 'bee' tag: the ones worth catching, and the swarm circling a hive
+        somebody has already filled. The tamed ones are handed a BeeId of -1 while a
+        catchable bee carries a real id from the server - which is also the id the pickup
+        has to be sent with, so one read decides both whether to bother and what to send.
+    ]]
+    local function beeId(v)
+        local id = v:GetAttribute('BeeId')
+        return type(id) == 'number' and id > 0 and id or nil
+    end
+
+    --[[
+        Bees and hives are parts, not models.
+
+        Every one of these was reached for through PrimaryPart, which is nil on a part, so
+        the distance check below it never ran once and nothing was ever collected. Written
+        to take either shape now.
+    ]]
+    local function partOf(v)
+        if v:IsA('BasePart') then return v end
+        return v:FindFirstChildWhichIsA('BasePart', true)
+    end
+
+    local function heldIs(itemType)
+        local tool = store.hand and store.hand.tool
+        return tool ~= nil and tool.Name == itemType
+    end
+
+    local function findItem(itemType)
+        for _, item in store.inventory.inventory.items do
+            if item.itemType == itemType then
+                return item
             end
         end
     end
 
-    local function getBeeIcon()
-        return bedwars.getIcon({itemType = 'bee'}, true)
+    -- The net is what the game's own hand controller insists on before it will send a
+    -- pickup, so the server has every reason to throw one away that arrives without it.
+    local function equipNet()
+        if heldIs('bee_net') then return true end
+
+        local net = findItem('bee_net')
+        if not net or not net.tool then return false end
+
+        switchItem(net.tool)
+        return true
     end
 
-    local function AddedBee(v)
-        if BeesReference[v] then return end
-        local model = v.Parent
-        if model then
-            if model.Name:find("TamedBee") or model:FindFirstChild("TamedBee") then
-                return 
-            end
-            
-            if model:GetAttribute("IsTamed") or model:GetAttribute("Tamed") then
-                return 
-            end
-            
-            for _, tag in pairs(collectionService:GetTags(model)) do
-                if tag:lower():find("tamed") then
-                    return 
-                end
+    local function ownHive(hive)
+        return hive:GetAttribute('PlacedByUserId') == lplr.UserId
+    end
+
+    --[[
+        Catching, one bee at a time.
+
+        The remote is named here rather than looked up in the scraped table. That table
+        works out a remote's name by finding 'Client' among a function's constants and
+        taking the next one, which for this call lands on 'Get' rather than on the name
+        itself - so every pickup was addressed to a remote that does not exist.
+    ]]
+    local function collect()
+        if not entitylib.isAlive then return end
+
+        local root = entitylib.character.RootPart
+        local range = value(CollectRange, 30)
+
+        for _, v in collectionService:GetTagged('bee') do
+            if not (Beekeeper.Enabled and on(Collect)) then return end
+
+            local id = beeId(v)
+            local part = id and partOf(v)
+            if not part then continue end
+            if (root.Position - part.Position).Magnitude > range then continue end
+
+            if on(EquipNet) and not equipNet() then return end
+
+            bedwars.Client:Get('PickUpBee'):SendToServer({beeId = id})
+
+            local delay = value(CollectDelay, 0.1)
+            if delay > 0 then
+                task.wait(delay)
             end
         end
-        
+    end
+
+    --[[
+        Handing a caught bee to the nearest of your own hives.
+
+        The hive's prompt is only switched on by the game while a bee is actually in your
+        hand, and only on hives you placed, so both of those are checked before reaching
+        for it rather than firing into nothing.
+    ]]
+    local function deposit()
+        if not entitylib.isAlive or not heldIs('bee') then return end
+
+        local root = entitylib.character.RootPart
+        local range = value(DepositRange, 12)
+        local best, closest
+
+        for _, hive in collectionService:GetTagged('beehive') do
+            if not ownHive(hive) then continue end
+
+            local part = partOf(hive)
+            if not part then continue end
+
+            local distance = (root.Position - part.Position).Magnitude
+            if distance <= range and (not closest or distance < closest) then
+                best, closest = hive, distance
+            end
+        end
+        if not best then return end
+
+        local prompt = best:FindFirstChildOfClass('ProximityPrompt')
+        if not prompt then return end
+
+        if fireproximityprompt then
+            fireproximityprompt(prompt)
+        else
+            prompt:InputHoldBegin()
+            task.wait(prompt.HoldDuration)
+            prompt:InputHoldEnd()
+        end
+
+        local delay = value(DepositDelay, 0.1)
+        if delay > 0 then
+            task.wait(delay)
+        end
+    end
+
+    local function removeHive(hive)
+        local entry = Reference[hive]
+        if entry then
+            Reference[hive] = nil
+            entry.Billboard:Destroy()
+        end
+    end
+
+    -- How many bees a hive is holding, shown on it. The level is the count, and it is the
+    -- one thing here worth reading at a glance - a full hive takes nothing more.
+    local function addHive(hive)
+        if Reference[hive] then return end
+
+        local own = ownHive(hive)
+        if not own and not on(ShowOthers) then return end
+
+        local part = partOf(hive)
+        if not part then return end
+
         local billboard = Instance.new('BillboardGui')
-        billboard.Parent = BeesFolder
-        billboard.Name = 'bee'
-        billboard.StudsOffsetWorldSpace = Vector3.new(0, 3, 0)
-        billboard.Size = UDim2.fromOffset(36, 36)
+        billboard.Name = 'beehive'
+        billboard.Adornee = part
+        billboard.StudsOffsetWorldSpace = Vector3.new(0, math.clamp(part.Size.Y * 0.5, 0.5, 4), 0)
+        billboard.Size = UDim2.fromOffset(64, 34)
         billboard.AlwaysOnTop = true
         billboard.ClipsDescendants = false
-        billboard.Adornee = v
-        
+        billboard.Parent = Folder
+
         local blur = addBlur(billboard)
-        blur.Visible = BeesBackground.Enabled
-        
-        local image = Instance.new('ImageLabel')
-        image.Size = UDim2.fromOffset(36, 36)
-        image.Position = UDim2.fromScale(0.5, 0.5)
-        image.AnchorPoint = Vector2.new(0.5, 0.5)
-        image.BackgroundColor3 = Color3.fromHSV(BeesColor.Hue, BeesColor.Sat, BeesColor.Value)
-        image.BackgroundTransparency = 1 - (BeesBackground.Enabled and BeesColor.Opacity or 0)
-        image.BorderSizePixel = 0
-        image.Image = getBeeIcon()
-        image.Parent = billboard
-        
-        local uicorner = Instance.new('UICorner')
-        uicorner.CornerRadius = UDim.new(0, 4)
-        uicorner.Parent = image
-        
-        BeesReference[v] = billboard
-        
-        if BeesNotify.Enabled then
-            table.insert(spawnQueue, {item = 'bee', time = tick()})
-            processSpawnQueue()
-        end
-    end
+        blur.Visible = on(Background)
 
-    local function RemovedBee(v)
-        if BeesReference[v] then
-            BeesReference[v]:Destroy()
-            BeesReference[v] = nil
-        end
-    end
-
-    local function isMyBeehive(beehive)
-        if not beehive then return false end
-        local placedBy = beehive:GetAttribute("PlacedByUserId")
-        return placedBy and placedBy == lplr.UserId
-    end
-    
-    local function getBeehiveOwnerName(beehive)
-        if not beehive then return "Unknown" end
-        local placedBy = beehive:GetAttribute("PlacedByUserId")
-        if not placedBy then return "Unknown" end
-        
-        local player = game.Players:GetPlayerByUserId(placedBy)
-        if player then
-            return player.Name
-        end
-        
-        return "Player"
-    end
-
-    local function AddedBeehive(beehive)
-        local isOwn = isMyBeehive(beehive)
-        
-        if not isOwn and not (ShowOtherBeehives and ShowOtherBeehives.Enabled) then 
-            return 
-        end
-        
-        if BeehiveReference[beehive] then return end
-        
-        local level = beehive:GetAttribute("Level") or 0
-        local isMaxed = level >= maxBeehiveLevel and isOwn
-        
-        if isMaxed and isOwn then
-            maxedBeehives[beehive] = true
-        end
-        
-        local ownerName = isOwn and nil or getBeehiveOwnerName(beehive)
-        local hasOwnerName = ownerName ~= nil
-        
-        local billboard = Instance.new('BillboardGui')
-        billboard.Parent = BeehiveFolder
-        billboard.Name = 'beehive-esp'
-        billboard.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
-        billboard.Size = isMaxed and UDim2.fromOffset(90, 40) or (hasOwnerName and UDim2.fromOffset(120, 40) or UDim2.fromOffset(80, 30))
-        billboard.AlwaysOnTop = true
-        billboard.ClipsDescendants = false
-        billboard.Adornee = beehive
-        
-        local blur = addBlur(billboard)
-        blur.Visible = BeehiveBackground.Enabled
-        
         local frame = Instance.new('Frame')
         frame.Size = UDim2.fromScale(1, 1)
-        frame.BackgroundColor3 = isMaxed and Color3.fromRGB(255, 50, 50) or Color3.fromHSV(BeehiveColor.Hue, BeehiveColor.Sat, BeehiveColor.Value)
-        frame.BackgroundTransparency = 1 - (BeehiveBackground.Enabled and (isMaxed and 0.5 or BeehiveColor.Opacity) or 0)
+        frame.BackgroundColor3 = Color3.fromHSV(Color.Hue or 0, Color.Sat or 0, Color.Value or 0)
+        frame.BackgroundTransparency = 1 - (on(Background) and (Color.Opacity or 0.5) or 0)
         frame.BorderSizePixel = 0
         frame.Parent = billboard
-        
-        local uicorner = Instance.new('UICorner')
-        uicorner.CornerRadius = UDim.new(0, 6)
-        uicorner.Parent = frame
-        
-        if hasOwnerName then
-            local nameLabel = Instance.new('TextLabel')
-            nameLabel.Name = 'OwnerName'
-            nameLabel.Size = UDim2.new(1, 0, 0.4, 0)
-            nameLabel.Position = UDim2.new(0, 0, 0, -20)
-            nameLabel.BackgroundTransparency = 1
-            nameLabel.Text = ownerName
-            nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-            nameLabel.TextSize = 12
-            nameLabel.Font = Enum.Font.GothamBold
-            nameLabel.TextStrokeTransparency = 0.5
-            nameLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
-            nameLabel.Parent = billboard
-        end
-        
-        local homeImage = Instance.new('TextLabel')
-        homeImage.Size = UDim2.fromOffset(20, 20)
-        homeImage.Position = UDim2.new(0, 5, 0.5, 0)
-        homeImage.AnchorPoint = Vector2.new(0, 0.5)
-        homeImage.BackgroundTransparency = 1
-        homeImage.Text = isOwn and "🏠" or "🏘️"
-        homeImage.TextSize = 16
-        homeImage.Parent = frame
-        
-        local beeImage = Instance.new('ImageLabel')
-        beeImage.Size = UDim2.fromOffset(18, 18)
-        beeImage.Position = UDim2.new(0.5, -5, 0.5, 0)
-        beeImage.AnchorPoint = Vector2.new(0, 0.5)
-        beeImage.BackgroundTransparency = 1
-        beeImage.Image = getBeeIcon()
-        beeImage.Parent = frame
-        
-        local levelLabel = Instance.new('TextLabel')
-        levelLabel.Name = 'Level'
-        levelLabel.Size = UDim2.new(0, 25, 1, 0)
-        levelLabel.Position = UDim2.new(1, -30, 0, 0)
-        levelLabel.BackgroundTransparency = 1
-        levelLabel.Text = tostring(level)
-        levelLabel.TextColor3 = isMaxed and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(255, 255, 255)
-        levelLabel.TextSize = 16
-        levelLabel.Font = Enum.Font.GothamBold
-        levelLabel.TextStrokeTransparency = 0.5
-        levelLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
-        levelLabel.Parent = frame
-        
-        if isMaxed and isOwn then
-            local maxText = Instance.new('TextLabel')
-            maxText.Name = 'MaxText'
-            maxText.Size = UDim2.new(1, 0, 0.4, 0)
-            maxText.Position = UDim2.new(0, 0, 0, hasOwnerName and -40 or -20)
-            maxText.BackgroundTransparency = 1
-            maxText.Text = "MAX"
-            maxText.TextColor3 = Color3.fromRGB(255, 50, 50)
-            maxText.TextSize = 12
-            maxText.Font = Enum.Font.GothamBold
-            maxText.TextStrokeTransparency = 0.5
-            maxText.TextStrokeColor3 = Color3.new(0, 0, 0)
-            maxText.Parent = billboard
-        end
-        
-        BeehiveReference[beehive] = {
-            billboard = billboard,
-            levelLabel = levelLabel,
-            beehive = beehive,
-            isMaxed = isMaxed,
-            isOwn = isOwn
-        }
-        
-        local function updateLevel()
-            local level = beehive:GetAttribute("Level") or 0
-            local isMaxed = level >= maxBeehiveLevel and isOwn
-            
-            if isMaxed and isOwn then
-                maxedBeehives[beehive] = true
-                
-                if not maxedNotificationSent[beehive] then
-                    notif("Bee Keeper", "Beehive is full (MAX)", 3)
-                    maxedNotificationSent[beehive] = true
-                end
-                
-                if BeehiveReference[beehive] and BeehiveReference[beehive].billboard then
-                    local maxText = BeehiveReference[beehive].billboard:FindFirstChild("MaxText")
-                    if not maxText then
-                        maxText = Instance.new('TextLabel')
-                        maxText.Name = 'MaxText'
-                        maxText.Size = UDim2.new(1, 0, 0.4, 0)
-                        maxText.Position = UDim2.new(0, 0, 0, hasOwnerName and -40 or -20)
-                        maxText.BackgroundTransparency = 1
-                        maxText.Text = "MAX"
-                        maxText.TextColor3 = Color3.fromRGB(255, 50, 50)
-                        maxText.TextSize = 12
-                        maxText.Font = Enum.Font.GothamBold
-                        maxText.TextStrokeTransparency = 0.5
-                        maxText.TextStrokeColor3 = Color3.new(0, 0, 0)
-                        maxText.Parent = BeehiveReference[beehive].billboard
-                    end
-                    
-                    local frame = BeehiveReference[beehive].billboard:FindFirstChild("Frame")
-                    if frame then
-                        frame.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
-                        frame.BackgroundTransparency = 1 - (BeehiveBackground.Enabled and 0.5 or 0)
-                    end
-                end
+
+        local corner = Instance.new('UICorner')
+        corner.CornerRadius = UDim.new(0, 4)
+        corner.Parent = frame
+
+        local label = Instance.new('TextLabel')
+        label.Name = 'Level'
+        label.Size = UDim2.fromScale(1, 1)
+        label.BackgroundTransparency = 1
+        label.TextColor3 = Color3.new(1, 1, 1)
+        label.TextStrokeTransparency = 0.4
+        label.TextScaled = true
+        label.RichText = true
+        label.Parent = frame
+
+        local function refresh()
+            local level = hive:GetAttribute('Level') or 0
+            if own then
+                label.Text = tostring(level)
             else
-                if isOwn then
-                    maxedBeehives[beehive] = nil
-                    maxedNotificationSent[beehive] = nil
-                end
-                
-                if BeehiveReference[beehive] and BeehiveReference[beehive].billboard then
-                    local maxText = BeehiveReference[beehive].billboard:FindFirstChild("MaxText")
-                    if maxText then
-                        maxText:Destroy()
-                    end
-                    
-                    local frame = BeehiveReference[beehive].billboard:FindFirstChild("Frame")
-                    if frame then
-                        frame.BackgroundColor3 = Color3.fromHSV(BeehiveColor.Hue, BeehiveColor.Sat, BeehiveColor.Value)
-                        frame.BackgroundTransparency = 1 - (BeehiveBackground.Enabled and BeehiveColor.Opacity or 0)
-                    end
-                end
-            end
-            
-            if BeehiveReference[beehive] and BeehiveReference[beehive].levelLabel then
-                BeehiveReference[beehive].levelLabel.Text = tostring(level)
-            end
-            
-            if BeehiveReference[beehive] then
-                BeehiveReference[beehive].isMaxed = isMaxed
+                local owner = playersService:GetPlayerByUserId(hive:GetAttribute('PlacedByUserId') or 0)
+                label.Text = tostring(level) .. ' <font size="10">' .. ((owner and owner.Name) or '?') .. '</font>'
             end
         end
-        
-        updateLevel()
-        
-        if isOwn then
-            Beekeeper:Clean(beehive:GetAttributeChangedSignal("Level"):Connect(updateLevel))
-        else
-            Beekeeper:Clean(beehive:GetAttributeChangedSignal("Level"):Connect(function()
-                local level = beehive:GetAttribute("Level") or 0
-                if BeehiveReference[beehive] and BeehiveReference[beehive].levelLabel then
-                    BeehiveReference[beehive].levelLabel.Text = tostring(level)
-                end
-            end))
-        end
-    end
+        refresh()
 
-
-    local function RemovedBeehive(beehive)
-        if BeehiveReference[beehive] then
-            BeehiveReference[beehive].billboard:Destroy()
-            BeehiveReference[beehive] = nil
-        end
-    end
-
-    local function setupBeesESP()
-        for _, v in collectionService:GetTagged('bee') do
-            if v:IsA("Model") and v.PrimaryPart then
-                if not v.Name:find("TamedBee") and not v:FindFirstChild("TamedBee") then
-                    AddedBee(v.PrimaryPart)
-                end
-            end
-        end
-
-        Beekeeper:Clean(collectionService:GetInstanceAddedSignal('bee'):Connect(function(v)
-            if v:IsA("Model") and v.PrimaryPart then
-                task.wait(0.1)
-                if not v.Name:find("TamedBee") and not v:FindFirstChild("TamedBee") then
-                    AddedBee(v.PrimaryPart)
-                end
-            end
-        end))
-
-        Beekeeper:Clean(collectionService:GetInstanceRemovedSignal('bee'):Connect(function(v)
-            if v.PrimaryPart then
-                RemovedBee(v.PrimaryPart)
-            end
-        end))
-        
-
-    end
-
-    local function setupBeehiveESP()
-        for _, beehive in collectionService:GetTagged('beehive') do
-            AddedBeehive(beehive)
-        end
-
-        Beekeeper:Clean(collectionService:GetInstanceAddedSignal('beehive'):Connect(function(beehive)
-            task.wait(0.1)
-            AddedBeehive(beehive)
-        end))
-
-        Beekeeper:Clean(collectionService:GetInstanceRemovedSignal('beehive'):Connect(function(beehive)
-            RemovedBeehive(beehive)
-        end))
-    end
-
-    local function isHoldingBeeNet()
-        if not store.hand or not store.hand.tool then return false end
-        return store.hand.tool.Name == 'bee_net' or store.hand.tool.Name == 'bee-net'
-    end
-
-    local function startCollection()
-        collectionRunning = true
-        task.spawn(function()
-            while collectionRunning and Beekeeper.Enabled and CollectionToggle.Enabled do
-                if not entitylib.isAlive then 
-                    task.wait(0.1) 
-                    continue 
-                end
-                
-                if LimitToNet.Enabled and not isHoldingBeeNet() then
-                    task.wait(0.5)
-                    continue
-                end
-                
-                local localPosition = entitylib.character.RootPart.Position
-                local range = RangeSlider.Value
-                local beesFound = false
-                
-                for _, v in collectionService:GetTagged('bee') do
-                    if not collectionRunning or not Beekeeper.Enabled or not CollectionToggle.Enabled then 
-                        break 
-                    end
-                    
-                    if LimitToNet.Enabled and not isHoldingBeeNet() then
-                        break
-                    end
-                    
-                    if v:IsA("Model") and v.PrimaryPart then
-                        local beePos = v.PrimaryPart.Position
-                        local distance = (localPosition - beePos).Magnitude
-                        
-                        if distance <= range then
-                            beesFound = true
-                            
-                            if CollectionDelay.Enabled and DelaySlider.Value > 0 then
-                                task.wait(DelaySlider.Value)
-                            end
-                            
-                            if LimitToNet.Enabled and not isHoldingBeeNet() then
-                                break
-                            end
-                            
-                            local beeId = v:GetAttribute('BeeId')
-                            if beeId then
-                                bedwars.Client:Get(remotes.BeePickup):SendToServer({beeId = beeId})
-                                task.wait(0.1)
-                            end
-                        end
-                    end
-                end
-                
-                if not beesFound then
-                    task.wait(0.2)
-                else
-                    task.wait(0.1)
-                end
-            end
-            collectionRunning = false
-        end)
-    end
-
-    local function startDeposit()
-        depositRunning = true
-        task.spawn(function()
-            while depositRunning and Beekeeper.Enabled and AutoDeposit.Enabled do
-                if not entitylib.isAlive then 
-                    task.wait(0.1) 
-                    continue 
-                end
-                
-                local currentTool = store.hand and store.hand.tool
-                if not currentTool or currentTool.Name ~= 'bee' then
-                    task.wait(0.1)
-                    continue
-                end
-                
-                local localPosition = entitylib.character.RootPart.Position
-                local range = DepositRange.Value
-                local depositedThisCycle = false
-                
-                local availableBeehives = {}
-                for _, beehive in collectionService:GetTagged('beehive') do
-                    if isMyBeehive(beehive) and not maxedBeehives[beehive] then
-                        local beehivePos = beehive.Position
-                        local distance = (localPosition - beehivePos).Magnitude
-                        
-                        if distance <= range then
-                            table.insert(availableBeehives, {
-                                beehive = beehive,
-                                distance = distance
-                            })
-                        end
-                    end
-                end
-                
-                table.sort(availableBeehives, function(a, b)
-                    return a.distance < b.distance
-                end)
-                
-                for _, beehiveData in ipairs(availableBeehives) do
-                    if not depositRunning or not Beekeeper.Enabled or not AutoDeposit.Enabled then 
-                        break 
-                    end
-                    local beehive = beehiveData.beehive
-                    if maxedBeehives[beehive] then
-                        continue
-                    end
-                    
-                    local prompt = beehive:FindFirstChildOfClass("ProximityPrompt")
-                    
-                    if prompt and prompt.Enabled then
-                        if DepositDelay.Enabled and DepositDelaySlider.Value > 0 then
-                            local originalDuration = prompt.HoldDuration
-                            prompt.HoldDuration = DepositDelaySlider.Value
-                            
-                            if fireproximityprompt then
-                                fireproximityprompt(prompt)
-                            else
-                                prompt:InputHoldBegin()
-                                task.wait(DepositDelaySlider.Value)
-                                prompt:InputHoldEnd()
-                            end
-                            
-                            task.wait(DepositDelaySlider.Value + 0.1)
-                            prompt.HoldDuration = originalDuration
-                        else
-                            if fireproximityprompt then
-                                fireproximityprompt(prompt)
-                            else
-                                prompt:InputHoldBegin()
-                                prompt:InputHoldEnd()
-                            end
-                            task.wait(0.1)
-                        end
-                        
-                        depositedThisCycle = true
-                        break 
-                    end
-                end
-                
-                if not depositedThisCycle and #availableBeehives > 0 then
-                    local allMaxed = true
-                    for _, beehiveData in ipairs(availableBeehives) do
-                        if not maxedBeehives[beehiveData.beehive] then
-                            allMaxed = false
-                            break
-                        end
-                    end
-                    
-                    if allMaxed then
-                        notif("Bee Keeper", "All nearby beehives are full", 3)
-                    end
-                end
-                
-                task.wait(depositedThisCycle and 0.3 or 0.2)
-            end
-            depositRunning = false
-        end)
+        Reference[hive] = {Billboard = billboard, Frame = frame, Blur = blur}
+        Beekeeper:Clean(hive:GetAttributeChangedSignal('Level'):Connect(refresh))
     end
 
     Beekeeper = vain.Categories.Kit:CreateModule({
-        Name = 'Auto Beekeeper',
+        Name = 'AutoBeekeeper',
         Function = function(callback)
             if callback then
-                if ESPToggle.Enabled then
-                    if BeesESP.Enabled then
-                        setupBeesESP()
+                if on(HiveESP) then
+                    for _, hive in collectionService:GetTagged('beehive') do
+                        addHive(hive)
                     end
-                    if BeehiveESP.Enabled then
-                        setupBeehiveESP()
-                    end
+                    Beekeeper:Clean(collectionService:GetInstanceAddedSignal('beehive'):Connect(addHive))
+                    Beekeeper:Clean(collectionService:GetInstanceRemovedSignal('beehive'):Connect(removeHive))
                 end
-                
-                if CollectionToggle.Enabled then
-                    startCollection()
-                end
-                
-                if AutoDeposit.Enabled then
-                    startDeposit()
-                end
-                
-                local _bkLastUpdate = 0
-                Beekeeper:Clean(runService.RenderStepped:Connect(function()
-                    if not ESPToggle.Enabled then return end
-                    local _now = tick()
-                    if _now - _bkLastUpdate < 0.1 then return end
-                    _bkLastUpdate = _now
-                    
-                    for v, billboard in pairs(BeesReference) do
-                        if not v or not v.Parent then
-                            RemovedBee(v)
-                            continue
+
+                -- One loop for both, so a slow deposit cannot leave bees uncollected and
+                -- the two never fight over what is in your hand at the same moment.
+                task.spawn(function()
+                    while Beekeeper.Enabled do
+                        if on(Collect) then
+                            pcall(collect)
                         end
-
-                        local shouldShow = true
-
-                        if ESPLimitToNet.Enabled and not isHoldingBeeNet() then
-                            shouldShow = false
+                        if on(Deposit) then
+                            pcall(deposit)
                         end
-
-                        billboard.Enabled = shouldShow
+                        task.wait(0.1)
                     end
-                    
-                    for beehive, ref in pairs(BeehiveReference) do
-                        if not beehive or not beehive.Parent then
-                            RemovedBeehive(beehive)
-                            continue
-                        end
-
-                        local shouldShow = true
-
-                        if ESPLimitToNet.Enabled and not isHoldingBeeNet() then
-                            shouldShow = false
-                        end
-
-                        if ref.billboard then
-                            ref.billboard.Enabled = shouldShow
-                        end
-                    end
-                end))
+                end)
             else
-                collectionRunning = false
-                depositRunning = false
-                BeesFolder:ClearAllChildren()
-                BeehiveFolder:ClearAllChildren()
-                table.clear(BeesReference)
-                table.clear(BeehiveReference)
-                table.clear(spawnQueue)
-                lastNotification = 0
+                for hive in Reference do
+                    removeHive(hive)
+                end
+                Folder:ClearAllChildren()
+                table.clear(Reference)
             end
         end,
-        Tooltip = 'Automatically collects bees and manages beehives'
+        Tooltip = 'Catches bees and feeds them to your hives'
     })
-    
-    CollectionToggle = Beekeeper:CreateToggle({
+    Collect = Beekeeper:CreateToggle({
         Name = 'Auto Collect',
-        Default = true,
-        Tooltip = 'Automatically collect bees',
+        Tooltip = 'Catches wild bees around you',
         Function = function(callback)
-            if LimitToNet and LimitToNet.Object then LimitToNet.Object.Visible = callback end
-            if CollectionDelay and CollectionDelay.Object then CollectionDelay.Object.Visible = callback end
-            if DelaySlider and DelaySlider.Object then DelaySlider.Object.Visible = (callback and CollectionDelay.Enabled) end
-            if RangeSlider and RangeSlider.Object then RangeSlider.Object.Visible = callback end
-            
-            if callback and Beekeeper.Enabled then
-                startCollection()
-            else
-                collectionRunning = false
-            end
-        end
+            if EquipNet and EquipNet.Object then EquipNet.Object.Visible = callback end
+            if CollectRange and CollectRange.Object then CollectRange.Object.Visible = callback end
+            if CollectDelay and CollectDelay.Object then CollectDelay.Object.Visible = callback end
+        end,
+        Default = true
     })
-    
-    LimitToNet = Beekeeper:CreateToggle({
-        Name = 'Limit to Net',
-        Default = false,
-        Tooltip = 'Only collect bees when holding bee net'
+    EquipNet = Beekeeper:CreateToggle({
+        Name = 'Equip Net',
+        Tooltip = 'Switches to the bee net first, which the catch needs',
+        Darker = true,
+        Default = true
     })
-    
-    CollectionDelay = Beekeeper:CreateToggle({
-        Name = 'Collection Delay',
-        Default = false,
-        Tooltip = 'Add delay before collecting bees',
-        Function = function(callback)
-            if DelaySlider and DelaySlider.Object then
-                DelaySlider.Object.Visible = callback
-            end
-        end
+    CollectRange = Beekeeper:CreateSlider({
+        Name = 'Range',
+        Tooltip = 'How far a bee can be to catch it (default 30)',
+        Min = 1,
+        Max = 60,
+        Default = 30,
+        Suffix = 'studs',
+        Darker = true
     })
-    
-    DelaySlider = Beekeeper:CreateSlider({
+    CollectDelay = Beekeeper:CreateSlider({
         Name = 'Delay',
+        Tooltip = 'Wait between catches (default 0.1)',
+        Min = 0,
+        Max = 1,
+        Default = 0.1,
+        Decimal = 100,
+        Suffix = 'sec',
+        Darker = true
+    })
+    Deposit = Beekeeper:CreateToggle({
+        Name = 'Auto Deposit',
+        Tooltip = 'Feeds caught bees to your nearest hive',
+        Function = function(callback)
+            if DepositRange and DepositRange.Object then DepositRange.Object.Visible = callback end
+            if DepositDelay and DepositDelay.Object then DepositDelay.Object.Visible = callback end
+        end,
+        Default = true
+    })
+    DepositRange = Beekeeper:CreateSlider({
+        Name = 'Deposit Range',
+        Tooltip = 'How far a hive can be to feed it (default 12)',
+        Min = 1,
+        Max = 30,
+        Default = 12,
+        Suffix = 'studs',
+        Darker = true
+    })
+    DepositDelay = Beekeeper:CreateSlider({
+        Name = 'Deposit Delay',
+        Tooltip = 'Wait between deposits (default 0.1)',
         Min = 0,
         Max = 2,
-        Default = 0.5,
-        Decimal = 10,
-        Suffix = 's',
-        Tooltip = 'Delay in seconds before collecting'
+        Default = 0.1,
+        Decimal = 100,
+        Suffix = 'sec',
+        Darker = true
     })
-    
-    RangeSlider = Beekeeper:CreateSlider({
-        Name = 'Range',
-        Min = 1, 
-        Max = 30,
-        Default = 18,
-        Decimal = 1,
-        Suffix = ' studs',
-        Tooltip = 'Control distance you want to collect bees'
-    })
-    
-    ESPToggle = Beekeeper:CreateToggle({
-        Name = 'ESP',
-        Default = true,
-        Tooltip = 'ESP for bees and beehives',
-		Function = function(callback)
-			if BeesESP and BeesESP.Object then BeesESP.Object.Visible = callback end
-			if BeehiveESP and BeehiveESP.Object then BeehiveESP.Object.Visible = callback end
-			if ESPLimitToNet and ESPLimitToNet.Object then ESPLimitToNet.Object.Visible = callback end
-
-			if not callback then
-				if BeesNotify and BeesNotify.Object then BeesNotify.Object.Visible = false end
-				if BeesBackground and BeesBackground.Object then BeesBackground.Object.Visible = false end
-				if BeesColor and BeesColor.Object then BeesColor.Object.Visible = false end
-				if ShowOtherBeehives and ShowOtherBeehives.Object then ShowOtherBeehives.Object.Visible = false end
-				if BeehiveBackground and BeehiveBackground.Object then BeehiveBackground.Object.Visible = false end
-				if BeehiveColor and BeehiveColor.Object then BeehiveColor.Object.Visible = false end
-			else
-				if BeesESP and BeesESP.Enabled then
-					if BeesNotify and BeesNotify.Object then BeesNotify.Object.Visible = true end
-					if BeesBackground and BeesBackground.Object then BeesBackground.Object.Visible = true end
-					if BeesColor and BeesColor.Object then BeesColor.Object.Visible = BeesBackground.Enabled end
-				end
-				if BeehiveESP and BeehiveESP.Enabled then
-					if ShowOtherBeehives and ShowOtherBeehives.Object then ShowOtherBeehives.Object.Visible = true end
-					if BeehiveBackground and BeehiveBackground.Object then BeehiveBackground.Object.Visible = true end
-					if BeehiveColor and BeehiveColor.Object then BeehiveColor.Object.Visible = BeehiveBackground.Enabled end
-				end
-			end
-
-			if Beekeeper.Enabled then
-				if callback then
-					if BeesESP.Enabled then setupBeesESP() end
-					if BeehiveESP.Enabled then setupBeehiveESP() end
-				else
-					BeesFolder:ClearAllChildren()
-					BeehiveFolder:ClearAllChildren()
-					table.clear(BeesReference)
-					table.clear(BeehiveReference)
-				end
-			end
-		end
-    })
-    
-    ESPLimitToNet = Beekeeper:CreateToggle({
-        Name = 'Limit to Net',
-        Default = false,
-        Tooltip = 'Only show ESP when holding bee net'
-    })
-    
-    BeesESP = Beekeeper:CreateToggle({
-        Name = 'Bees',
-        Default = false,
-        Tooltip = 'Show bee locations',
-        Function = function(callback)
-            if BeesNotify and BeesNotify.Object then BeesNotify.Object.Visible = callback end
-            if BeesBackground and BeesBackground.Object then BeesBackground.Object.Visible = callback end
-            if BeesColor and BeesColor.Object then BeesColor.Object.Visible = callback end
-            
-            if Beekeeper.Enabled and ESPToggle.Enabled then
-                if callback then setupBeesESP() else
-                    BeesFolder:ClearAllChildren()
-                    table.clear(BeesReference)
-                end
+    HiveESP = Beekeeper:CreateToggle({
+        Name = 'Beehive ESP',
+        Tooltip = 'Shows how many bees each hive is holding',
+        Function = function()
+            if Beekeeper.Enabled then
+                Beekeeper:Toggle()
+                Beekeeper:Toggle()
             end
-        end
+        end,
+        Default = true
     })
-    
-    BeesNotify = Beekeeper:CreateToggle({
-        Name = 'Notify',
-        Default = false,
-        Tooltip = 'Get notifications when bees spawn'
-    })
-    
-    BeesBackground = Beekeeper:CreateToggle({
-        Name = 'Background',
-        Tooltip = 'Renders a background box behind the bee count icon',
-        Default = true,
-        Function = function(callback)
-            if BeesColor and BeesColor.Object then BeesColor.Object.Visible = callback end
-            for _, v in BeesReference do
-                if v and v:FindFirstChild("ImageLabel") then
-                    v.ImageLabel.BackgroundTransparency = 1 - (callback and BeesColor.Opacity or 0)
-                    if v:FindFirstChild("Blur") then
-                        v.Blur.Visible = callback
-                    end
-                end
-            end
-        end
-    })
-    
-	BeesColor = Beekeeper:CreateColorSlider({
-		Name = 'Background Color',
-		Tooltip = 'Color of the background box behind the bee count icon',
-		DefaultValue = 0,
-		DefaultOpacity = 0.5,
-		Function = function(hue, sat, val, opacity)
-			for _, v in BeesReference do
-				if v and v:FindFirstChild("ImageLabel") then
-					v.ImageLabel.BackgroundColor3 = Color3.fromHSV(hue, sat, val)
-					v.ImageLabel.BackgroundTransparency = 1 - opacity
-				end
-			end
-		end,
-		Darker = true
-	})
-    
-    BeehiveESP = Beekeeper:CreateToggle({
-        Name = 'Beehives',
-        Default = false,
-        Tooltip = 'Show your beehive locations with bee count',
-        Function = function(callback)
-            if ShowOtherBeehives and ShowOtherBeehives.Object then ShowOtherBeehives.Object.Visible = callback end
-            if BeehiveBackground and BeehiveBackground.Object then BeehiveBackground.Object.Visible = callback end
-            if BeehiveColor and BeehiveColor.Object then BeehiveColor.Object.Visible = callback end
-            
-            if Beekeeper.Enabled and ESPToggle.Enabled then
-                if callback then setupBeehiveESP() else
-                    BeehiveFolder:ClearAllChildren()
-                    table.clear(BeehiveReference)
-                end
-            end
-        end
-    })
-    
-    ShowOtherBeehives = Beekeeper:CreateToggle({
+    ShowOthers = Beekeeper:CreateToggle({
         Name = 'Show Others',
-        Default = false,
-        Tooltip = 'Show other players\' beehives with their usernames',
-        Function = function(callback)
-            if Beekeeper.Enabled and ESPToggle.Enabled and BeehiveESP.Enabled then
-                BeehiveFolder:ClearAllChildren()
-                table.clear(BeehiveReference)
-                setupBeehiveESP()
-            end
-        end
-    })
-    
-    BeehiveBackground = Beekeeper:CreateToggle({
-        Name = 'Beehive Background',
-        Tooltip = 'Renders a background box behind the beehive ESP element',
-        Default = true,
-        Function = function(callback)
-            if BeehiveColor and BeehiveColor.Object then BeehiveColor.Object.Visible = callback end
-            for _, ref in BeehiveReference do
-                if ref and ref.billboard then
-                    local frame = ref.billboard:FindFirstChild("Frame")
-                    if frame then
-                        if ref.isMaxed and ref.isOwn then
-                            frame.BackgroundTransparency = 1 - (callback and 0.5 or 0)
-                        else
-                            frame.BackgroundTransparency = 1 - (callback and BeehiveColor.Opacity or 0)
-                        end
-                    end
-                    if ref.billboard:FindFirstChild("Blur") then
-                        ref.billboard.Blur.Visible = callback
-                    end
-                end
-            end
-        end
-    })
-    
-    BeehiveColor = Beekeeper:CreateColorSlider({
-        Name = 'Beehive Color',
-        Tooltip = 'Color of the background box behind the beehive ESP element',
-        DefaultValue = 0,
-        DefaultOpacity = 0.5,
-        Function = function(hue, sat, val, opacity)
-            for _, ref in BeehiveReference do
-                if ref and ref.billboard then
-                    local frame = ref.billboard:FindFirstChild("Frame")
-                    if frame and not (ref.isMaxed and ref.isOwn) then
-                        frame.BackgroundColor3 = Color3.fromHSV(hue, sat, val)
-                        frame.BackgroundTransparency = 1 - opacity
-                    end
-                end
+        Tooltip = 'Includes hives placed by other players',
+        Function = function()
+            if Beekeeper.Enabled then
+                Beekeeper:Toggle()
+                Beekeeper:Toggle()
             end
         end,
         Darker = true
     })
-    
-    AutoDeposit = Beekeeper:CreateToggle({
-        Name = 'Auto Deposit',
-        Default = false,
-        Tooltip = 'Automatically deposit bees into your beehives',
-		Function = function(callback)
-			if DepositDelay and DepositDelay.Object then DepositDelay.Object.Visible = callback end
-			if DepositDelaySlider and DepositDelaySlider.Object then DepositDelaySlider.Object.Visible = (callback and DepositDelay.Enabled) end
-			if DepositRange and DepositRange.Object then DepositRange.Object.Visible = callback end
-			
-			if not callback then
-				if DepositDelaySlider and DepositDelaySlider.Object then DepositDelaySlider.Object.Visible = false end
-			end
-
-			if callback and Beekeeper.Enabled then
-				startDeposit()
-			else
-				depositRunning = false
-			end
-		end
-    })
-    
-    DepositDelay = Beekeeper:CreateToggle({
-        Name = 'Deposit Delay',
-        Default = false,
-        Tooltip = 'Add delay before depositing bees',
+    Background = Beekeeper:CreateToggle({
+        Name = 'Background',
+        Tooltip = 'Draws a background behind the count',
         Function = function(callback)
-            if DepositDelaySlider and DepositDelaySlider.Object then
-                DepositDelaySlider.Object.Visible = callback
+            if Color.Object then Color.Object.Visible = callback end
+            for _, entry in Reference do
+                entry.Frame.BackgroundTransparency = 1 - (callback and (Color.Opacity or 0.5) or 0)
+                entry.Blur.Visible = callback
             end
-        end
+        end,
+        Darker = true,
+        Default = true
     })
-    
-    DepositDelaySlider = Beekeeper:CreateSlider({
-        Name = 'Deposit Delay',
-        Min = 0,
-        Max = 2,
-        Default = 0.5,
-        Decimal = 10,
-        Suffix = 's',
-        Tooltip = 'Delay in seconds before depositing'
+    Color = Beekeeper:CreateColorSlider({
+        Name = 'Background Color',
+        Tooltip = 'Color of the background',
+        DefaultValue = 0,
+        DefaultOpacity = 0.5,
+        Function = function(hue, sat, val, opacity)
+            for _, entry in Reference do
+                entry.Frame.BackgroundColor3 = Color3.fromHSV(hue, sat, val)
+                entry.Frame.BackgroundTransparency = 1 - opacity
+            end
+        end,
+        Darker = true
     })
-    
-    DepositRange = Beekeeper:CreateSlider({
-        Name = 'Deposit Range',
-        Min = 1,
-        Max = 15,
-        Default = 10,
-        Decimal = 1,
-        Suffix = ' studs',
-        Tooltip = 'Range to deposit bees into beehives'
-    })
-	task.defer(function()
-		if DelaySlider and DelaySlider.Object then DelaySlider.Object.Visible = CollectionDelay.Enabled end
-		if not ESPToggle.Enabled or not BeesESP.Enabled then
-			if BeesNotify and BeesNotify.Object then BeesNotify.Object.Visible = false end
-			if BeesBackground and BeesBackground.Object then BeesBackground.Object.Visible = false end
-			if BeesColor and BeesColor.Object then BeesColor.Object.Visible = false end
-		else
-			if BeesColor and BeesColor.Object then BeesColor.Object.Visible = BeesBackground.Enabled end
-		end
-
-		if not ESPToggle.Enabled or not BeehiveESP.Enabled then
-			if ShowOtherBeehives and ShowOtherBeehives.Object then ShowOtherBeehives.Object.Visible = false end
-			if BeehiveBackground and BeehiveBackground.Object then BeehiveBackground.Object.Visible = false end
-			if BeehiveColor and BeehiveColor.Object then BeehiveColor.Object.Visible = false end
-		else
-			if BeehiveColor and BeehiveColor.Object then BeehiveColor.Object.Visible = BeehiveBackground.Enabled end
-		end
-
-		if AutoDeposit and not AutoDeposit.Enabled then
-			if DepositDelay and DepositDelay.Object then DepositDelay.Object.Visible = false end
-			if DepositDelaySlider and DepositDelaySlider.Object then DepositDelaySlider.Object.Visible = false end
-			if DepositRange and DepositRange.Object then DepositRange.Object.Visible = false end
-		end
-
-		if DepositDelaySlider and DepositDelaySlider.Object then
-			DepositDelaySlider.Object.Visible = (AutoDeposit.Enabled and DepositDelay.Enabled)
-		end
-	end)
 end)
 
 kitRun(function()
