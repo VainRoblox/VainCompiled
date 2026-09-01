@@ -5502,23 +5502,40 @@ run(function()
 			totals[item.itemType] += tonumber(item.amount) or 1
 		end
 	
+		--[[
+			Gear is not loot.
+	
+			Armour, swords and pickaxes are worn or held rather than stocked, so counting them
+			alongside blocks and resources says nothing useful and pushes the things that do
+			matter off the end of the strip. The item's own metadata names all three.
+		]]
+		local function isGear(itemType)
+			local meta = bedwars.ItemMeta[itemType]
+			return meta ~= nil and (meta.armor ~= nil or meta.sword ~= nil or meta.breakBlock ~= nil)
+		end
+	
 		-- Live first. The snapshot is only used when the folder cannot be reached, so the
 		-- display falls back to being stale rather than to being empty.
 		local folder = inventoryFolder(plr)
 		if folder then
 			for _, child in folder:GetChildren() do
-				count({itemType = child.Name, amount = child:GetAttribute('Amount')})
+				-- Worn armour is in this folder too, carrying the slot it sits in.
+				if child:GetAttribute('ArmorSlot') == nil and not isGear(child.Name) then
+					count({itemType = child.Name, amount = child:GetAttribute('Amount')})
+				end
 			end
 		elseif type(inventory.items) == 'table' then
 			for _, item in inventory.items do
-				count(item)
+				if not isGear(item.itemType) then
+					count(item)
+				end
 			end
 		end
 	
 		-- Their hand is normally part of the list above already; this is only for the case
 		-- where it is not.
 		local hand = inventory.hand
-		if type(hand) == 'table' and hand.itemType and not totals[hand.itemType] then
+		if type(hand) == 'table' and hand.itemType and not totals[hand.itemType] and not isGear(hand.itemType) then
 			count(hand)
 		end
 	
@@ -6513,12 +6530,18 @@ run(function()
 				enchant = name:find('enchant') ~= nil or STATUS_WEAPON_ENCHANT[name] or false
 			end
 	
-			local into = enchant and enchants or effects
-			into[#into + 1] = label
+			if enchant then
+				enchants[#enchants + 1] = label
+			else
+				-- The game keeps an icon for most effects; the ones without stay as words so
+				-- they are not quietly dropped from the tag altogether.
+				local ok, meta = pcall(function() return bedwars.StatusEffectMeta[name] end)
+				effects[#effects + 1] = {label = label, image = ok and meta and meta.image or nil}
+			end
 		end
 	
 		table.sort(enchants)
-		table.sort(effects)
+		table.sort(effects, function(a, b) return a.label < b.label end)
 		return enchants, effects
 	end
 	
@@ -6544,8 +6567,17 @@ run(function()
 		if Enchants and Enchants.Enabled then
 			text = text .. statusText(enchants, rich and '#d0a3ff')
 		end
-		if Effects and Effects.Enabled then
-			text = text .. statusText(effects, rich and '#7fd8ff')
+		--[[
+			Effects are drawn as icons rather than written out, so nothing is appended here for
+			them in the rich renderer. The Drawing renderer has no way to place an image, so it
+			keeps the words.
+		]]
+		if Effects and Effects.Enabled and not rich then
+			local words = {}
+			for _, effect in effects do
+				words[#words + 1] = effect.label
+			end
+			text = text .. statusText(words)
 		end
 		return text
 	end
@@ -6675,7 +6707,76 @@ run(function()
 	local function statusSignature(ent)
 		local enchants, effects = statusOf(ent)
 		if not enchants then return '' end
-		return table.concat(enchants, ',') .. '|' .. table.concat(effects, ',')
+	
+		local words = {}
+		for _, effect in effects do
+			words[#words + 1] = effect.label
+		end
+		return table.concat(enchants, ',') .. '|' .. table.concat(words, ',')
+	end
+	
+	--[[
+		The row of effect icons that sits above the name.
+	
+		Rebuilt whole rather than reconciled: there are only ever a handful, and the set
+		changes rarely enough that tracking which one moved costs more than it saves.
+	]]
+	local function drawEffects(nametag, ent)
+		local strip = nametag:FindFirstChild('Effects')
+		if not strip then return end
+	
+		strip:ClearAllChildren()
+	
+		local layout = Instance.new('UIListLayout')
+		layout.FillDirection = Enum.FillDirection.Horizontal
+		layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		layout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+		layout.SortOrder = Enum.SortOrder.LayoutOrder
+		layout.Padding = UDim.new(0, 2)
+		layout.Parent = strip
+	
+		if not (Effects and Effects.Enabled) then
+			strip.Visible = false
+			return
+		end
+	
+		local _, effects = statusOf(ent)
+		if not effects or #effects == 0 then
+			strip.Visible = false
+			return
+		end
+	
+		local size = math.max(10, math.floor(18 * Scale.Value))
+		local shown = 0
+	
+		for _, effect in effects do
+			if shown >= STATUS_SHOWN then break end
+			shown += 1
+	
+			if effect.image then
+				local icon = Instance.new('ImageLabel')
+				icon.BackgroundTransparency = 1
+				icon.Size = UDim2.fromOffset(size, size)
+				icon.Image = effect.image
+				icon.LayoutOrder = shown
+				icon.Parent = strip
+			else
+				local word = Instance.new('TextLabel')
+				word.BackgroundTransparency = 1
+				word.AutomaticSize = Enum.AutomaticSize.X
+				word.Size = UDim2.fromOffset(0, size)
+				word.Text = effect.label
+				word.TextColor3 = Color3.new(1, 1, 1)
+				word.TextStrokeTransparency = 0.4
+				word.TextSize = math.max(8, math.floor(size * 0.6))
+				word.FontFace = nametag.FontFace
+				word.LayoutOrder = shown
+				word.Parent = strip
+			end
+		end
+	
+		strip.Size = UDim2.fromOffset(0, size)
+		strip.Visible = shown > 0
 	end
 	
 	local Added = {
@@ -6728,6 +6829,17 @@ run(function()
 			nametag.BorderSizePixel = 0
 			nametag.Visible = false
 			nametag.Text = Strings[ent]
+	
+			local strip = Instance.new('Frame')
+			strip.Name = 'Effects'
+			strip.AnchorPoint = Vector2.new(0.5, 1)
+			strip.Position = UDim2.new(0.5, 0, 0, -2)
+			strip.Size = UDim2.fromOffset(0, 0)
+			strip.AutomaticSize = Enum.AutomaticSize.X
+			strip.BackgroundTransparency = 1
+			strip.Visible = false
+			strip.Parent = nametag
+			drawEffects(nametag, ent)
 	
 			local rankicon = Instance.new('ImageLabel')
 			rankicon.Name = 'RankIcon'
@@ -6861,6 +6973,7 @@ run(function()
 				local size = getfontsize(removeTags(Strings[ent]), nametag.TextSize, nametag.FontFace, Vector2.new(100000, 100000))
 				nametag.Size = UDim2.fromOffset(size.X + 8, size.Y + 7)
 				nametag.Text = Strings[ent]
+				drawEffects(nametag, ent)
 				-- Placed here only when there is no distance to measure around; otherwise the
 				-- loop does it, once the number is actually in the text.
 				if not Distance.Enabled then
