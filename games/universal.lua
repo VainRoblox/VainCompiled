@@ -442,10 +442,23 @@ run(function()
 		-- your Roblox name and you stop matching, with nothing to say why - so a rename
 		-- means being added again.
 		local plrstr = self.hashes[plr.Name..plr.UserId]
+
+		-- The highest matching entry wins, not the first one found.
+		--
+		-- Nothing stops two entries carrying the same player hash, and the order this
+		-- table comes out in is undefined, so taking the first match meant a duplicate
+		-- could silently hand somebody a lower rank than they hold - a demotion nobody
+		-- asked for and nothing would explain. Whoever writes the file decides what a
+		-- player is worth; the worst of several claims is never the right answer.
+		local best
 		for _, v in self.data.WhitelistedUsers do
-			if v.hash == plrstr then
-				return v.level, v.attackable or whitelist.localprio >= v.level, v.tags
+			if v.hash == plrstr and (not best or v.level > best.level) then
+				best = v
 			end
+		end
+
+		if best then
+			return best.level, best.attackable or whitelist.localprio >= best.level, best.tags
 		end
 
 		return 0, true
@@ -799,7 +812,11 @@ run(function()
 			commit = commit and #commit == 40 and commit or 'main'
 			whitelist.textdata = game:HttpGet('https://raw.githubusercontent.com/VainRoblox/whitelist/'..commit..'/PlayerWhitelist.json', true)
 		end)
-		if not suc or not hash or not whitelist.get then return true end
+		-- 'retry', not 'stop'. This used to return the same value the kill switch does,
+		-- and the caller ended the poll loop on it - so a single failed fetch, a GitHub
+		-- blip or no connection at the moment of injecting, meant no whitelist, no tags
+		-- and no blacklist for the rest of the session with nothing said about it.
+		if not suc or not hash or not whitelist.get then return 'retry' end
 		whitelist.loaded = true
 
 		if not first or whitelist.textdata ~= whitelist.olddata then
@@ -854,12 +871,12 @@ run(function()
 
 			if whitelist.data.KillVain then
 				vain:Uninject()
-				return true
+				return 'stop'
 			end
 
 			if whitelist.data.BlacklistedUsers[tostring(lplr.UserId)] then
 				task.spawn(lplr.kick, lplr, whitelist.data.BlacklistedUsers[tostring(lplr.UserId)])
-				return true
+				return 'stop'
 			end
 		end
 	end
@@ -966,7 +983,8 @@ run(function()
 
 	task.spawn(function()
 		repeat
-			if whitelist:update(whitelist.loaded) then return end
+			-- Only a deliberate stop ends this. Anything else comes round again.
+			if whitelist:update(whitelist.loaded) == 'stop' then return end
 			task.wait(10)
 		until vain.Loaded == nil
 	end)
