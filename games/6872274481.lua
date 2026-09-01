@@ -10788,14 +10788,16 @@ end)
 kitRun(function()
     local Beekeeper
     local Collect
+    local LimitToItem
     local EquipNet
     local CollectRange
     local CollectDelay
     local Deposit
     local DepositRange
     local DepositDelay
+    local BeeLimit
     local HiveESP
-    local ShowOthers
+    local ShowOwn
     local Background
     local Color = {}
     local Reference = {}
@@ -10881,6 +10883,32 @@ kitRun(function()
     end
 
     --[[
+        The colour of the team a hive belongs to.
+
+        The queue's own team list carries it, as a plain integer rather than a Color3, and
+        is keyed by an id that arrives as a string - so the list is walked and compared as
+        numbers rather than indexed directly. White when the team cannot be worked out,
+        which reads as no answer rather than as a wrong one.
+    ]]
+    local function hiveColor(hive)
+        local placer = playersService:GetPlayerByUserId(hive:GetAttribute('PlacedByUserId') or 0)
+        local team = placer and placer:GetAttribute('Team')
+        if not team then return Color3.new(1, 1, 1) end
+
+        local queue = bedwars.QueueMeta[store.queueType]
+        local teams = queue and queue.teams
+        if not teams then return Color3.new(1, 1, 1) end
+
+        for _, entry in teams do
+            if tonumber(entry.id) == team and type(entry.colorHex) == 'number' then
+                local hex = entry.colorHex
+                return Color3.fromRGB(math.floor(hex / 65536) % 256, math.floor(hex / 256) % 256, hex % 256)
+            end
+        end
+        return Color3.new(1, 1, 1)
+    end
+
+    --[[
         Catching, one bee at a time.
 
         The remote is named here rather than looked up in the scraped table. That table
@@ -10902,6 +10930,15 @@ kitRun(function()
             if not part then continue end
             if (root.Position - part.Position).Magnitude > range then continue end
 
+            --[[
+                Two stages, in this order on purpose.
+
+                Limit to Item asks what is in your hand right now, so it has to be read
+                before Equip Net has a chance to put the net there - otherwise the equip
+                satisfies the very check that was meant to hold it back, and the setting
+                does nothing at all.
+            ]]
+            if on(LimitToItem) and not heldIs('bee_net') then return end
             if on(EquipNet) and not equipNet() then return end
 
             bedwars.Client:Get('PickUpBee'):SendToServer({beeId = id})
@@ -10927,8 +10964,14 @@ kitRun(function()
         local range = value(DepositRange, 12)
         local best, closest
 
+        -- A hive's Level is how many bees it is holding, so the cap reads straight off
+        -- it. At or above the limit it is passed over and a nearer-but-full hive cannot
+        -- soak up bees meant for one with room.
+        local limit = value(BeeLimit, 10)
+
         for _, hive in collectionService:GetTagged('beehive') do
             if not ownHive(hive) then continue end
+            if (hive:GetAttribute('Level') or 0) >= limit then continue end
 
             local part = partOf(hive)
             if not part then continue end
@@ -10990,7 +11033,7 @@ kitRun(function()
         if Reference[hive] then return end
 
         local own = ownHive(hive)
-        if not own and not on(ShowOthers) then return end
+        if own and not on(ShowOwn) then return end
 
         local part = partOf(hive)
         if not part then return end
@@ -11022,7 +11065,7 @@ kitRun(function()
         label.Name = 'Level'
         label.Size = UDim2.fromScale(1, 1)
         label.BackgroundTransparency = 1
-        label.TextColor3 = Color3.new(1, 1, 1)
+        label.TextColor3 = hiveColor(hive)
         label.TextStrokeTransparency = 0.4
         label.TextScaled = true
         label.RichText = true
@@ -11044,7 +11087,7 @@ kitRun(function()
     end
 
     Beekeeper = vain.Categories.Kit:CreateModule({
-        Name = 'AutoBeekeeper',
+        Name = 'Beekeeper',
         Function = function(callback)
             if callback then
                 if on(HiveESP) then
@@ -11082,11 +11125,17 @@ kitRun(function()
         Name = 'Auto Collect',
         Tooltip = 'Catches wild bees around you',
         Function = function(callback)
+            if LimitToItem and LimitToItem.Object then LimitToItem.Object.Visible = callback end
             if EquipNet and EquipNet.Object then EquipNet.Object.Visible = callback end
             if CollectRange and CollectRange.Object then CollectRange.Object.Visible = callback end
             if CollectDelay and CollectDelay.Object then CollectDelay.Object.Visible = callback end
         end,
         Default = true
+    })
+    LimitToItem = Beekeeper:CreateToggle({
+        Name = 'Limit to Item',
+        Tooltip = 'Only catches while the net is already in your hand',
+        Darker = true
     })
     EquipNet = Beekeeper:CreateToggle({
         Name = 'Equip Net',
@@ -11119,6 +11168,7 @@ kitRun(function()
         Function = function(callback)
             if DepositRange and DepositRange.Object then DepositRange.Object.Visible = callback end
             if DepositDelay and DepositDelay.Object then DepositDelay.Object.Visible = callback end
+            if BeeLimit and BeeLimit.Object then BeeLimit.Object.Visible = callback end
         end,
         Default = true
     })
@@ -11141,6 +11191,15 @@ kitRun(function()
         Suffix = 'sec',
         Darker = true
     })
+    BeeLimit = Beekeeper:CreateSlider({
+        Name = 'Bee Limit',
+        Tooltip = 'Stops feeding a hive once it holds this many (default 10)',
+        Min = 1,
+        Max = 25,
+        Default = 10,
+        Suffix = 'bees',
+        Darker = true
+    })
     HiveESP = Beekeeper:CreateToggle({
         Name = 'Beehive ESP',
         Tooltip = 'Shows how many bees each hive is holding',
@@ -11152,9 +11211,9 @@ kitRun(function()
         end,
         Default = true
     })
-    ShowOthers = Beekeeper:CreateToggle({
-        Name = 'Show Others',
-        Tooltip = 'Includes hives placed by other players',
+    ShowOwn = Beekeeper:CreateToggle({
+        Name = 'Show Own',
+        Tooltip = 'Includes hives you placed yourself',
         Function = function()
             if Beekeeper.Enabled then
                 Beekeeper:Toggle()
@@ -11179,7 +11238,9 @@ kitRun(function()
     Color = Beekeeper:CreateColorSlider({
         Name = 'Background Color',
         Tooltip = 'Color of the background',
-        DefaultValue = 0,
+        -- Left out on purpose: the slider reads this as `DefaultValue or 1`, and zero is
+        -- truthy in Lua, so passing 0 pinned the brightness at zero and the background
+        -- came out black whatever colour was picked.
         DefaultOpacity = 0.5,
         Function = function(hue, sat, val, opacity)
             for _, entry in Reference do
@@ -17957,222 +18018,6 @@ kitRun(function()
 		Max = 360,
 		Default = 360,
 	})
-end)
-
-kitRun(function()
-    local BeehiveSpy
-    local BackgroundToggle
-    local ColorSlider
-
-    local cloneref = cloneref or function(obj) return obj end
-    local collectionService = cloneref(game:GetService('CollectionService'))
-    local runService        = cloneref(game:GetService('RunService'))
-    local playersService    = cloneref(game:GetService('Players'))
-    local lplr              = playersService.LocalPlayer
-
-    local vain      = shared.vain
-    local getcustomasset = vain.Libraries.getcustomasset
-
-    local BeehiveFolder = Instance.new('Folder')
-    BeehiveFolder.Parent = vain.gui
-    local BeehiveReference = {}
-
-    local function addBlur(parent)
-        local blur = Instance.new('ImageLabel')
-        blur.Name = 'Blur'
-        blur.Size = UDim2.new(1, 89, 1, 52)
-        blur.Position = UDim2.fromOffset(-48, -31)
-        blur.BackgroundTransparency = 1
-        blur.Image = getcustomasset('newvape/assets/new/blur.png')
-        blur.ScaleType = Enum.ScaleType.Slice
-        blur.SliceCenter = Rect.new(52, 31, 261, 502)
-        blur.Parent = parent
-        return blur
-    end
-
-    local function isMyBeehive(beehive)
-        if not beehive then return false end
-        local placedBy = beehive:GetAttribute("PlacedByUserId")
-        return placedBy and placedBy == lplr.UserId
-    end
-
-    local function getBeehiveOwnerName(beehive)
-        if not beehive then return "Unknown" end
-        local placedBy = beehive:GetAttribute("PlacedByUserId")
-        if not placedBy then return "Unknown" end
-        local player = playersService:GetPlayerByUserId(placedBy)
-        if player then return player.Name end
-        return "Player"
-    end
-
-	local function getBeehiveOwner(beehive)
-		if not beehive then return nil end
-		local placedBy = beehive:GetAttribute("PlacedByUserId")
-		if not placedBy then return nil end
-        local player = playersService:GetPlayerByUserId(placedBy)
-        if player then return player end
-        return nil
-	end
-
-    local function AddedBeehive(beehive)
-        if isMyBeehive(beehive) then return end
-        if BeehiveReference[beehive] then return end
-
-        local level     = beehive:GetAttribute("Level") or 0
-        local ownerName = getBeehiveOwnerName(beehive)
-		local owner = getBeehiveOwner(beehive)
-		if not owner then return end
-		if getAccountTier(owner) >= 1 and getAccountTier(lplr) == 0 then return end
-
-        local billboard = Instance.new('BillboardGui')
-        billboard.Parent = BeehiveFolder
-        billboard.Name   = 'beehive-spy'
-        billboard.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
-        billboard.Size   = UDim2.fromOffset(120, 40)
-        billboard.AlwaysOnTop = true
-        billboard.ClipsDescendants = false
-        billboard.Adornee = beehive
-
-        local blur = addBlur(billboard)
-        blur.Visible = BackgroundToggle and BackgroundToggle.Enabled or true
-
-        local hue, sat, val, opacity = 0, 0, 1, 0.5
-        if ColorSlider then
-            hue, sat, val, opacity = ColorSlider.Hue, ColorSlider.Sat, ColorSlider.Value, ColorSlider.Opacity
-        end
-
-        local frame = Instance.new('Frame')
-        frame.Size = UDim2.fromScale(1, 1)
-        frame.BackgroundColor3 = Color3.fromHSV(hue, sat, val)
-        frame.BackgroundTransparency = 1 - ((BackgroundToggle and BackgroundToggle.Enabled or true) and opacity or 0)
-        frame.BorderSizePixel = 0
-        frame.Parent = billboard
-        local uicorner = Instance.new('UICorner')
-        uicorner.CornerRadius = UDim.new(0, 6)
-        uicorner.Parent = frame
-        local nameLabel = Instance.new('TextLabel')
-        nameLabel.Name = 'OwnerName'
-        nameLabel.Size = UDim2.new(1, 0, 0.4, 0)
-        nameLabel.Position = UDim2.new(0, 0, 0, -20)
-        nameLabel.BackgroundTransparency = 1
-        nameLabel.Text = ownerName
-        nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-        nameLabel.TextSize = 12
-        nameLabel.Font = Enum.Font.GothamBold
-        nameLabel.TextStrokeTransparency = 0.5
-        nameLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
-        nameLabel.Parent = billboard
-        local homeLabel = Instance.new('TextLabel')
-        homeLabel.Size = UDim2.fromOffset(20, 20)
-        homeLabel.Position = UDim2.new(0, 5, 0.5, 0)
-        homeLabel.AnchorPoint = Vector2.new(0, 0.5)
-        homeLabel.BackgroundTransparency = 1
-        homeLabel.Text = "🏘️"
-        homeLabel.TextSize = 16
-        homeLabel.Parent = frame
-        local levelLabel = Instance.new('TextLabel')
-        levelLabel.Name = 'Level'
-        levelLabel.Size = UDim2.new(0, 25, 1, 0)
-        levelLabel.Position = UDim2.new(1, -30, 0, 0)
-        levelLabel.BackgroundTransparency = 1
-        levelLabel.Text = tostring(level)
-        levelLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-        levelLabel.TextSize = 16
-        levelLabel.Font = Enum.Font.GothamBold
-        levelLabel.TextStrokeTransparency = 0.5
-        levelLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
-        levelLabel.Parent = frame
-
-        BeehiveReference[beehive] = {
-            billboard  = billboard,
-            levelLabel = levelLabel,
-            frame      = frame,
-        }
-
-        BeehiveSpy:Clean(beehive:GetAttributeChangedSignal("Level"):Connect(function()
-            local ref = BeehiveReference[beehive]
-            if ref and ref.levelLabel then
-                ref.levelLabel.Text = tostring(beehive:GetAttribute("Level") or 0)
-            end
-        end))
-    end
-
-    local function RemovedBeehive(beehive)
-        if BeehiveReference[beehive] then
-            BeehiveReference[beehive].billboard:Destroy()
-            BeehiveReference[beehive] = nil
-        end
-    end
-
-    local function setupBeehiveSpy()
-        for _, beehive in collectionService:GetTagged('beehive') do
-            AddedBeehive(beehive)
-        end
-
-        BeehiveSpy:Clean(collectionService:GetInstanceAddedSignal('beehive'):Connect(function(beehive)
-            task.wait(0.1)
-            AddedBeehive(beehive)
-        end))
-
-        BeehiveSpy:Clean(collectionService:GetInstanceRemovedSignal('beehive'):Connect(function(beehive)
-            RemovedBeehive(beehive)
-        end))
-    end
-
-    BeehiveSpy = vain.Categories.Kit:CreateModule({
-        Name    = "Beehive Spy",
-        Tooltip = "Shows enemy/other players' beehives with owner name and level (ignores your own)",
-        Function = function(callback)
-            if callback then
-                setupBeehiveSpy()
-            else
-                BeehiveFolder:ClearAllChildren()
-                table.clear(BeehiveReference)
-            end
-        end
-    })
-
-    BackgroundToggle = BeehiveSpy:CreateToggle({
-        Name    = "Background",
-        Tooltip = 'Renders a background box behind this ESP element',
-        Default = true,
-        Function = function(callback)
-            if ColorSlider and ColorSlider.Object then ColorSlider.Object.Visible = callback end
-            for _, ref in BeehiveReference do
-                if ref and ref.billboard then
-                    local frame = ref.billboard:FindFirstChild("Frame")
-                    local blur  = ref.billboard:FindFirstChild("Blur")
-                    if frame then
-                        local opacity = ColorSlider and ColorSlider.Opacity or 0.5
-                        frame.BackgroundTransparency = 1 - (callback and opacity or 0)
-                    end
-                    if blur then blur.Visible = callback end
-                end
-            end
-        end
-    })
-
-    ColorSlider = BeehiveSpy:CreateColorSlider({
-        Name         = "Color",
-        Tooltip = 'Color of the background box behind this ESP element',
-        DefaultValue = 0,
-        DefaultOpacity = 0.5,
-        Function = function(hue, sat, val, opacity)
-            for _, ref in BeehiveReference do
-                if ref and ref.frame then
-                    ref.frame.BackgroundColor3 = Color3.fromHSV(hue, sat, val)
-                    ref.frame.BackgroundTransparency = 1 - (BackgroundToggle.Enabled and opacity or 0)
-                end
-            end
-        end,
-        Darker = true
-    })
-
-    task.defer(function()
-        if ColorSlider and ColorSlider.Object then
-            ColorSlider.Object.Visible = BackgroundToggle and BackgroundToggle.Enabled or true
-        end
-    end)
 end)
 
 kitRun(function()
