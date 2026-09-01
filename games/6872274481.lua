@@ -5854,7 +5854,7 @@ run(function()
 	local Device
 	local Enchants
 	local Effects
-	local Strings, Sizes, Reference = {}, {}, {}
+	local Strings, Sizes, Reference, Prefixes = {}, {}, {}, {}
 	local Folder = Instance.new('Folder')
 	Folder.Parent = vain.gui
 	local methodused
@@ -6060,6 +6060,52 @@ run(function()
 		return type(tier) == 'string' and (tier:sub(1, 1):upper() .. tier:sub(2)) or meta.name
 	end
 	
+	-- The game's own badge for a division, rather than the word for it.
+	local function divisionImage(plr)
+		local division = Divisions[plr.UserId]
+		if not division and division ~= 0 then return end
+	
+		local ok, meta = pcall(function() return bedwars.RankMeta[division] end)
+		if not ok or type(meta) ~= 'table' then return end
+		return meta.image
+	end
+	
+	local MEASURE = Vector2.new(100000, 100000)
+	
+	--[[
+		A run of spaces standing in for the badge.
+	
+		RichText cannot place an image inline, so the badge is a child image laid over a gap
+		held open in the text. The gap is measured in spaces at the tag's own font and size, so
+		it stays the right width at any Scale rather than being a fixed guess.
+	]]
+	local function rankGap(ent, textSize, font)
+		if not (Rank and Rank.Enabled) or not ent.Player or not divisionImage(ent.Player) then return '' end
+	
+		local space = getfontsize(' ', textSize, font, MEASURE).X
+		if space <= 0 then return ' ' end
+	
+		local height = getfontsize('X', textSize, font, MEASURE).Y + 7
+		return string.rep(' ', math.max(1, math.ceil((height + 2) / space)))
+	end
+	
+	-- The badge dropped into that gap. The text before it is measured as drawn, so the badge
+	-- lands between the distance and the name however wide the distance happens to be.
+	local function placeRankIcon(nametag, ent, prefix)
+		local icon = nametag:FindFirstChild('RankIcon')
+		if not icon then return end
+	
+		local image = (Rank and Rank.Enabled) and ent.Player and divisionImage(ent.Player) or nil
+		icon.Image = image or ''
+		icon.Visible = image ~= nil
+		if not image then return end
+	
+		local height = nametag.Size.Y.Offset
+		icon.Size = UDim2.fromOffset(height, height)
+		-- 4 is the tag's own left padding: it is sized to the text plus 8, centred.
+		icon.Position = UDim2.new(0, 4 + getfontsize(removeTags(prefix or ''), nametag.TextSize, nametag.FontFace, MEASURE).X, 0.5, 0)
+	end
+	
 	-- Everyone not asked about yet, in one call rather than one call each.
 	local function fetchDivisions()
 		if DivisionFetching or not (Rank and Rank.Enabled) then return end
@@ -6125,13 +6171,6 @@ run(function()
 			local nametag = Instance.new('TextLabel')
 			Strings[ent] = ent.Player and whitelist:tag(ent.Player, true, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
 	
-			if Rank.Enabled and ent.Player then
-				local division = divisionOf(ent.Player)
-				if division then
-					Strings[ent] = Strings[ent]..' <font color="rgb(200, 200, 200)">'..division..'</font>'
-				end
-			end
-	
 			if Device.Enabled and ent.Player then
 				local executor = (identifyexecutor and identifyexecutor() or {'Unknown'})[1] or 'Unknown'
 				local deviceIcon = executor:find('Mobile') and '📱' or '💻'
@@ -6145,9 +6184,10 @@ run(function()
 	
 			Strings[ent] = appendStatus(ent, Strings[ent], true)
 	
-			if Distance.Enabled then
-				Strings[ent] = '<font color="rgb(85, 255, 85)">[</font><font color="rgb(255, 255, 255)">%s</font><font color="rgb(85, 255, 85)">]</font> '..Strings[ent]
-			end
+			-- The badge sits between the distance and the name, so the distance is kept aside
+			-- as the run of text the badge has to clear.
+			Prefixes[ent] = Distance.Enabled and '<font color="rgb(85, 255, 85)">[</font><font color="rgb(255, 255, 255)">%s</font><font color="rgb(85, 255, 85)">]</font> ' or ''
+			Strings[ent] = Prefixes[ent]..rankGap(ent, 14 * Scale.Value, FontOption.Value)..Strings[ent]
 	
 			if Equipment.Enabled then
 				for i, v in {'Hand', 'Helmet', 'Chestplate', 'Boots', 'Kit'} do
@@ -6172,6 +6212,21 @@ run(function()
 			nametag.BorderSizePixel = 0
 			nametag.Visible = false
 			nametag.Text = Strings[ent]
+	
+			local rankicon = Instance.new('ImageLabel')
+			rankicon.Name = 'RankIcon'
+			rankicon.AnchorPoint = Vector2.new(0, 0.5)
+			rankicon.BackgroundTransparency = 1
+			rankicon.ScaleType = Enum.ScaleType.Fit
+			rankicon.Image = ''
+			rankicon.Visible = false
+			rankicon.Parent = nametag
+			-- With a distance showing, the loop places it instead, once the number is in the
+			-- text and there is something real to measure.
+			if not Distance.Enabled then
+				placeRankIcon(nametag, ent, '')
+			end
+	
 			nametag.TextColor3 = entitylib.getEntityColor(ent) or Color3.fromHSV(Color.Hue, Color.Sat, Color.Value)
 			nametag.RichText = true
 			nametag.Parent = Folder
@@ -6231,6 +6286,7 @@ run(function()
 				Reference[ent] = nil
 				Strings[ent] = nil
 				Sizes[ent] = nil
+				Prefixes[ent] = nil
 				StatusSig[ent] = nil
 				v:Destroy()
 			end
@@ -6241,6 +6297,7 @@ run(function()
 				Reference[ent] = nil
 				Strings[ent] = nil
 				Sizes[ent] = nil
+				Prefixes[ent] = nil
 				StatusSig[ent] = nil
 				for _, obj in v do
 					pcall(function()
@@ -6259,13 +6316,6 @@ run(function()
 				Sizes[ent] = nil
 				Strings[ent] = ent.Player and whitelist:tag(ent.Player, true, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
 	
-				if Rank.Enabled and ent.Player then
-					local division = divisionOf(ent.Player)
-					if division then
-						Strings[ent] = Strings[ent]..' <font color="rgb(200, 200, 200)">'..division..'</font>'
-					end
-				end
-	
 				if Device.Enabled and ent.Player then
 					local executor = (identifyexecutor and identifyexecutor() or {'Unknown'})[1] or 'Unknown'
 					local deviceIcon = executor:find('Mobile') and '📱' or '💻'
@@ -6279,9 +6329,8 @@ run(function()
 	
 				Strings[ent] = appendStatus(ent, Strings[ent], true)
 	
-				if Distance.Enabled then
-					Strings[ent] = '<font color="rgb(85, 255, 85)">[</font><font color="rgb(255, 255, 255)">%s</font><font color="rgb(85, 255, 85)">]</font> '..Strings[ent]
-				end
+				Prefixes[ent] = Distance.Enabled and '<font color="rgb(85, 255, 85)">[</font><font color="rgb(255, 255, 255)">%s</font><font color="rgb(85, 255, 85)">]</font> ' or ''
+				Strings[ent] = Prefixes[ent]..rankGap(ent, nametag.TextSize, nametag.FontFace)..Strings[ent]
 	
 				if Equipment.Enabled and store.inventories[ent.Player] then
 					local kit = ent.Player:GetAttribute('PlayingAsKit')
@@ -6296,6 +6345,11 @@ run(function()
 				local size = getfontsize(removeTags(Strings[ent]), nametag.TextSize, nametag.FontFace, Vector2.new(100000, 100000))
 				nametag.Size = UDim2.fromOffset(size.X + 8, size.Y + 7)
 				nametag.Text = Strings[ent]
+				-- Placed here only when there is no distance to measure around; otherwise the
+				-- loop does it, once the number is actually in the text.
+				if not Distance.Enabled then
+					placeRankIcon(nametag, ent, '')
+				end
 			end
 		end,
 		Drawing = function(ent)
@@ -6396,6 +6450,8 @@ run(function()
 						local ize = getfontsize(removeTags(nametag.Text), nametag.TextSize, nametag.FontFace, Vector2.new(100000, 100000))
 						nametag.Size = UDim2.fromOffset(ize.X + 8, ize.Y + 7)
 						Sizes[ent] = mag
+						-- Only when the number changed, so the badge is not re-measured every frame.
+						placeRankIcon(nametag, ent, string.format(Prefixes[ent] or '', mag))
 					end
 				end
 				nametag.Position = UDim2.fromOffset(headPos.X, headPos.Y)
