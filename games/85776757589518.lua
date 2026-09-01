@@ -640,6 +640,10 @@ run(function()
 
 	local function inDanger(pos, d, margin)
 		if d.kind == 'circle' then
+			-- Height matters for these too: a ring cast on the floor below is not one we
+			-- are standing in, and treating it as one kept the dodge running with nowhere
+			-- sensible to go.
+			if math.abs(pos.Y - d.pos.Y) > 25 then return false end
 			local dx, dz = pos.X - d.pos.X, pos.Z - d.pos.Z
 			return (dx * dx + dz * dz) <= (d.radius + margin) ^ 2
 		else
@@ -652,8 +656,21 @@ run(function()
 
 	local function safeSpot(pos, d, margin)
 		if d.kind == 'circle' then
+			--[[
+				Cast on your feet, a ring leaves no direction to run: the vector from its
+				centre to you is nothing, and normalising nothing is what sent the dodge
+				somewhere useless. Facing decides it instead - sideways, so it steps out of
+				the ring rather than backing away from whatever is in front of it.
+			]]
 			local dir = Vector3.new(pos.X - d.pos.X, 0, pos.Z - d.pos.Z)
-			dir = dir.Magnitude > 0.1 and dir.Unit or Vector3.new(1, 0, 0)
+			if dir.Magnitude <= 0.1 then
+				local hrp = lplr.Character and lplr.Character:FindFirstChild('HumanoidRootPart')
+				local look = hrp and hrp.CFrame.LookVector or Vector3.new(0, 0, 1)
+				dir = Vector3.new(-look.Z, 0, look.X)
+				dir = dir.Magnitude > 0.1 and dir.Unit or Vector3.new(1, 0, 0)
+			else
+				dir = dir.Unit
+			end
 			return Vector3.new(d.pos.X, pos.Y, d.pos.Z) + dir * (d.radius + margin)
 		else
 			local lp = d.cf:PointToObjectSpace(pos)
@@ -740,9 +757,33 @@ run(function()
 		end)
 		lastScan = os.clock()
 	end
+	--[[
+		Whether there is anything solid in the way.
+
+		The nearest enemy by straight line is often one in the next room, behind a barrier
+		the dungeon has not opened yet - so the farm would walk into a wall and stand there
+		while the room it was actually in went unfought. Bodies are excluded from the check,
+		since a mob standing between us and another mob is not an obstruction, and the
+		telegraph parts exclude themselves by being unqueryable.
+	]]
+	local reachParams = RaycastParams.new()
+	reachParams.FilterType = Enum.RaycastFilterType.Exclude
+
+	local function reachable(from, part)
+		local skip = {lplr.Character}
+		for _, m in enemyCache do
+			if m and m.Parent then table.insert(skip, m) end
+		end
+		reachParams.FilterDescendantsInstances = skip
+		return workspace:Raycast(from, part.Position - from, reachParams) == nil
+	end
+
 	local function nearestEnemy(pos)
 		if os.clock() - lastScan > 1.5 or #enemyCache == 0 then rescan() end
+
 		local best, bestPart, bestDist
+		local anyBest, anyPart, anyDist
+
 		for i = #enemyCache, 1, -1 do
 			local m = enemyCache[i]
 			local hum = m and m.Parent and m:FindFirstChildOfClass('Humanoid')
@@ -751,10 +792,18 @@ run(function()
 				table.remove(enemyCache, i)
 			else
 				local dist = (part.Position - pos).Magnitude
-				if not bestDist or dist < bestDist then best, bestPart, bestDist = m, part, dist end
+				if not anyDist or dist < anyDist then anyBest, anyPart, anyDist = m, part, dist end
+				if (not bestDist or dist < bestDist) and reachable(pos, part) then
+					best, bestPart, bestDist = m, part, dist
+				end
 			end
 		end
-		return best, bestPart, bestDist
+
+		-- Falling back to the unreachable one on purpose: with the room already clear, the
+		-- only thing left is whatever is through the next door, and walking at it is how
+		-- the door gets opened.
+		if best then return best, bestPart, bestDist end
+		return anyBest, anyPart, anyDist
 	end
 
 	--[[
@@ -842,10 +891,35 @@ run(function()
 	groundParams.FilterType = Enum.RaycastFilterType.Exclude
 	local lastStep = os.clock()
 
+	--[[
+		The floor under a destination, and only the floor.
+
+		The one thing excluded here used to be our own character, so a step aimed at a spot
+		with a mob standing in it raycast onto the MOB and took its head for ground - which
+		is how dodging a circle turned into climbing on top of whoever cast it. Bodies are
+		skipped now, and so is anything a raycast should never have seen anyway.
+
+		The height is also clamped: a walking player cannot rise four studs in a tenth of a
+		second, so neither does this. A ledge that cannot be stepped onto is simply not
+		stepped onto, rather than being climbed in one frame.
+	]]
+	local MAX_RISE = 4
+
 	local function groundAt(position, fallbackY)
-		groundParams.FilterDescendantsInstances = {lplr.Character}
+		local skip = {lplr.Character}
+		for _, m in enemyCache do
+			if m and m.Parent then
+				table.insert(skip, m)
+			end
+		end
+		groundParams.FilterDescendantsInstances = skip
+
 		local hit = workspace:Raycast(position + Vector3.new(0, 12, 0), Vector3.new(0, -60, 0), groundParams)
-		return hit and (hit.Position.Y + 3) or fallbackY
+		if not hit then return fallbackY end
+
+		local y = hit.Position.Y + 3
+		if y > fallbackY + MAX_RISE then return fallbackY end
+		return y
 	end
 
 	local function stepTo(hrp, hum, goal)
@@ -865,11 +939,24 @@ run(function()
 			* (hrp.CFrame - hrp.CFrame.Position)
 	end
 
-	-- One way in, so every branch below moves the same way and the setting decides how.
+	--[[
+		One way in, so every branch below moves the same way and the setting decides how.
+
+		Walking needs the extra care. MoveTo restarts the humanoid's walk from scratch every
+		time it is called, so issuing one ten times a second - which is what strafing and
+		dodging do, since both recompute their destination each tick - left it forever
+		beginning a walk and never taking it. Only a goal that has actually moved is worth
+		reissuing, and that is the difference between the two modes dodging and only one.
+	]]
+	local lastGoal
 	local function goTo(hum, hrp, goal)
 		if StepMove ~= nil and StepMove.Enabled then
 			stepTo(hrp, hum, goal)
-		else
+			return
+		end
+
+		if not lastGoal or (goal - lastGoal).Magnitude > 4 then
+			lastGoal = goal
 			hum:MoveTo(goal)
 		end
 	end
