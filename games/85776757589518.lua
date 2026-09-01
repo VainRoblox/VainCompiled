@@ -566,90 +566,9 @@ run(function()
 	local dangers = {}
 	local dodgeReady = false
 
-	--[[
-		The danger zones as they actually appear in the world.
-
-		Every telegraph the client draws - a boss slam, and the mark a ranged enemy throws
-		down at your feet alike - is a real part with a distinctive signature: Neon,
-		anchored, and deliberately untouchable, unqueryable and non-colliding so it never
-		gets in the way of anything. Recognising that on sight is better than reading the
-		message that caused it. The part is placed against the terrain rather than at the
-		raw position it was sent with, it exists for exactly as long as the warning does
-		rather than for a guessed-at window, and it does not depend on being able to listen
-		in on a network bridge the game already has a handler on.
-
-		A block is the cube shape; a cylinder is the circle one, laid on its side by the
-		game so its flat face is on the ground, which is why the radius is read off Y.
-	]]
-	local function watchHitboxParts()
-		workspace.ChildAdded:Connect(function(object)
-			-- Material and colour are deliberately not tested: the caller passes a
-			-- properties table that is applied over the part after it is built, and a red
-			-- lane is exactly that. What no ordinary piece of map does is sit there
-			-- anchored while being invisible to both collision and raycasts.
-			if not object:IsA('Part') then return end
-			if not object.Anchored or object.CanQuery or object.CanCollide then return end
-
-			if object.Shape == Enum.PartType.Cylinder then
-				table.insert(dangers, {kind = 'circle', part = object})
-			elseif object.Shape == Enum.PartType.Block then
-				table.insert(dangers, {kind = 'cube', part = object})
-			end
-		end)
-	end
-
-	-- A zone read from its part is measured fresh each time, since the game tweens these
-	-- into place while the warning plays.
-	local function refreshZone(d)
-		if not d.part then return true end
-		if not d.part.Parent then return false end
-
-		if d.kind == 'circle' then
-			d.pos = d.part.Position
-			d.radius = d.part.Size.Y * 0.5
-		else
-			d.cf = d.part.CFrame
-			d.size = d.part.Size
-		end
-		return true
-	end
-
-	--[[
-		The telegraph taken at its source.
-
-		The module the game draws these with returns the very table it dispatches through,
-		and its own handler looks the shape up on that table each time one arrives - so
-		replacing the two entries on it puts us in front of every warning, with the exact
-		numbers the game is about to draw, before it draws anything. No second listener on
-		a bridge the game already owns, and nothing to recognise by sight.
-	]]
-	local function hookPrecast(note)
-		local modules = replicatedStorage:FindFirstChild('modules')
-		local module = modules and modules:FindFirstChild('PrecastHitbox')
-		if not module then return end
-
-		local precast = require(module)
-		if type(precast) ~= 'table' then return end
-
-		local oldCube, oldCircle = rawget(precast, 'Cube'), rawget(precast, 'Circle')
-		if oldCube then
-			precast.Cube = function(cframe, size, delay, startTime, properties)
-				note('cube', cframe, size, delay, startTime)
-				return oldCube(cframe, size, delay, startTime, properties)
-			end
-		end
-		if oldCircle then
-			precast.Circle = function(position, radius, delay, startTime, properties)
-				note('circle', position, radius, delay, startTime)
-				return oldCircle(position, radius, delay, startTime, properties)
-			end
-		end
-	end
-
 	local function setupDodge()
 		if dodgeReady then return end
 		dodgeReady = true
-		watchHitboxParts()
 
 		pcall(hookPrecast, function(kind, a, b, delay, startTime)
 			local start = tonumber(startTime) or workspace:GetServerTimeNow()
@@ -722,13 +641,7 @@ run(function()
 	local function dodgeTarget(pos)
 		local now = workspace:GetServerTimeNow()
 		for i = #dangers, 1, -1 do
-			local d = dangers[i]
-			-- A zone backed by a part is over when the part goes; one from the bridge has
-			-- only a predicted window to go on.
-			local alive = refreshZone(d)
-			if not alive or (not d.part and now > d.expire) then
-				table.remove(dangers, i)
-			end
+			if now > dangers[i].expire then table.remove(dangers, i) end
 		end
 
 		local margin = 5
