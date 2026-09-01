@@ -1350,9 +1350,28 @@ run(function()
 			hrp.CFrame = CFrame.new(desired) * (hrp.CFrame - hrp.CFrame.Position)
 		end
 
-		-- Shorter and shorter steps until one has floor under it. Standing still is the
-		-- last resort rather than the first answer, so a narrow ledge is still walkable.
-		for _, fraction in {1, 0.6, 0.3} do
+		--[[
+			Around an obstruction rather than into it.
+
+			Shortening the step when the way ahead had no floor meant every awkward corner
+			cost most of the pace - a third of a step, taken ten times a second, is a crawl,
+			and it is why dodges felt slow even though the budget was right.
+
+			So the direction is tried either side first, at full length, which walks around
+			a corner instead of edging up to it. Shortening stays as the last resort for
+			somewhere genuinely tight.
+		]]
+		for _, turn in {0, 0.4, -0.4, 0.9, -0.9, 1.5, -1.5} do
+			local aim = turn == 0 and direction or (CFrame.Angles(0, turn, 0) * direction)
+			local target = hrp.Position + aim * full
+			local y = groundAt(target, hrp.Position.Y)
+			if y then
+				place(Vector3.new(target.X, y, target.Z))
+				return
+			end
+		end
+
+		for _, fraction in {0.6, 0.3} do
 			local target = hrp.Position + direction * (full * fraction)
 			local y = groundAt(target, hrp.Position.Y)
 			if y then
@@ -1399,12 +1418,24 @@ run(function()
 		beginning a walk and never taking it. Only a goal that has actually moved is worth
 		reissuing, and that is the difference between the two modes dodging and only one.
 	]]
+	--[[
+		Stepping runs on its own clock.
+
+		Movement used to happen once per farm tick, which is ten times a second - each step
+		a tenth of a walk, taken as a jump. That is visibly coarse, and whenever a step was
+		shortened it was genuinely slower than walking too. Where to go is still decided on
+		the farm tick; getting there is left to a heartbeat, which covers the same ground
+		per second in sixty small pieces rather than ten large ones.
+	]]
+	local moveGoal
+
 	local lastGoal
 	local function goTo(hum, hrp, goal)
 		if StepMove ~= nil and StepMove.Enabled then
-			stepTo(hrp, hum, goal)
+			moveGoal = goal
 			return
 		end
+		moveGoal = nil
 
 		if not lastGoal or (goal - lastGoal).Magnitude > 4 then
 			lastGoal = goal
@@ -1594,6 +1625,17 @@ run(function()
 
 			setupDodge()
 			clearPath()
+			moveGoal = nil
+
+			AutoFarm:Clean(runService.Heartbeat:Connect(function()
+				if not (StepMove ~= nil and StepMove.Enabled) or not moveGoal then return end
+				local char = lplr.Character
+				local hrp = char and char:FindFirstChild('HumanoidRootPart')
+				local hum = char and char:FindFirstChildOfClass('Humanoid')
+				if hrp and hum then
+					stepTo(hrp, hum, moveGoal)
+				end
+			end))
 
 			local weaponUsed = remote('weaponUsed')
 			local abilityUsed = remote('abilityUsed')
