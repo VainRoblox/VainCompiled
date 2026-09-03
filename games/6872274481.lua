@@ -15592,51 +15592,6 @@ kitRun(function()
 end)
 
 kitRun(function()
-    local Whim
-    local restore
-
-    --[[
-        Mana is a plain attribute on the player, and the check that stops a spell is the
-        client's own: the mage controller watches its projectile going out and cancels it
-        locally whenever that attribute reads under the cost of a spell. Nothing reaches
-        the server in that case, so holding the attribute full is enough that it never
-        cancels one.
-
-        A hundred is MAGE_MAX_MANA and a spell costs fifteen of it, both read out of the
-        game's own balance rather than picked.
-    ]]
-    local MAX_MANA = 100
-
-    Whim = vain.Categories.Kit:CreateModule({
-        Name = 'Infinite Whim',
-        Tooltip = 'Lets you keep casting without running out of mana',
-        Function = function(callback)
-            if callback then
-                -- Kept so switching this off hands the bar back rather than leaving it
-                -- reading full until the server next has something to say about it.
-                restore = lplr:GetAttribute('Mana')
-
-                local function fill()
-                    if lplr:GetAttribute('Mana') ~= MAX_MANA then
-                        lplr:SetAttribute('Mana', MAX_MANA)
-                    end
-                end
-
-                -- The server writes the real value in as it regenerates and as spells are
-                -- cast, and each of those writes is what this answers.
-                Whim:Clean(lplr:GetAttributeChangedSignal('Mana'):Connect(fill))
-                Whim:Clean(lplr.CharacterAdded:Connect(fill))
-                fill()
-            elseif restore ~= nil then
-                lplr:SetAttribute('Mana', restore)
-                restore = nil
-            end
-        end
-    })
-end)
-
-
-kitRun(function()
     local SigridExploit
     local Kit, Mount = 'elk_master', bedwars.Client:Get('ElkKitMounted')
 
