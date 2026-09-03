@@ -16213,40 +16213,74 @@ kitRun(function()
     castParams.FilterType = Enum.RaycastFilterType.Exclude
 
     --[[
-        Somewhere to cast, found rather than aimed at.
+        You fish off the edge of the map, not into water.
 
-        This used to require you to already be looking over water at the right angle: it
-        raycast straight down in front of your head and only cast when that ray hit
-        nothing. Stand facing the wrong way and it simply never fired.
+        The bobber is cast out over the void, so a castable direction is one where the
+        ground stops: nothing blocking the way out, and nothing underneath once you are
+        past the edge. That is the test the module already used - it just had no way to
+        go and find such a direction, and only fired if you happened to be facing one.
 
-        Instead the ground around you is swept in rings, nearest first, and the first spot
-        whose surface material is water is the one to fish. Roblox reports terrain material
-        on the raycast, so water tells us about itself and there is no map knowledge to
-        keep up to date.
+        Sweeping the yaw around the player and applying the same test to each heading
+        finds the nearest edge to cast over whichever way you are facing.
     ]]
-    local function findWater()
-        if not entitylib.isAlive then return end
-        castParams.FilterDescendantsInstances = {lplr.Character, gameCamera}
+    local VOID_REACH = 6
+    local VOID_DROP = Vector3.new(0, -20, 0)
 
-        local origin = entitylib.character.RootPart.Position
-        for _, radius in {16, 26, 38, 52, 70} do
-            for i = 0, 15 do
-                local angle = (i / 16) * math.pi * 2
-                local point = origin + Vector3.new(math.cos(angle), 0, math.sin(angle)) * radius
-                local hit = workspace:Raycast(point + Vector3.new(0, 40, 0), Vector3.new(0, -140, 0), castParams)
-                if hit and hit.Material == Enum.Material.Water then
-                    return hit.Position
+    local function castableFrom(head, direction)
+        castParams.FilterDescendantsInstances = {lplr.Character}
+        if workspace:Raycast(head, direction * VOID_REACH, castParams) then
+            return false
+        end
+        return not workspace:Raycast(head + direction * VOID_REACH, VOID_DROP, castParams)
+    end
+
+    --[[
+        Casting without snatching the view.
+
+        The rod fires along the ray through the clicked point, so any edge already on
+        screen can be cast at by clicking it - no camera movement at all. The yaw sweep
+        looks for one of those first.
+    ]]
+    local function findOnScreen(camera)
+        if not entitylib.isAlive then return end
+
+        local head = entitylib.character.Head.Position
+        local viewport = camera.ViewportSize
+
+        for i = 0, 23 do
+            local angle = (i / 24) * math.pi * 2
+            local direction = Vector3.new(math.cos(angle), 0, math.sin(angle))
+            if castableFrom(head, direction) then
+                local point, onScreen = camera:WorldToViewportPoint(head + direction * VOID_REACH)
+                if onScreen and point.X > 0 and point.Y > 0
+                    and point.X < viewport.X and point.Y < viewport.Y then
+                    return Vector2.new(point.X, point.Y)
                 end
             end
         end
     end
 
-    -- Already looking somewhere worth casting, so there is nothing to correct.
-    local function aimedAtWater()
-        local ray = cloneref(lplr:GetMouse()).UnitRay
-        castParams.FilterDescendantsInstances = {lplr.Character, gameCamera}
-        local hit = workspace:Raycast(ray.Origin, ray.Direction * 200, castParams)
-        return hit and hit.Material == Enum.Material.Water
+    -- Nothing castable in view, so the camera has to come round. Roblox's camera script
+    -- rewrites the CFrame every frame, so a single write is undone before the click can
+    -- land - it has to be held until the cast is away.
+    local function findAnywhere()
+        if not entitylib.isAlive then return end
+
+        local head = entitylib.character.Head.Position
+        for i = 0, 23 do
+            local angle = (i / 24) * math.pi * 2
+            local direction = Vector3.new(math.cos(angle), 0, math.sin(angle))
+            if castableFrom(head, direction) then
+                return direction
+            end
+        end
+    end
+
+    local function click(position)
+        for _, down in {true, false} do
+            VirtualInputManager:SendMouseButtonEvent(position.X, position.Y, 0, down, game, 1)
+            task.wait()
+        end
     end
 
     local castLoop = false
@@ -16256,38 +16290,33 @@ kitRun(function()
 
         task.spawn(function()
             repeat
-                if entitylib.isAlive and on(AutoCast)
+                local camera = workspace.CurrentCamera
+                if camera and entitylib.isAlive and on(AutoCast)
                     and store.hand.tool and store.hand.tool.Name == 'fishing_rod'
                     and not getBait() then
 
-                    --[[
-                        The rod fires along the mouse ray on an arc, so the reliable way to
-                        put the bobber somewhere is to look there and cast forwards - the
-                        same thing a player does. Clicking the water's screen position
-                        instead would aim flat at it and fall short.
-
-                        The camera is only turned when the current view is not already over
-                        water, so casting while facing the sea does not snatch the view.
-                    ]]
-                    local ready = aimedAtWater()
-                    if not ready then
-                        local spot = findWater()
-                        if spot then
-                            gameCamera.CFrame = CFrame.lookAt(gameCamera.CFrame.Position, spot)
-                            task.wait(0.1)
-                            ready = true
-                        end
-                    end
-
-                    if ready then
+                    local target = findOnScreen(camera)
+                    if target then
                         task.wait(AutoCastDelay:GetRandomValue())
-
-                        local centre = gameCamera.ViewportSize / 2
-                        for _, down in {true, false} do
-                            VirtualInputManager:SendMouseButtonEvent(centre.X, centre.Y, 0, down, game, 1)
-                            task.wait()
-                        end
+                        click(target)
                         task.wait(0.5)
+                    else
+                        local direction = findAnywhere()
+                        if direction then
+                            -- Switching the module off mid-turn releases the view rather
+                            -- than holding it until the pending cast times out.
+                            local hold = runService.RenderStepped:Connect(function()
+                                if not (Fisherman.Enabled and on(AutoCast)) then return end
+                                local from = camera.CFrame.Position
+                                camera.CFrame = CFrame.lookAt(from, from + direction)
+                            end)
+
+                            task.wait(AutoCastDelay:GetRandomValue())
+                            click(camera.ViewportSize / 2)
+                            task.wait(0.1)
+                            hold:Disconnect()
+                            task.wait(0.5)
+                        end
                     end
                 end
                 task.wait(0.1)
@@ -16441,7 +16470,7 @@ kitRun(function()
     AutoCast = Fisherman:CreateToggle({
         Name = 'AutoCast',
         Default = false,
-        Tooltip = 'Finds water nearby and casts into it, whichever way you are facing',
+        Tooltip = 'Finds an edge to cast over, whichever way you are facing',
         Function = function(cv)
             if AutoCastDelay and AutoCastDelay.Object then AutoCastDelay.Object.Visible = cv end
             if Fisherman.Enabled and cv then setupAutoCast() end
