@@ -16261,23 +16261,30 @@ kitRun(function()
             local holding, held = false, 0
 
             --[[
-                Tapping, the way the bar is actually played.
+                Playing it like a person, not a servo.
 
-                Holding is not a steady slide. The game issues a fresh tween every 0.05s
-                covering markerIncrementAmount, and shrinks that tween's duration from
-                startingMarkerIncrementSpeed towards holdMinimumMarkerIncrementSpeed the
-                longer the button stays down - so an unbroken hold ramps up to roughly
-                three times the speed it started at and stays there. Releasing tweens the
-                marker back towards the left edge over
-                totalDecaySpeedSec * (position + width).
+                The pace was right but it sat the fish dead centre of the marker and
+                corrected the instant the fish moved, which no hand does and which is what
+                gave it away.
 
-                Steering by "is the fish to my right" meant holding without ever letting
-                go, which pinned the marker at that top speed - correct by the game's own
-                numbers, but nothing like the pace of someone playing. So it taps instead:
-                press until the marker has caught the fish, release and let it drift back,
-                press again. The ramp resets on each release exactly as the game's does,
-                which is what keeps the speed down and gives the sawtooth a hand produces.
+                Three things separate a person from a controller here, and none of them is
+                speed. A person does not see the fish move until a moment after it has -
+                so the marker is steered towards where the fish was a beat ago, not where
+                it is. A person is not aiming at the exact middle - they hold it roughly
+                there, and where "roughly" sits wanders over a few seconds. And a person
+                does not press and release on an exact threshold - they go a little past,
+                let it fall a little far, and occasionally react late.
+
+                All three are error, so they cost nothing: the marker is far wider than
+                the fish, and the bar fills for as long as the fish is anywhere inside it.
             ]]
+            local seen, seenAt = nil, 0
+            local reaction = 0.07 + math.random() * 0.11
+            local bias, biasAt = 0, 0
+            local biasHold = 0.5 + math.random() * 1.1
+            local slack = 0.01
+            local fumble = 0
+
             while legitPlaying and marker.Parent and zone.Parent and track do
                 local dt = runService.Heartbeat:Wait()
                 local width = track.AbsoluteSize.X
@@ -16289,19 +16296,46 @@ kitRun(function()
                     local quickest = util.holdMinimumMarkerIncrementSpeed or 0.035
                     local decaySec = util.totalDecaySpeedSec or 1
 
-                    local markerCentre = marker.AbsolutePosition.X + marker.AbsoluteSize.X / 2
-                    local zoneCentre = zone.AbsolutePosition.X + zone.AbsoluteSize.X / 2
+                    local now = os.clock()
+                    local current = marker.Position.X.Scale
+
+                    -- Where the fish is, in the same scale the marker is positioned in.
+                    local zoneNow = (zone.AbsolutePosition.X + zone.AbsoluteSize.X / 2
+                        - track.AbsolutePosition.X) / width
+
+                    -- Noticed a beat late, and only then.
+                    if now - seenAt >= reaction then
+                        seen, seenAt = zoneNow, now
+                        reaction = 0.07 + math.random() * 0.11
+                    end
+                    local target = seen or zoneNow
+
+                    -- Aiming near the middle rather than at it, drifting over seconds.
+                    if now - biasAt >= biasHold then
+                        bias = (math.random() - 0.5) * marker.Size.X.Scale * 0.5
+                        biasAt, biasHold = now, 0.5 + math.random() * 1.1
+                    end
+                    target = target + bias
+
+                    local centre = current + marker.Size.X.Scale / 2
 
                     if holding then
-                        -- Let go once the fish is no longer ahead of the marker.
-                        if markerCentre >= zoneCentre then
+                        -- Carried a little past before letting go.
+                        if centre >= target + slack then
                             holding, held = false, 0
+                            slack = math.random() * 0.03
+                            fumble = math.random() < 0.15 and 0.05 + math.random() * 0.12 or 0
                         end
-                    elseif zoneCentre > markerCentre then
-                        holding, held = true, 0
+                    elseif centre <= target - slack then
+                        -- Sometimes a moment late off the mark.
+                        if fumble > 0 then
+                            fumble = fumble - dt
+                        else
+                            holding, held = true, 0
+                            slack = math.random() * 0.03
+                        end
                     end
 
-                    local current = marker.Position.X.Scale
                     local step
 
                     if holding then
