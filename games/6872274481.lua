@@ -16079,7 +16079,7 @@ kitRun(function()
     local PullAnimationToggle, MinigameAnimationToggle, LegitToggle
     local BlacklistOption, Blacklist
     local AutoCast, AutoCastDelay
-    local SpyToggle, Teammates, LootBlacklist
+    local SpyToggle, Teammates, GoldNotify, LootWhitelist
 
     local hookOld, animOld, spyConn
 
@@ -16152,34 +16152,59 @@ kitRun(function()
     --[[
         Playing the minigame instead of skipping it.
 
-        The game binds the minigame to MouseButton1 through ContextActionService: holding
-        drives the green marker right and gathers speed, releasing lets it glide back
-        left. Progress only fills while the fish sits fully inside the marker.
+        The game drives this off ContextActionService bound to MouseButton1 - hold to push
+        the green marker right, release to let it glide left - but a synthetic click never
+        moved it, so the marker sat where it started and the bar never filled.
 
-        So steering is a matter of which side of the marker the fish is on - hold when it
-        drifts right, let go when it drifts left. The marker is wide next to the fish, so
-        a slack band around the centre keeps it from stuttering between the two every
-        frame while still holding the fish inside.
+        Moving the marker itself does work, and it is not a shortcut past the minigame:
+        the game decides the outcome by measuring where the marker actually is. Its own
+        heartbeat checks whether the fish sits fully inside the marker, fills the progress
+        bar while it does, drains it while it does not, and reports the win itself. So the
+        bar fills for the real reason, and the marker is moved at a capped speed rather
+        than snapped, so it tracks the fish the way a hand on the mouse would.
     ]]
+    local MARKER_SPEED = 1.2
     local legitPlaying = false
-    local holding = false
-
-    local function press(down)
-        if holding == down then return end
-        holding = down
-
-        local camera = workspace.CurrentCamera
-        local centre = camera and camera.ViewportSize / 2 or Vector2.new(400, 300)
-        VirtualInputManager:SendMouseButtonEvent(centre.X, centre.Y, 0, down, game, 1)
-    end
 
     local function minigameParts()
         local playerGui = lplr:FindFirstChildOfClass('PlayerGui')
         if not playerGui then return end
 
         for _, v in playerGui:GetDescendants() do
-            if v.Name == 'Minigame' then
+            if v:IsA('GuiObject') then
                 local marker, zone = v:FindFirstChild('Marker'), v:FindFirstChild('FishZone')
+                if marker and zone and marker:IsA('GuiObject') and zone:IsA('GuiObject') then
+                    return marker, zone
+                end
+            end
+        end
+    end
+
+    --[[
+        Named lookup first, then shape.
+
+        The UI is React, and whether a child's key becomes the instance name is its
+        business, not ours. The marker and the fish are unmistakable by size though - the
+        game builds them from markerSize 0.3 and fishZoneSize 0.02 of the same parent - so
+        that is the fallback when the names are not there.
+    ]]
+    local function minigameByShape()
+        local playerGui = lplr:FindFirstChildOfClass('PlayerGui')
+        if not playerGui then return end
+
+        for _, v in playerGui:GetDescendants() do
+            if v:IsA('GuiObject') then
+                local marker, zone
+                for _, child in v:GetChildren() do
+                    if child:IsA('GuiObject') then
+                        local width = child.Size.X.Scale
+                        if math.abs(width - 0.3) < 0.001 then
+                            marker = child
+                        elseif math.abs(width - 0.02) < 0.001 then
+                            zone = child
+                        end
+                    end
+                end
                 if marker and zone then return marker, zone end
             end
         end
@@ -16192,24 +16217,33 @@ kitRun(function()
             local deadline = os.clock() + 5
             repeat
                 marker, zone = minigameParts()
+                if not marker then marker, zone = minigameByShape() end
                 if not marker then task.wait(0.05) end
             until marker or os.clock() > deadline
 
-            while legitPlaying and marker and zone and marker.Parent and zone.Parent do
-                local markerCentre = marker.AbsolutePosition.X + marker.AbsoluteSize.X / 2
-                local zoneCentre = zone.AbsolutePosition.X + zone.AbsoluteSize.X / 2
-                local slack = marker.AbsoluteSize.X * 0.15
-
-                if zoneCentre > markerCentre + slack then
-                    press(true)
-                elseif zoneCentre < markerCentre - slack then
-                    press(false)
-                end
-
-                runService.Heartbeat:Wait()
+            if not marker then
+                notif('Fisherman', 'Legit could not find the minigame, so it was left alone', 5, 'warning')
+                return
             end
 
-            press(false)
+            local track = marker.Parent
+            local limit = 1 - marker.Size.X.Scale
+
+            while legitPlaying and marker.Parent and zone.Parent and track do
+                local dt = runService.Heartbeat:Wait()
+                local width = track.AbsoluteSize.X
+
+                if width > 0 then
+                    -- Where the marker would have to start for the fish to sit in its middle.
+                    local zoneCentre = zone.AbsolutePosition.X + zone.AbsoluteSize.X / 2
+                    local wanted = (zoneCentre - marker.AbsoluteSize.X / 2 - track.AbsolutePosition.X) / width
+                    wanted = math.clamp(wanted, 0, limit)
+
+                    local current = marker.Position.X.Scale
+                    local step = math.clamp(wanted - current, -MARKER_SPEED * dt, MARKER_SPEED * dt)
+                    marker.Position = UDim2.new(current + step, 2, 0.5, 0)
+                end
+            end
         end)
     end
 
@@ -16245,7 +16279,6 @@ kitRun(function()
 
                 return hookOld(self, dropData, function(outcome)
                     legitPlaying = false
-                    press(false)
                     if result then return result(outcome) end
                 end, ...)
             end
@@ -16260,6 +16293,19 @@ kitRun(function()
                 if waitTime > 0 then
                     task.wait(waitTime)
                 end
+
+                --[[
+                    Nothing to report if the fishing already ended.
+
+                    The delay is a timer set when the fish bit, and it used to fire whatever
+                    happened in between. Jump away at 1.5s of a 3s delay and the catch was
+                    already cancelled, but the timer still came due and reported a win - so
+                    the success animation played on a fish that got away.
+
+                    The bobber is destroyed when fishing ends, so its absence is the signal
+                    that this timer belongs to a catch that is over.
+                ]]
+                if not getBait() then return end
                 if result then pcall(result, { win = true }) end
             end)
         end
@@ -16267,7 +16313,6 @@ kitRun(function()
 
     local function removeHook()
         legitPlaying = false
-        press(false)
         if hookOld then
             bedwars.FishingMinigameController.startMinigame = hookOld
             hookOld = nil
@@ -16301,35 +16346,20 @@ kitRun(function()
     end
 
     --[[
-        Casting without snatching the view.
+        Where the rod actually aims.
 
-        The rod fires along the ray through the clicked point, so any edge already on
-        screen can be cast at by clicking it - no camera movement at all. The yaw sweep
-        looks for one of those first.
+        Not at whatever you click. The game builds the launch direction from
+        Camera:ScreenPointToRay(Mouse.X, Mouse.Y) - the real cursor - so clicking a chosen
+        point on screen threw the bobber wherever the mouse happened to be pointing, which
+        is why casting worked but went the wrong way.
+
+        Two things have to agree instead: the cursor is put at the centre of the screen,
+        and the camera is turned to the heading we want. Then the ray through the cursor
+        is the camera's own look vector. The camera has to be held there across the cast,
+        because Roblox's camera script rewrites the CFrame every frame and a single write
+        is undone before the click lands.
     ]]
-    local function findOnScreen(camera)
-        if not entitylib.isAlive then return end
-
-        local head = entitylib.character.Head.Position
-        local viewport = camera.ViewportSize
-
-        for i = 0, 23 do
-            local angle = (i / 24) * math.pi * 2
-            local direction = Vector3.new(math.cos(angle), 0, math.sin(angle))
-            if castableFrom(head, direction) then
-                local point, onScreen = camera:WorldToViewportPoint(head + direction * VOID_REACH)
-                if onScreen and point.X > 0 and point.Y > 0
-                    and point.X < viewport.X and point.Y < viewport.Y then
-                    return Vector2.new(point.X, point.Y)
-                end
-            end
-        end
-    end
-
-    -- Nothing castable in view, so the camera has to come round. Roblox's camera script
-    -- rewrites the CFrame every frame, so a single write is undone before the click can
-    -- land - it has to be held until the cast is away.
-    local function findAnywhere()
+    local function findVoid()
         if not entitylib.isAlive then return end
 
         local head = entitylib.character.Head.Position
@@ -16339,13 +16369,6 @@ kitRun(function()
             if castableFrom(head, direction) then
                 return direction
             end
-        end
-    end
-
-    local function click(position)
-        for _, down in {true, false} do
-            VirtualInputManager:SendMouseButtonEvent(position.X, position.Y, 0, down, game, 1)
-            task.wait()
         end
     end
 
@@ -16361,28 +16384,29 @@ kitRun(function()
                     and store.hand.tool and store.hand.tool.Name == 'fishing_rod'
                     and not getBait() then
 
-                    local target = findOnScreen(camera)
-                    if target then
-                        task.wait(AutoCastDelay:GetRandomValue())
-                        click(target)
-                        task.wait(0.5)
-                    else
-                        local direction = findAnywhere()
-                        if direction then
-                            -- Switching the module off mid-turn releases the view rather
-                            -- than holding it until the pending cast times out.
-                            local hold = runService.RenderStepped:Connect(function()
-                                if not (Fisherman.Enabled and on(AutoCast)) then return end
-                                local from = camera.CFrame.Position
-                                camera.CFrame = CFrame.lookAt(from, from + direction)
-                            end)
+                    local direction = findVoid()
+                    if direction then
+                        local hold = runService.RenderStepped:Connect(function()
+                            -- Releasing the view the moment the module is switched off,
+                            -- rather than holding it until the pending cast times out.
+                            if not (Fisherman.Enabled and on(AutoCast)) then return end
+                            local from = camera.CFrame.Position
+                            camera.CFrame = CFrame.lookAt(from, from + direction)
+                        end)
 
-                            task.wait(AutoCastDelay:GetRandomValue())
-                            click(camera.ViewportSize / 2)
-                            task.wait(0.1)
-                            hold:Disconnect()
-                            task.wait(0.5)
+                        local centre = camera.ViewportSize / 2
+                        VirtualInputManager:SendMouseMoveEvent(centre.X, centre.Y, game)
+
+                        task.wait(AutoCastDelay:GetRandomValue())
+
+                        for _, down in {true, false} do
+                            VirtualInputManager:SendMouseButtonEvent(centre.X, centre.Y, 0, down, game, 1)
+                            task.wait()
                         end
+
+                        task.wait(0.1)
+                        hold:Disconnect()
+                        task.wait(0.5)
                     end
                 end
                 task.wait(0.1)
@@ -16392,12 +16416,17 @@ kitRun(function()
     end
 
     -- ── watching everyone else ────────────────────────────────────────────
-    local function lootWanted(itemDisplay)
-        local lower = itemDisplay:lower()
-        for _, v in LootBlacklist.ListEnabled do
-            if v:lower() == lower then return false end
+    -- Either form matches, since the list is seeded with the game's own item names but
+    -- what gets reported is the display name.
+    local function lootWanted(itemType, itemDisplay)
+        if #LootWhitelist.ListEnabled <= 0 then return false end
+
+        local a, b = itemType:lower(), itemDisplay:lower()
+        for _, v in LootWhitelist.ListEnabled do
+            local wanted = v:lower()
+            if wanted == a or wanted == b then return true end
         end
-        return true
+        return false
     end
 
     local function setupSpy()
@@ -16408,18 +16437,22 @@ kitRun(function()
             if not (data.dropData and data.dropData.drops and data.catchingPlayer) then return end
             if on(Teammates) and lplr.Team == data.catchingPlayer.Team then return end
 
+            -- A gold fish is the one worth interrupting for, so it gets said whether or
+            -- not its loot survived the whitelist.
+            if on(GoldNotify) and data.dropData.fishModel == 'fish_gold' then
+                notif('Fisherman Spy', `{data.catchingPlayer.Name} has caught a <font color='#FFD75A'>Gold</font> fish`, 8, 'info')
+            end
+
             local text = {}
             for _, v in data.dropData.drops do
                 local itemDisplay = displayName(v.itemType)
-                if lootWanted(itemDisplay) then
+                if lootWanted(v.itemType, itemDisplay) then
                     -- The server rolls the real payout from this, so it is an estimate.
                     text[#text + 1] = `~{tonumber(v.amount) or 0} {itemDisplay}`
                 end
             end
             if #text == 0 then return end
 
-            -- Naming the fish here is what the three special-fish toggles used to do in a
-            -- second notification about the very same catch.
             local fish = fishNames[data.dropData.fishModel] or data.dropData.fishModel
             notif('Fisherman Spy', `{data.catchingPlayer.Name} caught a {fish}: {table.concat(text, ', ')}`, 8, 'info')
         end)
@@ -16566,7 +16599,7 @@ kitRun(function()
         Default = false,
         Tooltip = 'Reports what everyone else catches',
         Function = function(cv)
-            for _, s in {Teammates, LootBlacklist} do
+            for _, s in {Teammates, GoldNotify, LootWhitelist} do
                 if s and s.Object then s.Object.Visible = cv end
             end
             if Fisherman.Enabled and cv then setupSpy() end
@@ -16579,12 +16612,36 @@ kitRun(function()
         Darker = true,
         Tooltip = 'Ignores players on your own team'
     })
-    LootBlacklist = Fisherman:CreateTextList({
-        Name = 'Loot Blacklist',
+    GoldNotify = Fisherman:CreateToggle({
+        Name = 'Notify on Gold',
+        Default = false,
         Visible = false,
         Darker = true,
-        Tooltip = 'Never report catches of these items. Leave empty to report all',
-        Placeholder = 'item name (e.g. Iron)'
+        Tooltip = 'A line of its own whenever anyone lands a Gold Fish'
+    })
+    LootWhitelist = Fisherman:CreateTextList({
+        Name = 'Loot Whitelist',
+        Visible = false,
+        Darker = true,
+        Tooltip = 'Only report catches of these items. Starts with everything catchable',
+        Placeholder = 'item name (e.g. diamond)',
+        -- Every item the fisherman drop tables can pay out, so trimming the list down is
+        -- all there is to do.
+        Default = {
+            'iron',
+            'diamond',
+            'emerald',
+            'obsidian',
+            'tnt',
+            'siege_tnt',
+            'fireball',
+            'charge_shield',
+            'rocket_launcher',
+            'rocket_launcher_missile',
+            'blastproof_ceramic',
+            'glue_projectile',
+            'fisherman_coral'
+        }
     })
 end)
 
