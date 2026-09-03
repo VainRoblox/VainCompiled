@@ -788,6 +788,25 @@ run(function()
 		Every other game applies the plain rule from the universal base, where team makes
 		no difference at all.
 	]]
+	--[[
+		Whether a player may be acted on, asked safely.
+
+		whitelist:get is defined inside one of the universal base's deferred blocks, so for
+		the first moments of a round the table exists but the method does not - and calling
+		it then threw straight through the block breaker, which is where the wall of
+		"attempt to call a nil value" came from.
+
+		Unanswerable is treated as attackable. Refusing to break anything until the list has
+		loaded would be a worse failure than briefly not protecting somebody, and the answer
+		corrects itself within the same second.
+	]]
+	local function attackable(plr)
+		if not (whitelist and type(whitelist.get) == 'function') then return true end
+		local ok, _, allowed = pcall(whitelist.get, whitelist, plr)
+		if not ok then return true end
+		return allowed
+	end
+
 	local function sameTeam(plr)
 		local mine = lplr:GetAttribute('Team')
 		return mine ~= nil and mine == plr:GetAttribute('Team')
@@ -796,7 +815,7 @@ run(function()
 
 	entitylib.protectionCheck = function(ent)
 		if not ent.Player or sameTeam(ent.Player) then return true end
-		return select(2, whitelist:get(ent.Player))
+		return attackable(ent.Player)
 	end
 
 	entitylib.targetCheck = function(ent)
@@ -1066,7 +1085,7 @@ run(function()
 					end
 
 					if suc and plr then
-						if not select(2, whitelist:get(plr)) then return end
+						if not attackable(plr) then return end
 					end
 
 					return call:SendToServer(attackTable, ...)
@@ -1091,7 +1110,7 @@ run(function()
 		if lplr:GetAttribute('Team') == teamId then return false end
 
 		for _, other in playersService:GetPlayers() do
-			if other:GetAttribute('Team') == teamId and not select(2, whitelist:get(other)) then
+			if other:GetAttribute('Team') == teamId and not attackable(other) then
 				return true
 			end
 		end
@@ -1124,7 +1143,7 @@ run(function()
 			local placer = obj:GetAttribute('PlacedByUserId')
 			if placer and placer ~= 0 then
 				local owner = playersService:GetPlayerByUserId(placer)
-				if owner and not sameTeam(owner) and not select(2, whitelist:get(owner)) then
+				if owner and not sameTeam(owner) and not attackable(owner) then
 					return false
 				end
 			end
