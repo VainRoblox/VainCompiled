@@ -48,10 +48,11 @@ for old, new in {
 	['Auto Davey'] = 'PirateDavey',
 	['Pirate Davey'] = 'PirateDavey',
 	['Davey Aim'] = 'DaveyAim',
-	-- Fisherman Spy became a setting inside the fishing module, so a config saved while it
-	-- was standalone keeps its whitelist and notify choices instead of starting over.
-	['Auto Fisher'] = 'AutoFisher',
-	['Fisherman Spy'] = 'AutoFisher'
+	-- Fisherman Spy became a setting inside the fishing module, and the module itself was
+	-- renamed twice, so a config saved under any of those still loads.
+	['Auto Fisher'] = 'Fisherman',
+	['AutoFisher'] = 'Fisherman',
+	['Fisherman Spy'] = 'Fisherman'
 } do
 	vain.Renames.Modules[old] = new
 end
@@ -8732,7 +8733,7 @@ end)
 -- Raising the identity at the start of every block means one module's yield cannot
 -- take out the ones after it.
 -- Not defined by the base, and not by the client these came from either - so the module
--- reaching for it (AutoFisher, for its auto cast) threw the moment that path ran.
+-- reaching for it (Fisherman, for its auto cast) threw the moment that path ran.
 local VirtualInputManager = cloneref(game:GetService('VirtualInputManager'))
 
 local function kitRun(func)
@@ -16078,14 +16079,16 @@ kitRun(function()
     local PullAnimationToggle, MinigameAnimationToggle, LegitToggle
     local BlacklistOption, Blacklist
     local AutoCast, AutoCastDelay
-    local SpyToggle, Teammates, GoldNotify, DiamondNotify, EmeraldNotify, LootWhitelist
+    local SpyToggle, Teammates, LootBlacklist
 
     local hookOld, animOld, spyConn
 
-    local SPECIAL_FISH = {
-        fish_gold = {'Gold', '#FFD75A'},
-        fish_diamond = {'Diamond', '#5AD7FF'},
-        fish_emerald = {'Emerald', '#5AFF7A'},
+    local fishNames = {
+        fish_iron    = 'Iron Fish',
+        fish_diamond = 'Diamond Fish',
+        fish_gold    = 'Gold Fish',
+        fish_special = 'Special Fish',
+        fish_emerald = 'Emerald Fish',
     }
 
     local function on(setting)
@@ -16146,6 +16149,70 @@ kitRun(function()
         end
     end
 
+    --[[
+        Playing the minigame instead of skipping it.
+
+        The game binds the minigame to MouseButton1 through ContextActionService: holding
+        drives the green marker right and gathers speed, releasing lets it glide back
+        left. Progress only fills while the fish sits fully inside the marker.
+
+        So steering is a matter of which side of the marker the fish is on - hold when it
+        drifts right, let go when it drifts left. The marker is wide next to the fish, so
+        a slack band around the centre keeps it from stuttering between the two every
+        frame while still holding the fish inside.
+    ]]
+    local legitPlaying = false
+    local holding = false
+
+    local function press(down)
+        if holding == down then return end
+        holding = down
+
+        local camera = workspace.CurrentCamera
+        local centre = camera and camera.ViewportSize / 2 or Vector2.new(400, 300)
+        VirtualInputManager:SendMouseButtonEvent(centre.X, centre.Y, 0, down, game, 1)
+    end
+
+    local function minigameParts()
+        local playerGui = lplr:FindFirstChildOfClass('PlayerGui')
+        if not playerGui then return end
+
+        for _, v in playerGui:GetDescendants() do
+            if v.Name == 'Minigame' then
+                local marker, zone = v:FindFirstChild('Marker'), v:FindFirstChild('FishZone')
+                if marker and zone then return marker, zone end
+            end
+        end
+    end
+
+    local function playMinigame()
+        task.spawn(function()
+            -- The UI is mounted by the call we are wrapping, so it is not there yet.
+            local marker, zone
+            local deadline = os.clock() + 5
+            repeat
+                marker, zone = minigameParts()
+                if not marker then task.wait(0.05) end
+            until marker or os.clock() > deadline
+
+            while legitPlaying and marker and zone and marker.Parent and zone.Parent do
+                local markerCentre = marker.AbsolutePosition.X + marker.AbsoluteSize.X / 2
+                local zoneCentre = zone.AbsolutePosition.X + zone.AbsoluteSize.X / 2
+                local slack = marker.AbsoluteSize.X * 0.15
+
+                if zoneCentre > markerCentre + slack then
+                    press(true)
+                elseif zoneCentre < markerCentre - slack then
+                    press(false)
+                end
+
+                runService.Heartbeat:Wait()
+            end
+
+            press(false)
+        end)
+    end
+
     -- Ice fishing calls startMinigame with a fourth options table (range limit, custom UI
     -- placement), so everything past the callback is passed straight through.
     local function installHook()
@@ -16167,41 +16234,40 @@ kitRun(function()
                 end
             end
 
+            --[[
+                Legit plays the real thing, so none of the auto-complete settings apply to
+                it - no delay to wait out and nothing to finish early. The game runs its
+                own minigame and reports its own result; we only work the mouse.
+            ]]
+            if on(LegitToggle) then
+                legitPlaying = true
+                playMinigame()
+
+                return hookOld(self, dropData, function(outcome)
+                    legitPlaying = false
+                    press(false)
+                    if result then return result(outcome) end
+                end, ...)
+            end
+
             local waitTime = CompleteDelaySlider.Value
             if on(RandomizeToggle) then
                 local min, max = RandomRange.ValueMin, RandomRange.ValueMax
                 waitTime = min + (max - min) * math.random()
             end
 
-            --[[
-                Reported once, whichever gets there first.
-
-                Legit hands the catch to the real minigame so its bar appears and fills the
-                way it does when you play it, and the timer below is only a backstop for
-                when it is not finished in time. Both routes end in the same callback, and
-                calling that twice would send the catch to the server twice.
-            ]]
-            local reported = false
-            local function finish(outcome)
-                if reported then return end
-                reported = true
-                if result then pcall(result, outcome) end
-            end
-
-            if on(LegitToggle) then
-                pcall(hookOld, self, dropData, finish, ...)
-            end
-
             task.spawn(function()
                 if waitTime > 0 then
                     task.wait(waitTime)
                 end
-                finish({ win = true })
+                if result then pcall(result, { win = true }) end
             end)
         end
     end
 
     local function removeHook()
+        legitPlaying = false
+        press(false)
         if hookOld then
             bedwars.FishingMinigameController.startMinigame = hookOld
             hookOld = nil
@@ -16327,50 +16393,68 @@ kitRun(function()
 
     -- ── watching everyone else ────────────────────────────────────────────
     local function lootWanted(itemDisplay)
-        if #LootWhitelist.ListEnabled <= 0 then return true end
         local lower = itemDisplay:lower()
-        for _, v in LootWhitelist.ListEnabled do
-            if v:lower() == lower then return true end
+        for _, v in LootBlacklist.ListEnabled do
+            if v:lower() == lower then return false end
         end
-        return false
+        return true
     end
 
     local function setupSpy()
         if spyConn then return end
+
         spyConn = bedwars.Client:Get('FishCaught'):Connect(function(data)
             if not on(SpyToggle) then return end
             if not (data.dropData and data.dropData.drops and data.catchingPlayer) then return end
-
-            local isEnemy = not on(Teammates) or lplr.Team ~= data.catchingPlayer.Team
-            if not isEnemy then return end
+            if on(Teammates) and lplr.Team == data.catchingPlayer.Team then return end
 
             local text = {}
             for _, v in data.dropData.drops do
                 local itemDisplay = displayName(v.itemType)
                 if lootWanted(itemDisplay) then
-                    -- Same estimate as our own catches; the old +1 here was a guess at a
-                    -- number the server rolls at random.
+                    -- The server rolls the real payout from this, so it is an estimate.
                     text[#text + 1] = `~{tonumber(v.amount) or 0} {itemDisplay}`
                 end
             end
-            if #text > 0 then
-                notif('Fisherman Spy', `{data.catchingPlayer.Name} caught {table.concat(text, ', ')}`, 8, 'info')
-            end
+            if #text == 0 then return end
 
-            local special = SPECIAL_FISH[data.dropData.fishModel]
-            local specialToggle = data.dropData.fishModel == 'fish_gold' and GoldNotify
-                or data.dropData.fishModel == 'fish_diamond' and DiamondNotify
-                or data.dropData.fishModel == 'fish_emerald' and EmeraldNotify
-            if special and on(specialToggle) then
-                notif('Fisherman Spy', `{data.catchingPlayer.Name} has caught a <font color='{special[2]}'>{special[1]}</font> fish`, 8, 'info')
-            end
+            -- Naming the fish here is what the three special-fish toggles used to do in a
+            -- second notification about the very same catch.
+            local fish = fishNames[data.dropData.fishModel] or data.dropData.fishModel
+            notif('Fisherman Spy', `{data.catchingPlayer.Name} caught a {fish}: {table.concat(text, ', ')}`, 8, 'info')
         end)
+
         Fisherman:Clean(spyConn)
     end
 
+    --[[
+        Which minigame settings are on screen.
+
+        Legit plays the real minigame, so the auto-complete timing settings do not apply
+        to it and are taken off screen rather than left there doing nothing. Three
+        settings can each change this, so they all call the one function instead of each
+        trying to work out the others' state.
+    ]]
+    local function refreshMinigame()
+        local auto, legit = on(AutoMinigameToggle), on(LegitToggle)
+
+        for _, setting in {LegitToggle, PullAnimationToggle, MinigameAnimationToggle} do
+            if setting and setting.Object then setting.Object.Visible = auto end
+        end
+        if RandomizeToggle and RandomizeToggle.Object then
+            RandomizeToggle.Object.Visible = auto and not legit
+        end
+        if CompleteDelaySlider and CompleteDelaySlider.Object then
+            CompleteDelaySlider.Object.Visible = auto and not legit and not on(RandomizeToggle)
+        end
+        if RandomRange and RandomRange.Object then
+            RandomRange.Object.Visible = auto and not legit and on(RandomizeToggle)
+        end
+    end
+
     Fisherman = vain.Categories.Kit:CreateModule({
-        Name = 'AutoFisher',
-        Tooltip = 'Fishes on its own and watches what everyone else lands',
+        Name = 'Fisherman',
+        Tooltip = 'Fishes on its own and reports what everyone else lands',
         Function = function(callback)
             if callback then
                 setupAnimationControl()
@@ -16388,22 +16472,15 @@ kitRun(function()
         Name = 'Auto Minigame',
         Default = false,
         Tooltip = 'Completes the fishing minigame for you',
-        Function = function(cv)
-            if CompleteDelaySlider and CompleteDelaySlider.Object then
-                CompleteDelaySlider.Object.Visible = cv and not on(RandomizeToggle)
-            end
-            for _, s in {LegitToggle, PullAnimationToggle, MinigameAnimationToggle, RandomizeToggle} do
-                if s and s.Object then s.Object.Visible = cv end
-            end
-            if RandomRange and RandomRange.Object then RandomRange.Object.Visible = cv and on(RandomizeToggle) end
-        end
+        Function = refreshMinigame
     })
     LegitToggle = Fisherman:CreateToggle({
         Name = 'Legit',
         Default = false,
         Visible = false,
         Darker = true,
-        Tooltip = 'Lets the real minigame open and fill on screen, and only steps in if it is not finished by the delay'
+        Tooltip = 'Actually plays the minigame, steering the marker onto the fish',
+        Function = refreshMinigame
     })
     CompleteDelaySlider = Fisherman:CreateSlider({
         Name = 'Complete Delay',
@@ -16422,10 +16499,7 @@ kitRun(function()
         Visible = false,
         Darker = true,
         Tooltip = 'Varies the delay instead of using the same one every time',
-        Function = function(cv)
-            if RandomRange and RandomRange.Object then RandomRange.Object.Visible = cv end
-            if CompleteDelaySlider and CompleteDelaySlider.Object then CompleteDelaySlider.Object.Visible = not cv end
-        end
+        Function = refreshMinigame
     })
     RandomRange = Fisherman:CreateTwoSlider({
         Name = 'Random Delay Range',
@@ -16492,7 +16566,7 @@ kitRun(function()
         Default = false,
         Tooltip = 'Reports what everyone else catches',
         Function = function(cv)
-            for _, s in {Teammates, GoldNotify, DiamondNotify, EmeraldNotify, LootWhitelist} do
+            for _, s in {Teammates, LootBlacklist} do
                 if s and s.Object then s.Object.Visible = cv end
             end
             if Fisherman.Enabled and cv then setupSpy() end
@@ -16505,33 +16579,12 @@ kitRun(function()
         Darker = true,
         Tooltip = 'Ignores players on your own team'
     })
-    GoldNotify = Fisherman:CreateToggle({
-        Name = 'Notify on Gold',
-        Default = false,
+    LootBlacklist = Fisherman:CreateTextList({
+        Name = 'Loot Blacklist',
         Visible = false,
         Darker = true,
-        Tooltip = 'A dedicated line whenever anyone lands a Gold Fish'
-    })
-    DiamondNotify = Fisherman:CreateToggle({
-        Name = 'Notify on Diamond',
-        Default = false,
-        Visible = false,
-        Darker = true,
-        Tooltip = 'A dedicated line whenever anyone lands a Diamond Fish'
-    })
-    EmeraldNotify = Fisherman:CreateToggle({
-        Name = 'Notify on Emerald',
-        Default = false,
-        Visible = false,
-        Darker = true,
-        Tooltip = 'A dedicated line whenever anyone lands an Emerald Fish'
-    })
-    LootWhitelist = Fisherman:CreateTextList({
-        Name = 'Loot Whitelist',
-        Visible = false,
-        Darker = true,
-        Tooltip = 'Only report catches of these items. Leave empty for all',
-        Placeholder = 'item name (e.g. Diamond)'
+        Tooltip = 'Never report catches of these items. Leave empty to report all',
+        Placeholder = 'item name (e.g. Iron)'
     })
 end)
 
