@@ -11853,7 +11853,7 @@ kitRun(function()
     	Pointing the cannon and firing it, on its own, for as long as it is switched on.
     ]]
     local DaveyAim
-    local AimAt, AimMode, Launch, SearchRange, Delay
+    local Activation, AimAt, AimMode, Launch, SearchRange, Delay
 
     local rayCheck = RaycastParams.new()
     rayCheck.RespectCanCollide = true
@@ -11981,11 +11981,44 @@ kitRun(function()
     	Tooltip = 'Aims the nearest cannon and fires it',
     	Function = function(call)
     		if not call then return end
+
+    		--[[
+    			Once behaves as a button rather than a switch: it takes the shot and then
+    			un-latches itself, so the module reads as an action you press. Deferred
+    			because toggling from inside the toggle's own handler is re-entrant, and
+    			doing it directly leaves the state disagreeing with the button.
+    		]]
+    		if Activation ~= nil and Activation.Value == 'Once' then
+    			pcall(aimAndFire)
+    			task.defer(function()
+    				if DaveyAim.Enabled then
+    					pcall(function() DaveyAim:Toggle() end)
+    				end
+    			end)
+    			return
+    		end
+
     		repeat
     			pcall(aimAndFire)
     			task.wait(Delay.Value)
     		until not DaveyAim.Enabled
     	end
+    })
+    Activation = DaveyAim:CreateDropdown({
+    	Name = 'Activation',
+    	Tooltip = 'Whether it keeps firing or takes a single shot',
+    	List = {'Continuous', 'Once'},
+    	Default = 'Continuous',
+    	Function = function(value)
+    		-- Nothing to wait between when there is only one shot.
+    		if Delay and Delay.Object then
+    			Delay.Object.Visible = value == 'Continuous'
+    		end
+    	end,
+    	ItemTooltips = {
+    		Continuous = 'Keeps aiming and firing for as long as it is switched on',
+    		Once = 'Fires a single shot when you switch it on, then switches itself back off',
+    	}
     })
     AimAt = DaveyAim:CreateDropdown({
     	Name = 'Aim At',
@@ -12025,7 +12058,8 @@ kitRun(function()
     	Max = 5,
     	Default = 1,
     	Decimal = 10,
-    	Suffix = 'sec'
+    	Suffix = 'sec',
+    	Darker = true
     })
     Launch = DaveyAim:CreateToggle({
     	Name = 'Launch',
