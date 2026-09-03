@@ -812,6 +812,11 @@ run(function()
 		return mine ~= nil and mine == plr:GetAttribute('Team')
 	end
 	bedwars.sameTeam = sameTeam
+	-- Published alongside sameTeam because the block protection below lives in a different
+	-- run block, and a local from this one is simply a nil global over there. That is what
+	-- was throwing straight through the block breaker: not the whitelist being unready, but
+	-- the functions not being reachable from where they were called at all.
+	bedwars.attackable = attackable
 
 	entitylib.protectionCheck = function(ent)
 		if not ent.Player or sameTeam(ent.Player) then return true end
@@ -1084,7 +1089,7 @@ run(function()
 					end
 
 					if suc and plr then
-						if not attackable(plr) then return end
+						if bedwars.attackable and not bedwars.attackable(plr) then return end
 					end
 
 					return call:SendToServer(attackTable, ...)
@@ -1109,7 +1114,7 @@ run(function()
 		if lplr:GetAttribute('Team') == teamId then return false end
 
 		for _, other in playersService:GetPlayers() do
-			if other:GetAttribute('Team') == teamId and not attackable(other) then
+			if other:GetAttribute('Team') == teamId and bedwars.attackable and not bedwars.attackable(other) then
 				return true
 			end
 		end
@@ -1142,7 +1147,8 @@ run(function()
 			local placer = obj:GetAttribute('PlacedByUserId')
 			if placer and placer ~= 0 then
 				local owner = playersService:GetPlayerByUserId(placer)
-				if owner and not sameTeam(owner) and not attackable(owner) then
+				if owner and bedwars.sameTeam and bedwars.attackable
+					and not bedwars.sameTeam(owner) and not bedwars.attackable(owner) then
 					return false
 				end
 			end
@@ -11857,17 +11863,31 @@ kitRun(function()
     	if block.Name ~= 'cannon' or hooked[block] then return end
     	hooked[block] = true
 
-    	for _, prompt in block:GetDescendants() do
-    		if prompt:IsA('ProximityPrompt') then
-    			local function reach()
-    				if on(Switch) and on(Break) then
-    					pcall(equipBreakTool, block)
-    				end
-    			end
-    			PirateDavey:Clean(prompt.PromptButtonHoldBegan:Connect(reach))
-    			PirateDavey:Clean(prompt.Triggered:Connect(reach))
+    	local function reach()
+    		if on(Switch) and on(Break) then
+    			pcall(equipBreakTool, block)
     		end
     	end
+
+    	local function hook(prompt)
+    		if not prompt:IsA('ProximityPrompt') then return end
+    		PirateDavey:Clean(prompt.PromptButtonHoldBegan:Connect(reach))
+    		PirateDavey:Clean(prompt.Triggered:Connect(reach))
+    	end
+
+    	for _, child in block:GetDescendants() do
+    		hook(child)
+    	end
+
+    	--[[
+    		The prompts are not always there when the block is.
+
+    		A cannon is tagged as it is placed and its prompts are parented in afterwards, so
+    		looking once at the moment it appears finds nothing and hooks nothing - which is
+    		why the swap kept falling through to the launch instead. Watching for them to
+    		arrive catches the ones that were not there yet.
+    	]]
+    	PirateDavey:Clean(block.DescendantAdded:Connect(hook))
     end
 
     PirateDavey = vain.Categories.Kit:CreateModule({
