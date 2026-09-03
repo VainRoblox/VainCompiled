@@ -16194,7 +16194,6 @@ kitRun(function()
         bar fills for the real reason, and the marker is moved at a capped speed rather
         than snapped, so it tracks the fish the way a hand on the mouse would.
     ]]
-    local MARKER_SPEED = 1.2
     local legitPlaying = false
 
     local function minigameParts()
@@ -16259,19 +16258,52 @@ kitRun(function()
 
             local track = marker.Parent
             local limit = 1 - marker.Size.X.Scale
+            local held = 0
 
+            --[[
+                At the speeds a hand on the mouse would produce.
+
+                Holding does not slide the marker at a flat rate: the game issues a fresh
+                tween every 0.05s covering markerIncrementAmount, and the tween's duration
+                shrinks from startingMarkerIncrementSpeed towards
+                holdMinimumMarkerIncrementSpeed the longer the button is down - so it
+                starts gently and gathers pace. Releasing tweens the marker back to the
+                left edge over totalDecaySpeedSec * (position + width), which works out
+                slower than the hold and slower the nearer the edge it already is.
+
+                Reproducing both rates from the game's own numbers, rather than picking a
+                speed, is what makes this read as someone playing it.
+            ]]
             while legitPlaying and marker.Parent and zone.Parent and track do
                 local dt = runService.Heartbeat:Wait()
                 local width = track.AbsoluteSize.X
 
                 if width > 0 then
+                    local util = bedwars.FishermanUtil or {}
+                    local increment = util.markerIncrementAmount or 0.075
+                    local slowest = util.startingMarkerIncrementSpeed or 0.1
+                    local quickest = util.holdMinimumMarkerIncrementSpeed or 0.035
+                    local decaySec = util.totalDecaySpeedSec or 1
+
                     -- Where the marker would have to start for the fish to sit in its middle.
                     local zoneCentre = zone.AbsolutePosition.X + zone.AbsoluteSize.X / 2
                     local wanted = (zoneCentre - marker.AbsoluteSize.X / 2 - track.AbsolutePosition.X) / width
                     wanted = math.clamp(wanted, 0, limit)
 
                     local current = marker.Position.X.Scale
-                    local step = math.clamp(wanted - current, -MARKER_SPEED * dt, MARKER_SPEED * dt)
+                    local step
+
+                    if wanted > current then
+                        held = held + dt
+                        local tweenTime = math.max(slowest - 0.01 * (held / 0.05), quickest)
+                        step = math.min(wanted - current, (increment / tweenTime) * dt)
+                    else
+                        held = 0
+                        local span = current + marker.Size.X.Scale
+                        local decay = span > 0 and current / (span * decaySec) or 0
+                        step = -math.min(current - wanted, decay * dt)
+                    end
+
                     marker.Position = UDim2.new(current + step, 2, 0.5, 0)
                 end
             end
@@ -16377,19 +16409,53 @@ kitRun(function()
     end
 
     --[[
-        Where the rod actually aims.
+        Telling the rod where to go, rather than pointing the player at it.
 
-        Not at whatever you click. The game builds the launch direction from
-        Camera:ScreenPointToRay(Mouse.X, Mouse.Y) - the real cursor - so clicking a chosen
-        point on screen threw the bobber wherever the mouse happened to be pointing, which
-        is why casting worked but went the wrong way.
+        The game builds the launch direction in
+        ProjectileController:calculateImportantLaunchValues, from
+        Camera:ScreenPointToRay(Mouse.X, Mouse.Y) - the real cursor. That is why clicking
+        a chosen point threw the bobber wherever the mouse already pointed, and why the
+        only way to steer it from outside was to move the camera and the cursor with it.
 
-        Two things have to agree instead: the cursor is put at the centre of the screen,
-        and the camera is turned to the heading we want. Then the ray through the cursor
-        is the camera's own look vector. The camera has to be held there across the cast,
-        because Roblox's camera script rewrites the CFrame every frame and a single write
-        is undone before the click lands.
+        Taking the direction at its source is both simpler and invisible: the speed the
+        game worked out is kept and only the heading is replaced. It applies to the aim
+        preview as well, since that arc is drawn from the same numbers.
+
+        It only touches a launch we asked for - castTarget is set for the moment of our
+        own cast and cleared afterwards - so every other throw, and every other item, is
+        left alone.
     ]]
+    local aimOld
+    local castTarget
+
+    local function setupAim()
+        local controller = bedwars and bedwars.ProjectileController
+        if aimOld or not controller then return end
+
+        aimOld = controller.calculateImportantLaunchValues
+        controller.calculateImportantLaunchValues = function(...)
+            local values = aimOld(...)
+            local held = store.hand and store.hand.tool
+
+            if values and castTarget and held and held.Name == 'fishing_rod' then
+                local heading = castTarget - values.positionFrom
+                if heading.Magnitude > 0 then
+                    values.initialVelocity = heading.Unit * values.initialVelocity.Magnitude
+                end
+            end
+
+            return values
+        end
+    end
+
+    local function cleanupAim()
+        castTarget = nil
+        if aimOld then
+            bedwars.ProjectileController.calculateImportantLaunchValues = aimOld
+            aimOld = nil
+        end
+    end
+
     local function findVoid()
         if not entitylib.isAlive then return end
 
@@ -16415,29 +16481,27 @@ kitRun(function()
                     and store.hand.tool and store.hand.tool.Name == 'fishing_rod'
                     and not getBait() then
 
-                    local direction = findVoid()
-                    if direction then
-                        local hold = runService.RenderStepped:Connect(function()
-                            -- Releasing the view the moment the module is switched off,
-                            -- rather than holding it until the pending cast times out.
-                            if not (Fisherman.Enabled and on(AutoCast)) then return end
-                            local from = camera.CFrame.Position
-                            camera.CFrame = CFrame.lookAt(from, from + direction)
-                        end)
-
-                        local centre = camera.ViewportSize / 2
-                        VirtualInputManager:SendMouseMoveEvent(centre.X, centre.Y, game)
-
+                    if findVoid() then
                         task.wait(AutoCastDelay:GetRandomValue())
 
-                        for _, down in {true, false} do
-                            VirtualInputManager:SendMouseButtonEvent(centre.X, centre.Y, 0, down, game, 1)
-                            task.wait()
-                        end
+                        -- Aimed at the moment of the throw, since the delay above is long
+                        -- enough to have walked somewhere else.
+                        local direction = entitylib.isAlive and findVoid()
+                        if direction then
+                            castTarget = entitylib.character.Head.Position + direction * 30
 
-                        task.wait(0.1)
-                        hold:Disconnect()
-                        task.wait(0.5)
+                            local centre = camera.ViewportSize / 2
+                            for _, down in {true, false} do
+                                VirtualInputManager:SendMouseButtonEvent(centre.X, centre.Y, 0, down, game, 1)
+                                task.wait()
+                            end
+
+                            -- Held past the click, because the rod works out its direction
+                            -- when the throw is released rather than when it is pressed.
+                            task.wait(0.3)
+                            castTarget = nil
+                            task.wait(0.5)
+                        end
                     end
                 end
                 task.wait(0.1)
@@ -16524,10 +16588,12 @@ kitRun(function()
                 setupAnimationControl()
                 applyCatchSpeed()
                 installHook()
+                setupAim()
                 setupAutoCast()
                 setupSpy()
             else
                 removeHook()
+                cleanupAim()
                 restoreCatchSpeed()
                 cleanupAnimationControl()
                 spyConn = nil
