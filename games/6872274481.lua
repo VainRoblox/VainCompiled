@@ -16258,21 +16258,25 @@ kitRun(function()
 
             local track = marker.Parent
             local limit = 1 - marker.Size.X.Scale
-            local held = 0
+            local holding, held = false, 0
 
             --[[
-                At the speeds a hand on the mouse would produce.
+                Tapping, the way the bar is actually played.
 
-                Holding does not slide the marker at a flat rate: the game issues a fresh
-                tween every 0.05s covering markerIncrementAmount, and the tween's duration
-                shrinks from startingMarkerIncrementSpeed towards
-                holdMinimumMarkerIncrementSpeed the longer the button is down - so it
-                starts gently and gathers pace. Releasing tweens the marker back to the
-                left edge over totalDecaySpeedSec * (position + width), which works out
-                slower than the hold and slower the nearer the edge it already is.
+                Holding is not a steady slide. The game issues a fresh tween every 0.05s
+                covering markerIncrementAmount, and shrinks that tween's duration from
+                startingMarkerIncrementSpeed towards holdMinimumMarkerIncrementSpeed the
+                longer the button stays down - so an unbroken hold ramps up to roughly
+                three times the speed it started at and stays there. Releasing tweens the
+                marker back towards the left edge over
+                totalDecaySpeedSec * (position + width).
 
-                Reproducing both rates from the game's own numbers, rather than picking a
-                speed, is what makes this read as someone playing it.
+                Steering by "is the fish to my right" meant holding without ever letting
+                go, which pinned the marker at that top speed - correct by the game's own
+                numbers, but nothing like the pace of someone playing. So it taps instead:
+                press until the marker has caught the fish, release and let it drift back,
+                press again. The ramp resets on each release exactly as the game's does,
+                which is what keeps the speed down and gives the sawtooth a hand produces.
             ]]
             while legitPlaying and marker.Parent and zone.Parent and track do
                 local dt = runService.Heartbeat:Wait()
@@ -16285,26 +16289,33 @@ kitRun(function()
                     local quickest = util.holdMinimumMarkerIncrementSpeed or 0.035
                     local decaySec = util.totalDecaySpeedSec or 1
 
-                    -- Where the marker would have to start for the fish to sit in its middle.
+                    local markerCentre = marker.AbsolutePosition.X + marker.AbsoluteSize.X / 2
                     local zoneCentre = zone.AbsolutePosition.X + zone.AbsoluteSize.X / 2
-                    local wanted = (zoneCentre - marker.AbsoluteSize.X / 2 - track.AbsolutePosition.X) / width
-                    wanted = math.clamp(wanted, 0, limit)
+
+                    if holding then
+                        -- Let go once the fish is no longer ahead of the marker.
+                        if markerCentre >= zoneCentre then
+                            holding, held = false, 0
+                        end
+                    elseif zoneCentre > markerCentre then
+                        holding, held = true, 0
+                    end
 
                     local current = marker.Position.X.Scale
                     local step
 
-                    if wanted > current then
+                    if holding then
                         held = held + dt
                         local tweenTime = math.max(slowest - 0.01 * (held / 0.05), quickest)
-                        step = math.min(wanted - current, (increment / tweenTime) * dt)
+                        step = math.min(limit - current, (increment / tweenTime) * dt)
                     else
-                        held = 0
                         local span = current + marker.Size.X.Scale
                         local decay = span > 0 and current / (span * decaySec) or 0
-                        step = -math.min(current - wanted, decay * dt)
+                        step = -math.min(current, decay * dt)
                     end
 
-                    marker.Position = UDim2.new(current + step, 2, 0.5, 0)
+                    -- Offset zero, matching the position the game's own hold tween writes.
+                    marker.Position = UDim2.new(math.clamp(current + step, 0, limit), 0, 0.5, 0)
                 end
             end
         end)
@@ -16425,20 +16436,67 @@ kitRun(function()
         own cast and cleared afterwards - so every other throw, and every other item, is
         left alone.
     ]]
-    local aimOld
+    local aimOld, aimOwner
     local castTarget
 
+    --[[
+        Patching where the method lives, not where we found it.
+
+        bedwars.ProjectileController is one instance, but calculateImportantLaunchValues
+        is defined on its class and reached through the metatable. Writing the override
+        onto the instance only covers launches that go through that same instance - which
+        is why the aim preview followed the hook while the throw itself still went
+        wherever the mouse pointed. Walking up to the table that actually holds the
+        function covers every path into it.
+    ]]
+    local function ownerOf(object, key)
+        if type(object) ~= 'table' then return end
+        if rawget(object, key) ~= nil then return object end
+
+        local current = object
+        for _ = 1, 8 do
+            local meta = getmetatable(current)
+            local index = meta and rawget(meta, '__index')
+            if type(index) ~= 'table' then break end
+            if rawget(index, key) ~= nil then return index end
+            current = index
+        end
+    end
+
+    --[[
+        The direction is decided from Camera:ScreenPointToRay(Mouse.X, Mouse.Y) - the real
+        cursor - unless the projectile handler carries a targetPoint, which the game
+        checks first and uses as-is. Setting that is how the game itself aims a throw at
+        something, so it is set here and the original does the rest; the velocity is
+        corrected afterwards as well, in case a path builds it some other way.
+
+        Only a launch we asked for is touched: castTarget is set for the moment of our own
+        cast and cleared again, so every other throw and every other item is left alone.
+    ]]
     local function setupAim()
         local controller = bedwars and bedwars.ProjectileController
         if aimOld or not controller then return end
 
-        aimOld = controller.calculateImportantLaunchValues
-        controller.calculateImportantLaunchValues = function(...)
-            local values = aimOld(...)
-            local held = store.hand and store.hand.tool
+        aimOwner = ownerOf(controller, 'calculateImportantLaunchValues') or controller
+        aimOld = aimOwner.calculateImportantLaunchValues
+        if not aimOld then
+            aimOwner = nil
+            return
+        end
 
-            if values and castTarget and held and held.Name == 'fishing_rod' then
-                local heading = castTarget - values.positionFrom
+        aimOwner.calculateImportantLaunchValues = function(self, handler, ...)
+            local held = store.hand and store.hand.tool
+            local wanted = castTarget and held and held.Name == 'fishing_rod' and castTarget
+
+            if wanted and type(handler) == 'table' then
+                handler.targetPoint = wanted
+                handler.lockedAimPoint = nil
+            end
+
+            local values = aimOld(self, handler, ...)
+
+            if wanted and values and values.initialVelocity and values.positionFrom then
+                local heading = wanted - values.positionFrom
                 if heading.Magnitude > 0 then
                     values.initialVelocity = heading.Unit * values.initialVelocity.Magnitude
                 end
@@ -16450,10 +16508,10 @@ kitRun(function()
 
     local function cleanupAim()
         castTarget = nil
-        if aimOld then
-            bedwars.ProjectileController.calculateImportantLaunchValues = aimOld
-            aimOld = nil
+        if aimOwner and aimOld then
+            aimOwner.calculateImportantLaunchValues = aimOld
         end
+        aimOwner, aimOld = nil, nil
     end
 
     local function findVoid()
