@@ -11818,16 +11818,54 @@ kitRun(function()
     	end
     end
 
+    --[[
+    	Reaching for the pickaxe when you reach for the cannon.
+
+    	Hooking the launch was still too late: by then you are already in the air, and the
+    	swap happens during the flight rather than before it. The moment a player actually
+    	decides to do this is when they start holding the cannon's prompt, so that is what
+    	is listened for.
+
+    	Both the hold starting and the plain trigger are taken, because a prompt with no
+    	hold duration never fires the first of those - and the cannon has one of each.
+    ]]
+    local hooked = setmetatable({}, {__mode = 'k'})
+
+    local function watchCannon(block)
+    	if block.Name ~= 'cannon' or hooked[block] then return end
+    	hooked[block] = true
+
+    	for _, prompt in block:GetDescendants() do
+    		if prompt:IsA('ProximityPrompt') then
+    			local function reach()
+    				if on(Switch) and on(Break) then
+    					pcall(equipBreakTool, block)
+    				end
+    			end
+    			PirateDavey:Clean(prompt.PromptButtonHoldBegan:Connect(reach))
+    			PirateDavey:Clean(prompt.Triggered:Connect(reach))
+    		end
+    	end
+    end
+
     PirateDavey = vain.Categories.Kit:CreateModule({
     	Name = 'PirateDavey',
     	Tooltip = 'Breaks the block you land on and jumps as you touch down',
     	Function = function(call)
     		if call then
+    			for _, block in collectionService:GetTagged('block') do
+    				watchCannon(block)
+    			end
+    			PirateDavey:Clean(collectionService:GetInstanceAddedSignal('block'):Connect(watchCannon))
+
     			old = bedwars.CannonHandController.launchSelf
     			bedwars.CannonHandController.launchSelf = function(...)
     				local block = select(2, ...)
 
-    				-- Before the launch goes out, so the pickaxe is in hand for the flight.
+    				-- A backstop for a launch that never touched a prompt, such as the fast
+    				-- aim mode calling the controller directly. Equipping something already
+    				-- in hand costs nothing, so this is harmless when the prompt got there
+    				-- first.
     				if on(Switch) and on(Break) and block then
     					pcall(equipBreakTool, block)
     				end
