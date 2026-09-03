@@ -43,9 +43,11 @@ for old, new in {
 	AutoAdetunde = 'Adetunde',
 	-- Davey Aim and Auto Davey were merged into one module, so a config saved under either
 	-- old name carries its settings across rather than resetting them.
-	-- Auto Davey became Pirate Davey. Davey Aim still exists under its own name, so it
-	-- needs no migration.
-	['Auto Davey'] = 'Pirate Davey'
+	-- The Davey modules were reshuffled and then renamed to match the spacing every other
+	-- module uses, so a config saved under any of the older names still loads.
+	['Auto Davey'] = 'PirateDavey',
+	['Pirate Davey'] = 'PirateDavey',
+	['Davey Aim'] = 'DaveyAim'
 } do
 	vain.Renames.Modules[old] = new
 end
@@ -11788,15 +11790,49 @@ kitRun(function()
     	return true
     end
 
+    --[[
+    	The breaking tool, taken out before the shot rather than during the landing.
+
+    	Swapping at the moment the block breaks is the tell: a player reaches for the
+    	pickaxe while they are still stood at the cannon, not in the half second between
+    	touching down and swinging. Doing it here means the tool is already in hand for the
+    	whole flight, which is what it looks like when somebody means to do this.
+
+    	The swap itself is the ordinary one - pick the hotbar slot, then send the equip -
+    	rather than the break loop's hurried version that dispatches and moves on.
+    ]]
+    local function equipBreakTool(block)
+    	local meta = bedwars.ItemMeta[block.Name]
+    	local breakType = meta and meta.block and meta.block.breakType
+    	local tool = breakType and store.tools[breakType]
+    	if not tool then return end
+
+    	for i, v in store.inventory.hotbar do
+    		if v.item and v.item.itemType == tool.itemType then
+    			hotbarSwitch(i - 1)
+    			break
+    		end
+    	end
+    	if tool.tool then
+    		switchItem(tool.tool)
+    	end
+    end
+
     PirateDavey = vain.Categories.Kit:CreateModule({
-    	Name = 'Pirate Davey',
+    	Name = 'PirateDavey',
     	Tooltip = 'Breaks the block you land on and jumps as you touch down',
     	Function = function(call)
     		if call then
     			old = bedwars.CannonHandController.launchSelf
     			bedwars.CannonHandController.launchSelf = function(...)
-    				local res = { old(...) }
     				local block = select(2, ...)
+
+    				-- Before the launch goes out, so the pickaxe is in hand for the flight.
+    				if on(Switch) and on(Break) and block then
+    					pcall(equipBreakTool, block)
+    				end
+
+    				local res = { old(...) }
 
     				-- Guarded because a launch can end with you dead, and reaching for a
     				-- root part that is no longer there took the whole hook down with it.
@@ -11805,7 +11841,9 @@ kitRun(function()
     						if (block.Position - entitylib.character.RootPart.Position).Magnitude <= 30 then
     							task.delay(0.05, function()
     								for _ = 1, 2 do
-    									task.spawn(bedwars.breakBlock, block, false, nil, true, nil, on(Switch))
+    									-- false: the tool was taken out before the launch, and
+    									-- letting the break swap again undoes that.
+    									task.spawn(bedwars.breakBlock, block, false, nil, true, false)
     								end
     							end)
     						end
@@ -11833,7 +11871,7 @@ kitRun(function()
     })
     Switch = PirateDavey:CreateToggle({
     	Name = 'Legit switch',
-    	Tooltip = 'Swaps to the breaking tool the way a player would',
+    	Tooltip = 'Takes the breaking tool out at the cannon, before launching, instead of swapping mid-landing',
     	Darker = true
     })
     Limit = PirateDavey:CreateToggle({
@@ -11853,7 +11891,24 @@ kitRun(function()
     	Pointing the cannon and firing it, on its own, for as long as it is switched on.
     ]]
     local DaveyAim
-    local Activation, AimAt, AimMode, Launch, SearchRange, Delay
+    local Activation, AimAt, AimMode, Launch, SearchRange, Delay, AvoidPowdered
+
+    --[[
+    	Powdered is the kit's own leash: "Firing yourself from a cannon will inflict
+    	damage". Each launch adds a stack, a stack is twenty damage up to sixty, and the
+    	whole thing lapses seven seconds after the last one.
+
+    	There is nothing to switch off. It is applied and charged server side, and the only
+    	thing the client gets is an attribute saying it is there - so the counter is not to
+    	block it but to stop feeding it: wait for the stacks to lapse rather than launching
+    	into them, and the damage never lands in the first place.
+    ]]
+    local function powderedStacks()
+    	local char = lplr.Character
+    	if not char then return 0 end
+    	if char:GetAttribute('StatusEffect_powdered') == nil then return 0 end
+    	return tonumber(char:GetAttribute('StatusEffect_powdered_stacks')) or 1
+    end
 
     local rayCheck = RaycastParams.new()
     rayCheck.RespectCanCollide = true
@@ -11933,6 +11988,9 @@ kitRun(function()
     end
 
     local function aimAndFire()
+    	-- Launching while it is still on you is what turns a free ride into sixty damage.
+    	if on(AvoidPowdered) and powderedStacks() > 0 then return end
+
     	local cannon = nearestCannon()
     	if not cannon then return end
 
@@ -11977,7 +12035,7 @@ kitRun(function()
     end
 
     DaveyAim = vain.Categories.Kit:CreateModule({
-    	Name = 'Davey Aim',
+    	Name = 'DaveyAim',
     	Tooltip = 'Aims the nearest cannon and fires it',
     	Function = function(call)
     		if not call then return end
@@ -12064,6 +12122,12 @@ kitRun(function()
     Launch = DaveyAim:CreateToggle({
     	Name = 'Launch',
     	Tooltip = 'Fires yourself out of the cannon once it is aimed',
+    	Default = true
+    })
+    AvoidPowdered = DaveyAim:CreateToggle({
+    	Name = 'Avoid Powdered',
+    	Tooltip = 'Waits for the Powdered effect to lapse before launching again. Each launch stacks it for 20 damage up to 60, and it clears seven seconds after the last one',
+    	Darker = true,
     	Default = true
     })
 end)
@@ -18611,108 +18675,6 @@ kitRun(function()
         Default = false,
         Tooltip = "Show display names instead of usernames"
     })
-end)
-
-kitRun(function()
-	local JadeCD
-	local CD
-	local lastDash = -math.huge
-	local old = nil
-	
-	JadeCD = vain.Categories.Kit:CreateModule({
-		Name = "Jade Cooldown",
-		Tooltip = "Custom cooldown for Jade Hammer",
-		Function = function(callback)
-			if callback then
-				local old = bedwars.CooldownController.isOnCooldown
-				if lastDash == nil then
-					lastDash = -1
-				end
-				bedwars.CooldownController.isOnCooldown = function(self, id)
-					if id == bedwars.CooldownIDS.JADE_HAMMER then
-						local currentTime = tick()
-						if lastDash < 0 or (currentTime - lastDash >= CD.Value) then
-							lastDash = currentTime
-							return false 
-						else
-							return true 
-						end
-					end
-					return old(self, id)
-				end
-			else
-				if old then
-					bedwars.CooldownController.isOnCooldown = old
-				end
-			end
-		end
-	})
-
-	CD = JadeCD:CreateSlider({
-		Name = "Cooldown",
-		Tooltip = 'Minimum seconds between consecutive activations',
-		Min = 0,
-		Max = 7,
-		Default = 0,
-		Decimal = 1,
-		Suffix = function(val)
-			if val == 1 then
-				return 'second'
-			end
-			return 'seconds'
-		end,
-	})
-end)
-
-kitRun(function()
-	local RegentCD
-	local CD
-	local lastDash = -math.huge
-	local old = nil
-	
-	RegentCD = vain.Categories.Kit:CreateModule({
-		Name = "Regent Cooldown",
-		Tooltip = "Custom cooldown for Void Regent axe",
-		Function = function(callback)
-			if callback then
-				local old = bedwars.CooldownController.isOnCooldown
-				if lastDash == nil then
-					lastDash = -1
-				end
-				bedwars.CooldownController.isOnCooldown = function(self, id)
-					if id == bedwars.CooldownIDS.VOID_AXE then
-						local currentTime = tick()
-						if lastDash < 0 or (currentTime - lastDash >= CD.Value) then
-							lastDash = currentTime
-							return false 
-						else
-							return true 
-						end
-					end
-					return old(self, id)
-				end
-			else
-				if old then
-					bedwars.CooldownController.isOnCooldown = old
-				end
-			end
-		end
-	})
-
-	CD = RegentCD:CreateSlider({
-		Name = "Cooldown",
-		Tooltip = 'Minimum seconds between consecutive activations',
-		Min = 0,
-		Max = 7,
-		Default = 0,
-		Decimal = 1,
-		Suffix = function(val)
-			if val == 1 then
-				return 'second'
-			end
-			return 'seconds'
-		end,
-	})
 end)
 
 kitRun(function()
