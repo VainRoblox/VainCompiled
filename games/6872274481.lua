@@ -64,7 +64,8 @@ for old, new in {
 	Quantity = 'Show Amount',
 	['Full Layers'] = 'Highlight Full Layers',
 	Camera = 'View Mode',
-	['Camera Mode'] = 'View Mode'
+	['Camera Mode'] = 'View Mode',
+	['Catch Speed'] = 'Catch Speed Increase'
 } do
 	vain.Renames.Options[old] = new
 end
@@ -16592,7 +16593,7 @@ kitRun(function()
         Tooltip = 'Plays the catch animation. Off suppresses the one the game plays itself'
     })
     CatchSpeedSlider = Fisherman:CreateSlider({
-        Name = 'Catch Speed',
+        Name = 'Catch Speed Increase',
         Min = 0,
         Max = 20,
         Default = 0,
