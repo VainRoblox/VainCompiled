@@ -990,7 +990,6 @@ run(function()
 		AfkStatus = debug.getproto(Knit.Controllers.AfkController.KnitStart, 1),
 		AttackEntity = Knit.Controllers.SwordController.sendServerRequest,
 		BeePickup = Knit.Controllers.BeeNetController.trigger,
-		CannonAim = debug.getproto(Knit.Controllers.CannonController.startAiming, 5),
 		CannonLaunch = Knit.Controllers.CannonHandController.launchSelf,
 		ConsumeBattery = debug.getproto(Knit.Controllers.BatteryController.onKitLocalActivated, 1),
 		ConsumeItem = debug.getproto(Knit.Controllers.ConsumeController.onEnable, 1),
@@ -4170,7 +4169,11 @@ run(function()
 						switchItem(tool.tool)
 					end
 	
-					bedwars.Client:Get(remotes.CannonAim):SendToServer({
+					-- Named rather than scraped. The scraper works a remote out by finding
+					-- 'Client' among a function's constants and taking the next one, which for
+					-- this call lands on 'Get' - so the aim went to a remote that does not
+					-- exist, and the scrape failing is what raised the notification about it.
+					bedwars.Client:Get('AimCannon'):SendToServer({
 						cannonBlockPos = blockpos,
 						lookVector = dir
 					})
