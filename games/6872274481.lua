@@ -47,7 +47,11 @@ for old, new in {
 	-- module uses, so a config saved under any of the older names still loads.
 	['Auto Davey'] = 'PirateDavey',
 	['Pirate Davey'] = 'PirateDavey',
-	['Davey Aim'] = 'DaveyAim'
+	['Davey Aim'] = 'DaveyAim',
+	-- Fisherman Spy became a setting inside the fishing module, so a config saved while it
+	-- was standalone keeps its whitelist and notify choices instead of starting over.
+	['Auto Fisher'] = 'AutoFisher',
+	['Fisherman Spy'] = 'AutoFisher'
 } do
 	vain.Renames.Modules[old] = new
 end
@@ -8728,7 +8732,7 @@ end)
 -- Raising the identity at the start of every block means one module's yield cannot
 -- take out the ones after it.
 -- Not defined by the base, and not by the client these came from either - so the module
--- reaching for it (Fisherman Spy, for its auto cast) threw the moment that path ran.
+-- reaching for it (AutoFisher, for its auto cast) threw the moment that path ran.
 local VirtualInputManager = cloneref(game:GetService('VirtualInputManager'))
 
 local function kitRun(func)
@@ -15559,98 +15563,6 @@ kitRun(function()
 end)
 
 kitRun(function()
-    local FishermanSpy
-    local Teammates
-    local GoldNotify
-    local DiamondNotify
-    local EmeraldNotify
-    local Whitelist
-
-    -- fishModel -> {word to announce, hex color for that word in the message}
-    local SPECIAL_FISH = {
-    	fish_gold = {'Gold', '#FFD75A'},
-    	fish_diamond = {'Diamond', '#5AD7FF'},
-    	fish_emerald = {'Emerald', '#5AFF7A'},
-    }
-
-    local function isWhitelisted(itemDisplay)
-    	if #Whitelist.ListEnabled <= 0 then return true end
-    	local lower = itemDisplay:lower()
-    	for _, v in Whitelist.ListEnabled do
-    		if v:lower() == lower then return true end
-    	end
-    	return false
-    end
-
-    FishermanSpy = vain.Categories.Kit:CreateModule({
-    	Name = 'Fisherman Spy',
-    	Tooltip = 'Reveals targets caught by the Fisherman kit',
-    	Function = function(call)
-    		if call then
-    			FishermanSpy:Clean(bedwars.Client:Get('FishCaught'):Connect(function(data)
-    				if data.dropData and data.dropData.drops and data.catchingPlayer then
-    					local isEnemy = not Teammates.Enabled or lplr.Team ~= data.catchingPlayer.Team
-
-    					local text = {}
-    					for _, v in data.dropData.drops do
-    						local itemDisplay = bedwars.ItemMeta[v.itemType] and bedwars.ItemMeta[v.itemType].displayName or v.itemType
-    						if not isWhitelisted(itemDisplay) then continue end
-    						-- FishCaught's own amount field reports one less than what's
-    						-- actually received (4 diamonds caught shows as 3), so +1 here
-    						-- to match reality.
-    						local amount = v.amount + 1
-    						-- These are resource names (Iron, Gold, TNT, ...), not countable
-    						-- objects -- BedWars itself never pluralizes them ("10 Iron", not
-    						-- "10 Irons"), so use the display name as-is with no added 's'.
-    						table.insert(text, `{amount} {itemDisplay}`)
-    					end
-
-    					if #text > 0 and isEnemy then
-    						notif('Fisherman Spy', `{data.catchingPlayer.Name} caught {table.concat(text, ', ')}`, 8, 'info')
-    					end
-
-    					local special = SPECIAL_FISH[data.dropData.fishModel]
-    					local specialToggle = data.dropData.fishModel == 'fish_gold' and GoldNotify
-    						or data.dropData.fishModel == 'fish_diamond' and DiamondNotify
-    						or data.dropData.fishModel == 'fish_emerald' and EmeraldNotify
-    					if special and specialToggle and specialToggle.Enabled and isEnemy then
-    						local word, hex = special[1], special[2]
-    						notif('Fisherman Spy', `{data.catchingPlayer.Name} has caught a <font color='{hex}'>{word}</font> fish`, 8, 'info')
-    					end
-    				end
-    			end))
-    		end
-    	end
-    })
-
-    Teammates = FishermanSpy:CreateToggle({
-    	Name = 'Ignore teammate',
-    	Tooltip = 'Ignores players on your own team',
-    	Default = true
-    })
-    GoldNotify = FishermanSpy:CreateToggle({
-    	Name = 'Notify on Gold',
-    	Tooltip = 'Sends a dedicated notification whenever anyone catches a Gold Fish',
-    	Default = false
-    })
-    DiamondNotify = FishermanSpy:CreateToggle({
-    	Name = 'Notify on Diamond',
-    	Tooltip = 'Sends a dedicated notification whenever anyone catches a Diamond Fish',
-    	Default = false
-    })
-    EmeraldNotify = FishermanSpy:CreateToggle({
-    	Name = 'Notify on Emerald',
-    	Tooltip = 'Sends a dedicated notification whenever anyone catches an Emerald Fish',
-    	Default = false
-    })
-    Whitelist = FishermanSpy:CreateTextList({
-    	Name = 'Loot Whitelist',
-    	Tooltip = 'Only shows catches of these items in the notification (leave empty to show all loot)',
-    	Placeholder = 'item name (e.g. Diamond)',
-    })
-end)
-
-kitRun(function()
     local old
 
     vain.Categories.Kit:CreateModule({
@@ -16162,362 +16074,435 @@ end)
 
 kitRun(function()
     local Fisherman
-    local AutoMinigameToggle
-    local CompleteDelaySlider
-    local PullAnimationToggle
-    local MinigameAnimationToggle
-    local BlacklistOption
-    local Blacklist
-    local ESPToggle
-	local AutoCastDelay
-	local AutoCast
-    local ESPNotifyToggle
-    local Players    = playersService
-    local RunService = runService
-    local lplr       = Players.LocalPlayer
-	local RandomizeToggle
-    local RandomRange
-	local waitTime
-    local fishNames = {
-        fish_iron    = "Iron Fish",
-        fish_diamond = "Diamond Fish",
-        fish_gold    = "Gold Fish",
-        fish_special = "Special Fish",
-        fish_emerald = "Emerald Fish",
+    local AutoMinigameToggle, CompleteDelaySlider, RandomizeToggle, RandomRange
+    local PullAnimationToggle, MinigameAnimationToggle, LegitToggle
+    local BlacklistOption, Blacklist
+    local AutoCast, AutoCastDelay
+    local SpyToggle, Teammates, GoldNotify, DiamondNotify, EmeraldNotify, LootWhitelist
+
+    local hookOld, animOld, spyConn
+
+    local SPECIAL_FISH = {
+        fish_gold = {'Gold', '#FFD75A'},
+        fish_diamond = {'Diamond', '#5AD7FF'},
+        fish_emerald = {'Emerald', '#5AFF7A'},
     }
 
-    local function buildMessage(fishModel, drops)
-        local fishName = fishNames[fishModel] or fishModel
+    local function on(setting)
+        return setting ~= nil and setting.Enabled
+    end
 
-        if fishModel == "fish_special" then
-            if drops and drops[1] then
-                return "You caught a " .. fishName .. "! You will receive a " .. tostring(drops[1].itemType)
-            else
-                return "You caught a " .. fishName .. "! (special item incoming)"
+    local function displayName(itemType)
+        local meta = bedwars.ItemMeta[itemType]
+        return meta and meta.displayName or itemType
+    end
+
+    local function getBait()
+        for _, v in workspace:GetChildren() do
+            if v.Name == 'fisherman_bobber' and v:GetAttribute('ProjectileShooter') == lplr.UserId then
+                return v
             end
         end
-
-        if drops and drops[1] then
-            local drop = drops[1]
-            return "You caught a " .. fishName .. "! Receiving " ..
-                   tostring(drop.amount) .. "x " .. tostring(drop.itemType)
-        end
-
-        return "You caught a " .. fishName .. "!"
     end
 
-    local notifQueue = {}
+    --[[
+        The animations belong to the game, which is why the switches did nothing.
 
-    local function safeNotif(title, message, duration)
-        table.insert(notifQueue, { title = title, message = message, duration = duration or 5 })
-    end
+        The catch animation is played by the game's own callback the moment a win is
+        reported, and the pull animation by its fishing controller the moment a fish is
+        found - so turning ours off only ever removed a second animation layered on top of
+        one that always played.
 
-    local heartbeatConn = nil
+        Suppressing them means intercepting the call the game itself makes. Only our own
+        character and only the fishing animations are touched; everything else passes
+        through untouched.
+    ]]
+    local function setupAnimationControl()
+        if animOld or not (bedwars and bedwars.GameAnimationUtil) then return end
 
-    local autoMinigameActive    = false
-    local pullAnimationTrack    = nil
-    local successAnimationTrack = nil
-    local espOld                = nil
-
-	local function getBait()
-		for _, v in workspace:GetChildren() do
-			if v.Name == "fisherman_bobber" and v:GetAttribute("ProjectileShooter") == lplr.UserId then
-				return v
-			end
-		end
-
-		return
-	end
-
-    local function stopAllAnimations()
-        if pullAnimationTrack then
-            pcall(function() pullAnimationTrack:Stop() end)
-            pullAnimationTrack = nil
-        end
-        if successAnimationTrack then
-            pcall(function() successAnimationTrack:Stop() end)
-            successAnimationTrack = nil
-        end
-    end
-
-    local function setupESP()
-        if not bedwars or not bedwars.FishingMinigameController then
-            warn("[AutoFisher] FishingMinigameController not found")
-            return
-        end
-        if espOld then return end 
-        espOld = bedwars.FishingMinigameController.startMinigame
-
-        bedwars.FishingMinigameController.startMinigame = function(self, dropData, result)
-            if ESPToggle.Enabled and ESPNotifyToggle.Enabled and dropData and dropData.fishModel then
-                safeNotif("Fisherman ESP", buildMessage(dropData.fishModel, dropData.drops), 8)
+        animOld = bedwars.GameAnimationUtil.playAnimation
+        bedwars.GameAnimationUtil.playAnimation = function(self, player, animationType, ...)
+            if player == lplr then
+                local types = bedwars.AnimationType
+                if types then
+                    if animationType == types.FISHING_ROD_PULLING and not on(PullAnimationToggle) then
+                        return
+                    end
+                    if (animationType == types.FISHING_ROD_CATCH_SUCCESS
+                        or animationType == types.FISHING_ROD_CATCH_FAIL)
+                        and not on(MinigameAnimationToggle) then
+                        return
+                    end
+                end
             end
-            return espOld(self, dropData, result)
-        end
-
-        Fisherman:Clean(function()
-            if espOld then
-                bedwars.FishingMinigameController.startMinigame = espOld
-                espOld = nil
-            end
-        end)
-    end
-
-    local function cleanupESP()
-        if espOld then
-            bedwars.FishingMinigameController.startMinigame = espOld
-            espOld = nil
+            return animOld(self, player, animationType, ...)
         end
     end
 
-    local function setupAutoMinigame()
-        if not bedwars or not bedwars.FishingMinigameController then
-            warn("[AutoFisher] FishingMinigameController not found")
-            return
+    local function cleanupAnimationControl()
+        if animOld then
+            bedwars.GameAnimationUtil.playAnimation = animOld
+            animOld = nil
         end
+    end
 
-        local old = bedwars.FishingMinigameController.startMinigame
+    -- Ice fishing calls startMinigame with a fourth options table (range limit, custom UI
+    -- placement), so everything past the callback is passed straight through.
+    local function installHook()
+        if hookOld or not (bedwars and bedwars.FishingMinigameController) then return end
 
-        bedwars.FishingMinigameController.startMinigame = function(self, dropData, result)
-            if not AutoMinigameToggle.Enabled then
-                return old(self, dropData, result)
+        hookOld = bedwars.FishingMinigameController.startMinigame
+        bedwars.FishingMinigameController.startMinigame = function(self, dropData, result, ...)
+            if not on(AutoMinigameToggle) then
+                return hookOld(self, dropData, result, ...)
             end
 
-            if BlacklistOption.Enabled and dropData and dropData.fishModel then
+            if on(BlacklistOption) and dropData and dropData.fishModel then
                 if table.find(Blacklist.ListEnabled, dropData.fishModel) then
-                    local hum = lplr.Character and lplr.Character:FindFirstChildOfClass("Humanoid")
+                    local hum = lplr.Character and lplr.Character:FindFirstChildOfClass('Humanoid')
                     if hum and hum:GetState() ~= Enum.HumanoidStateType.Jumping then
                         hum:ChangeState(Enum.HumanoidStateType.Jumping)
                     end
-                    return old(self, dropData, result)
+                    return hookOld(self, dropData, result, ...)
                 end
             end
 
-            autoMinigameActive = true
-            stopAllAnimations()
-
-            local waitTime = 0
-            if RandomizeToggle and RandomizeToggle.Enabled then
-                local min = RandomRange.ValueMin
-                local max = RandomRange.ValueMax
+            local waitTime = CompleteDelaySlider.Value
+            if on(RandomizeToggle) then
+                local min, max = RandomRange.ValueMin, RandomRange.ValueMax
                 waitTime = min + (max - min) * math.random()
-            else
-                waitTime = CompleteDelaySlider.Value
+            end
+
+            --[[
+                Reported once, whichever gets there first.
+
+                Legit hands the catch to the real minigame so its bar appears and fills the
+                way it does when you play it, and the timer below is only a backstop for
+                when it is not finished in time. Both routes end in the same callback, and
+                calling that twice would send the catch to the server twice.
+            ]]
+            local reported = false
+            local function finish(outcome)
+                if reported then return end
+                reported = true
+                if result then pcall(result, outcome) end
+            end
+
+            if on(LegitToggle) then
+                pcall(hookOld, self, dropData, finish, ...)
             end
 
             task.spawn(function()
-                if PullAnimationToggle.Enabled and waitTime > 0 then
-                    local ok, track = pcall(function()
-                        return bedwars.GameAnimationUtil:playAnimation(
-                            lplr, bedwars.AnimationType.FISHING_ROD_PULLING
-                        )
-                    end)
-                    if ok and track then pullAnimationTrack = track end
-                end
-
                 if waitTime > 0 then
                     task.wait(waitTime)
                 end
-
-                if pullAnimationTrack then
-                    pcall(function() pullAnimationTrack:Stop() end)
-                    pullAnimationTrack = nil
-                end
-
-                if MinigameAnimationToggle.Enabled then
-                    local ok, track = pcall(function()
-                        return bedwars.GameAnimationUtil:playAnimation(
-                            lplr, bedwars.AnimationType.FISHING_ROD_CATCH_SUCCESS
-                        )
-                    end)
-                    if ok and track then successAnimationTrack = track end
-                end
-
-                if result then
-                    pcall(function() result({ win = true }) end)
-                end
-
-                task.wait(0.5)
-
-                if successAnimationTrack then
-                    pcall(function() successAnimationTrack:Stop() end)
-                    successAnimationTrack = nil
-                end
-
-                autoMinigameActive = false
+                finish({ win = true })
             end)
         end
+    end
 
-        Fisherman:Clean(function()
-            bedwars.FishingMinigameController.startMinigame = old
-            stopAllAnimations()
+    local function removeHook()
+        if hookOld then
+            bedwars.FishingMinigameController.startMinigame = hookOld
+            hookOld = nil
+        end
+    end
+
+    -- ── casting ───────────────────────────────────────────────────────────
+    local castParams = RaycastParams.new()
+    castParams.FilterType = Enum.RaycastFilterType.Exclude
+
+    --[[
+        Somewhere to cast, found rather than aimed at.
+
+        This used to require you to already be looking over water at the right angle: it
+        raycast straight down in front of your head and only cast when that ray hit
+        nothing. Stand facing the wrong way and it simply never fired.
+
+        Instead the ground around you is swept in rings, nearest first, and the first spot
+        whose surface material is water is the one to fish. Roblox reports terrain material
+        on the raycast, so water tells us about itself and there is no map knowledge to
+        keep up to date.
+    ]]
+    local function findWater()
+        if not entitylib.isAlive then return end
+        castParams.FilterDescendantsInstances = {lplr.Character, gameCamera}
+
+        local origin = entitylib.character.RootPart.Position
+        for _, radius in {16, 26, 38, 52, 70} do
+            for i = 0, 15 do
+                local angle = (i / 16) * math.pi * 2
+                local point = origin + Vector3.new(math.cos(angle), 0, math.sin(angle)) * radius
+                local hit = workspace:Raycast(point + Vector3.new(0, 40, 0), Vector3.new(0, -140, 0), castParams)
+                if hit and hit.Material == Enum.Material.Water then
+                    return hit.Position
+                end
+            end
+        end
+    end
+
+    -- Already looking somewhere worth casting, so there is nothing to correct.
+    local function aimedAtWater()
+        local ray = cloneref(lplr:GetMouse()).UnitRay
+        castParams.FilterDescendantsInstances = {lplr.Character, gameCamera}
+        local hit = workspace:Raycast(ray.Origin, ray.Direction * 200, castParams)
+        return hit and hit.Material == Enum.Material.Water
+    end
+
+    local castLoop = false
+    local function setupAutoCast()
+        if castLoop then return end
+        castLoop = true
+
+        task.spawn(function()
+            repeat
+                if entitylib.isAlive and on(AutoCast)
+                    and store.hand.tool and store.hand.tool.Name == 'fishing_rod'
+                    and not getBait() then
+
+                    --[[
+                        The rod fires along the mouse ray on an arc, so the reliable way to
+                        put the bobber somewhere is to look there and cast forwards - the
+                        same thing a player does. Clicking the water's screen position
+                        instead would aim flat at it and fall short.
+
+                        The camera is only turned when the current view is not already over
+                        water, so casting while facing the sea does not snatch the view.
+                    ]]
+                    local ready = aimedAtWater()
+                    if not ready then
+                        local spot = findWater()
+                        if spot then
+                            gameCamera.CFrame = CFrame.lookAt(gameCamera.CFrame.Position, spot)
+                            task.wait(0.1)
+                            ready = true
+                        end
+                    end
+
+                    if ready then
+                        task.wait(AutoCastDelay:GetRandomValue())
+
+                        local centre = gameCamera.ViewportSize / 2
+                        for _, down in {true, false} do
+                            VirtualInputManager:SendMouseButtonEvent(centre.X, centre.Y, 0, down, game, 1)
+                            task.wait()
+                        end
+                        task.wait(0.5)
+                    end
+                end
+                task.wait(0.1)
+            until not Fisherman.Enabled
+            castLoop = false
         end)
     end
 
-	local function setupAutoCast()
-		task.spawn(function()
-			repeat
-				if entitylib.isAlive and AutoCast.Enabled and (store.hand.tool and store.hand.tool.Name == 'fishing_rod') then
-					local position = workspace.CurrentCamera.ViewportSize / 2
-					local ray = cloneref(lplr:GetMouse()).UnitRay
+    -- ── watching everyone else ────────────────────────────────────────────
+    local function lootWanted(itemDisplay)
+        if #LootWhitelist.ListEnabled <= 0 then return true end
+        local lower = itemDisplay:lower()
+        for _, v in LootWhitelist.ListEnabled do
+            if v:lower() == lower then return true end
+        end
+        return false
+    end
 
-					if not getBait() and not workspace:Raycast(entitylib.character.Head.Position + (ray.Direction * 6), Vector3.new(0, -20, 0)) then
-						task.wait(AutoCastDelay:GetRandomValue())
+    local function setupSpy()
+        if spyConn then return end
+        spyConn = bedwars.Client:Get('FishCaught'):Connect(function(data)
+            if not on(SpyToggle) then return end
+            if not (data.dropData and data.dropData.drops and data.catchingPlayer) then return end
 
-						for _, v in {true, false} do
-							VirtualInputManager:SendMouseButtonEvent(position.X, position.Y, 0, v, game, 1)
-							task.wait()
-						end
-						task.wait(0.5)
-					end
-				end
-				task.wait(0.1)
-			until not Fisherman.Enabled
-		end)
-	end
+            local isEnemy = not on(Teammates) or lplr.Team ~= data.catchingPlayer.Team
+            if not isEnemy then return end
+
+            local text = {}
+            for _, v in data.dropData.drops do
+                local itemDisplay = displayName(v.itemType)
+                if lootWanted(itemDisplay) then
+                    -- Same estimate as our own catches; the old +1 here was a guess at a
+                    -- number the server rolls at random.
+                    text[#text + 1] = `~{tonumber(v.amount) or 0} {itemDisplay}`
+                end
+            end
+            if #text > 0 then
+                notif('Fisherman Spy', `{data.catchingPlayer.Name} caught {table.concat(text, ', ')}`, 8, 'info')
+            end
+
+            local special = SPECIAL_FISH[data.dropData.fishModel]
+            local specialToggle = data.dropData.fishModel == 'fish_gold' and GoldNotify
+                or data.dropData.fishModel == 'fish_diamond' and DiamondNotify
+                or data.dropData.fishModel == 'fish_emerald' and EmeraldNotify
+            if special and on(specialToggle) then
+                notif('Fisherman Spy', `{data.catchingPlayer.Name} has caught a <font color='{special[2]}'>{special[1]}</font> fish`, 8, 'info')
+            end
+        end)
+        Fisherman:Clean(spyConn)
+    end
 
     Fisherman = vain.Categories.Kit:CreateModule({
-        Name    = "Auto Fisher",
-        Tooltip = "Auto minigame, loot ESP, blacklist, AutoCasting, and spy for the Fisherman kit",
+        Name = 'AutoFisher',
+        Tooltip = 'Fishes on its own and watches what everyone else lands',
         Function = function(callback)
             if callback then
-                if ESPToggle.Enabled           then setupESP()          end
-                if AutoMinigameToggle.Enabled  then setupAutoMinigame() end
+                setupAnimationControl()
+                installHook()
                 setupAutoCast()
-
-                heartbeatConn = RunService.Heartbeat:Connect(function()
-                    if #notifQueue == 0 then return end
-                    local entry = table.remove(notifQueue, 1)
-                    pcall(notif, entry.title, entry.message, entry.duration)
-                end)
-                Fisherman:Clean(heartbeatConn)
-
+                setupSpy()
             else
-                autoMinigameActive = false
-                stopAllAnimations()
-                cleanupESP()
-                notifQueue = {} 
+                removeHook()
+                cleanupAnimationControl()
+                spyConn = nil
             end
         end
     })
-
     AutoMinigameToggle = Fisherman:CreateToggle({
-        Name    = "Auto Minigame",
+        Name = 'Auto Minigame',
         Default = false,
-        Tooltip = "Automatically complete the fishing minigame",
+        Tooltip = 'Completes the fishing minigame for you',
         Function = function(cv)
-            if CompleteDelaySlider and CompleteDelaySlider.Object then 
-                CompleteDelaySlider.Object.Visible = cv and not (RandomizeToggle and RandomizeToggle.Enabled) 
+            if CompleteDelaySlider and CompleteDelaySlider.Object then
+                CompleteDelaySlider.Object.Visible = cv and not on(RandomizeToggle)
             end
-            if PullAnimationToggle     and PullAnimationToggle.Object     then PullAnimationToggle.Object.Visible     = cv end
-            if MinigameAnimationToggle and MinigameAnimationToggle.Object then MinigameAnimationToggle.Object.Visible = cv end
-            if RandomizeToggle and RandomizeToggle.Object then RandomizeToggle.Object.Visible = cv end
-            if RandomRange and RandomRange.Object then RandomRange.Object.Visible = cv and RandomizeToggle.Enabled end
-            if Fisherman.Enabled and cv then setupAutoMinigame() end
+            for _, s in {LegitToggle, PullAnimationToggle, MinigameAnimationToggle, RandomizeToggle} do
+                if s and s.Object then s.Object.Visible = cv end
+            end
+            if RandomRange and RandomRange.Object then RandomRange.Object.Visible = cv and on(RandomizeToggle) end
         end
     })
-
+    LegitToggle = Fisherman:CreateToggle({
+        Name = 'Legit',
+        Default = false,
+        Visible = false,
+        Darker = true,
+        Tooltip = 'Lets the real minigame open and fill on screen, and only steps in if it is not finished by the delay'
+    })
     CompleteDelaySlider = Fisherman:CreateSlider({
-        Name    = "Complete Delay",
-        Min     = 0,
-        Max     = 5,
+        Name = 'Complete Delay',
+        Min = 0,
+        Max = 5,
         Default = 1,
         Decimal = 10,
-        Suffix  = "s",
+        Suffix = 's',
         Visible = false,
-        Tooltip = "Delay before auto-completing (looks more legit)"
+        Darker = true,
+        Tooltip = 'How long to let the minigame run before finishing it'
     })
-
     RandomizeToggle = Fisherman:CreateToggle({
-        Name    = "Randomize Timing",
+        Name = 'Randomize Timing',
         Default = false,
-        Tooltip = "Use random delay between min and max instead of fixed delay",
+        Visible = false,
+        Darker = true,
+        Tooltip = 'Varies the delay instead of using the same one every time',
         Function = function(cv)
             if RandomRange and RandomRange.Object then RandomRange.Object.Visible = cv end
             if CompleteDelaySlider and CompleteDelaySlider.Object then CompleteDelaySlider.Object.Visible = not cv end
         end
     })
-
     RandomRange = Fisherman:CreateTwoSlider({
-        Name    = "Random Delay Range",
-        Min     = 0.1,
-        Max     = 5,
+        Name = 'Random Delay Range',
+        Min = 0.1,
+        Max = 5,
         DefaultMin = 0.5,
         DefaultMax = 2,
         Decimal = 10,
         Visible = false,
-        Tooltip = "Minimum and maximum delay for random timing"
+        Darker = true,
+        Tooltip = 'The range the delay is picked from'
     })
-
     PullAnimationToggle = Fisherman:CreateToggle({
-        Name    = "Pull Animation",
+        Name = 'Pull Animation',
         Default = true,
         Visible = false,
-        Tooltip = "Play rod-pulling animation during delay (requires delay > 0)"
+        Darker = true,
+        Tooltip = 'Plays the rod-pulling animation. Off suppresses the one the game plays itself'
     })
-
     MinigameAnimationToggle = Fisherman:CreateToggle({
-        Name    = "Success Animation",
+        Name = 'Success Animation',
         Default = true,
         Visible = false,
-        Tooltip = "Play catch-success animation on completion"
+        Darker = true,
+        Tooltip = 'Plays the catch animation. Off suppresses the one the game plays itself'
     })
-
     BlacklistOption = Fisherman:CreateToggle({
-        Name    = "Blacklist",
+        Name = 'Blacklist',
         Default = false,
-        Tooltip = "Auto-jump and skip auto-complete for blacklisted fish",
+        Tooltip = 'Skips catching certain fish',
         Function = function(cv)
             if Blacklist and Blacklist.Object then Blacklist.Object.Visible = cv end
         end
     })
-
     Blacklist = Fisherman:CreateTextList({
-        Name    = "Blacklist Fish",
-        Tooltip = "Fish types to skip auto-catching (one per line)",
-        Default = { "fish_iron" }
+        Name = 'Blacklist Fish',
+        Visible = false,
+        Darker = true,
+        Tooltip = 'Fish to skip, one per line',
+        Default = { 'fish_iron' }
     })
-
-	AutoCast = Fisherman:CreateToggle({
-		Name 	= "AutoCast",
-		Tooltip = 'Automatically casts the ability when available',
-		Default = false,
-		Function = function(callback)
-			if callback then
-				if AutoCastDelay and AutoCastDelay.Object then AutoCastDelay.Object.Visible = callback end
-				if AutoCast.Enabled and callback then setupAutoCast() end
-			end
-		end
-	})
-
-	AutoCastDelay = Fisherman:CreateTwoSlider({
-		Name 	= "Cast Delay",
-		Min 	= 0,
-		Max 	= 5,
-		Decimal = 5,
-		DefaultMin = 0.3,
-		DefaultMax = 1.2,
-		Darker 	= true,
-		Visible = AutoCast.Enabled
-	})	
-
-    ESPToggle = Fisherman:CreateToggle({
-        Name    = "Fisherman ESP",
+    AutoCast = Fisherman:CreateToggle({
+        Name = 'AutoCast',
         Default = false,
-        Tooltip = "Shows what fish you are catching and what loot you will receive",
+        Tooltip = 'Finds water nearby and casts into it, whichever way you are facing',
         Function = function(cv)
-            if ESPNotifyToggle and ESPNotifyToggle.Object then ESPNotifyToggle.Object.Visible = cv end
-            if Fisherman.Enabled then
-                if cv then setupESP() else cleanupESP() end
-            end
+            if AutoCastDelay and AutoCastDelay.Object then AutoCastDelay.Object.Visible = cv end
+            if Fisherman.Enabled and cv then setupAutoCast() end
         end
     })
-
-    ESPNotifyToggle = Fisherman:CreateToggle({
-        Name    = "Notify Loot",
+    AutoCastDelay = Fisherman:CreateTwoSlider({
+        Name = 'Cast Delay',
+        Min = 0,
+        Max = 5,
+        Decimal = 5,
+        DefaultMin = 0.3,
+        DefaultMax = 1.2,
+        Visible = false,
+        Darker = true,
+        Tooltip = 'How long to wait before each cast'
+    })
+    SpyToggle = Fisherman:CreateToggle({
+        Name = 'Spy',
+        Default = false,
+        Tooltip = 'Reports what everyone else catches',
+        Function = function(cv)
+            for _, s in {Teammates, GoldNotify, DiamondNotify, EmeraldNotify, LootWhitelist} do
+                if s and s.Object then s.Object.Visible = cv end
+            end
+            if Fisherman.Enabled and cv then setupSpy() end
+        end
+    })
+    Teammates = Fisherman:CreateToggle({
+        Name = 'Ignore teammate',
         Default = true,
         Visible = false,
-        Tooltip = "Show a notification with the fish name and loot details"
+        Darker = true,
+        Tooltip = 'Ignores players on your own team'
+    })
+    GoldNotify = Fisherman:CreateToggle({
+        Name = 'Notify on Gold',
+        Default = false,
+        Visible = false,
+        Darker = true,
+        Tooltip = 'A dedicated line whenever anyone lands a Gold Fish'
+    })
+    DiamondNotify = Fisherman:CreateToggle({
+        Name = 'Notify on Diamond',
+        Default = false,
+        Visible = false,
+        Darker = true,
+        Tooltip = 'A dedicated line whenever anyone lands a Diamond Fish'
+    })
+    EmeraldNotify = Fisherman:CreateToggle({
+        Name = 'Notify on Emerald',
+        Default = false,
+        Visible = false,
+        Darker = true,
+        Tooltip = 'A dedicated line whenever anyone lands an Emerald Fish'
+    })
+    LootWhitelist = Fisherman:CreateTextList({
+        Name = 'Loot Whitelist',
+        Visible = false,
+        Darker = true,
+        Tooltip = 'Only report catches of these items. Leave empty for all',
+        Placeholder = 'item name (e.g. Diamond)'
     })
 end)
 

@@ -1488,7 +1488,10 @@ run(function()
 			if callback then
 				local ind = 1
 				repeat
-					local message = (#Lines.ListEnabled > 0 and Lines.ListEnabled[math.random(1, #Lines.ListEnabled)] or 'vxpe on top')
+					-- Nothing when nothing is configured, rather than a hardcoded line
+					-- advertising somebody else in your name.
+					local message = #Lines.ListEnabled > 0 and Lines.ListEnabled[math.random(1, #Lines.ListEnabled)] or nil
+					if not message then task.wait(Delay.Value) continue end
 					if Mode.Value == 'Order' and #Lines.ListEnabled > 0 then
 						message = Lines.ListEnabled[ind] or Lines.ListEnabled[1]
 						ind += 1
