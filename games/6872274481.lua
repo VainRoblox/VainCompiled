@@ -40,7 +40,11 @@ vain.Renames = vain.Renames or {Modules = {}, Options = {}}
 for old, new in {
 	Breaker = 'Nuker',
 	['Better Spectating'] = 'BetterSpectating',
-	AutoAdetunde = 'Adetunde'
+	AutoAdetunde = 'Adetunde',
+	-- Davey Aim and Auto Davey were merged into one module, so a config saved under either
+	-- old name carries its settings across rather than resetting them.
+	['Auto Davey'] = 'Pirate Davey',
+	['Davey Aim'] = 'Pirate Davey'
 } do
 	vain.Renames.Modules[old] = new
 end
@@ -11756,64 +11760,275 @@ kitRun(function()
 end)
 
 kitRun(function()
-    local AutoDavey
-    local Switch
-    local Break
-    local Jump
-    local Limit
-    local IncludeWood
+    --[[
+    	Davey Aim and Auto Davey were two halves of one job: one pointed the cannon and
+    	fired it, the other cleaned up after the shot. Kept apart they had to be switched on
+    	separately, and the aiming half was a button that turned itself off again, so it
+    	could not be left running while the other one was.
+
+    	Merged, it is a single toggle that aims, fires, and deals with the landing.
+    ]]
+    local PirateDavey
+    local AutoAim, AimAt, AimMode, Launch, SearchRange, Delay
+    local Break, Jump, Switch, Limit, IncludeWood
 
     local old
+    local rayCheck = RaycastParams.new()
+    rayCheck.RespectCanCollide = true
 
-    local function holdingPickaxe()
-        local tool = store.hand and store.hand.tool
-        if tool == nil or tool.Name == nil or not tool.Name:find('pickaxe') then
-            return false
-        end
-        if tool.Name == 'wood_pickaxe' then
-            return IncludeWood.Enabled
-        end
-        return true
+    local function on(setting)
+    	return setting ~= nil and setting.Enabled
     end
 
-    AutoDavey = vain.Categories.Kit:CreateModule({
-    	Name = 'Auto Davey',
-    	Tooltip = 'Automates the Davey kit cannon',
+    local function holdingPickaxe()
+    	local tool = store.hand and store.hand.tool
+    	if tool == nil or tool.Name == nil or not tool.Name:find('pickaxe') then
+    		return false
+    	end
+    	if tool.Name == 'wood_pickaxe' then
+    		return on(IncludeWood)
+    	end
+    	return true
+    end
+
+    -- The nearest cannon, rather than the first one the tag list happens to hand back. The
+    -- old search broke out of the loop on its first hit, so a cannon behind you won over
+    -- the one at your feet whenever it was listed first.
+    local function nearestCannon()
+    	if not entitylib.isAlive then return end
+
+    	local origin = entitylib.character.RootPart.Position
+    	local best, bestDist
+
+    	for _, v in collectionService:GetTagged('block') do
+    		if v.Name == 'cannon' then
+    			local mag = (origin - v.Position).Magnitude
+    			if mag <= SearchRange.Value and (not bestDist or mag < bestDist) then
+    				best, bestDist = v, mag
+    			end
+    		end
+    	end
+
+    	return best
+    end
+
+    --[[
+    	Where to point it.
+
+    	Position Mode used to exist as a dropdown that was never stored in a variable and
+    	never read, so the choice did nothing at all and aiming was always by mouse. It does
+    	something now, and it gained the option that makes the module automatic rather than
+    	something you point by hand.
+    ]]
+    local function aimPoint()
+    	local choice = AimAt and AimAt.Value or 'Nearest Enemy'
+
+    	if choice == 'Nearest Enemy' then
+    		local ent = entitylib.EntityPosition({
+    			Range = 400,
+    			Part = 'RootPart',
+    			Players = true,
+    			NPCs = false
+    		})
+    		return ent and ent.Position or nil
+    	end
+
+    	local ray
+    	if choice == 'Camera' then
+    		ray = Ray.new(gameCamera.CFrame.Position, gameCamera.CFrame.LookVector)
+    	else
+    		ray = cloneref(lplr:GetMouse()).UnitRay
+    	end
+
+    	rayCheck.FilterDescendantsInstances = {lplr.Character, gameCamera}
+    	local hit = workspace:Raycast(ray.Origin, ray.Direction * 1000000, rayCheck)
+    	return hit and hit.Position or nil
+    end
+
+    --[[
+    	Aiming is 'AimCannon', not 'CannonAim'.
+
+    	The scraped table works a remote's name out by finding 'Client' among a function's
+    	constants and taking the next one, which for this call lands on 'Get' rather than on
+    	the name - so every aim was addressed to a remote that does not exist and the cannon
+    	never moved. Named directly, and the vector is sent as the plain unit LookVector the
+    	game itself sends rather than one multiplied by two hundred.
+    ]]
+    local function sendAim(cannon, lookVector)
+    	bedwars.Client:Get('AimCannon'):SendToServer({
+    		cannonBlockPos = bedwars.BlockController:getBlockPosition(cannon.Position),
+    		lookVector = lookVector
+    	})
+    end
+
+    local function aimAndFire()
+    	local cannon = nearestCannon()
+    	if not cannon then return end
+
+    	local target = aimPoint()
+    	if not target then return end
+
+    	if AimMode.Value == 'Legit' then
+    		-- The prompts the game itself binds, held for as long as it asks, so the whole
+    		-- exchange is the one a player produces.
+    		local aim = cannon:FindFirstChild('AimPrompt')
+    		if not aim then return end
+
+    		aim:InputHoldBegin()
+    		task.wait(aim.HoldDuration)
+
+    		local until_ = tick() + 0.3
+    		repeat
+    			gameCamera.CFrame = gameCamera.CFrame:Lerp(CFrame.lookAt(gameCamera.CFrame.Position, target), 22 * runService.PostSimulation:Wait())
+    			sendAim(cannon, gameCamera.CFrame.LookVector)
+    		until tick() > until_
+
+    		local stop = cannon:FindFirstChild('StopAimingPrompt')
+    		if stop then
+    			stop:InputHoldBegin()
+    			task.wait(stop.HoldDuration + runService.PostSimulation:Wait())
+    		end
+
+    		if on(Launch) then
+    			local fire = cannon:FindFirstChild('LaunchSelfPrompt')
+    			if fire then
+    				fire:InputHoldBegin()
+    				task.wait(fire.HoldDuration + runService.PostSimulation:Wait())
+    			end
+    		end
+    	else
+    		sendAim(cannon, CFrame.lookAt(cannon.Position, target).LookVector)
+    		task.wait(0.3)
+    		if on(Launch) then
+    			bedwars.CannonHandController:launchSelf(cannon)
+    		end
+    	end
+    end
+
+    PirateDavey = vain.Categories.Kit:CreateModule({
+    	Name = 'Pirate Davey',
+    	Tooltip = 'Aims and fires the cannon, then breaks it and jumps as you land',
     	Function = function(call)
     		if call then
+    			--[[
+    				The landing half, hooked onto the launch itself so it fires whether the
+    				shot was aimed by this module or by you.
+    			]]
     			old = bedwars.CannonHandController.launchSelf
     			bedwars.CannonHandController.launchSelf = function(...)
     				local res = { old(...) }
     				local block = select(2, ...)
 
-    				if Break.Enabled and (not Limit.Enabled or holdingPickaxe()) then
-    					if (block.Position - entitylib.character.RootPart.Position).Magnitude <= 30 then
-    						task.delay(0.05, function()
-    							for i = 1, 2 do
-    								task.spawn(bedwars.breakBlock, block, false, nil, true, nil, Switch.Enabled)
-    							end
-    						end)
+    				pcall(function()
+    					if on(Break) and (not on(Limit) or holdingPickaxe()) and entitylib.isAlive then
+    						if (block.Position - entitylib.character.RootPart.Position).Magnitude <= 30 then
+    							task.delay(0.05, function()
+    								for _ = 1, 2 do
+    									task.spawn(bedwars.breakBlock, block, false, nil, true, nil, on(Switch))
+    								end
+    							end)
+    						end
     					end
-    				end
 
-    				if Jump.Enabled then
-    					lplr.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-    				end
+    					if on(Jump) and entitylib.isAlive then
+    						entitylib.character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+    					end
+    				end)
 
     				return unpack(res)
     			end
-    		else
-    			bedwars.CannonHandController.launchSelf = old
-    		end
-    	end,
-    	Tooltip = 'Automatically breaks cannon/jump on launch'
-    })
 
-    Jump = AutoDavey:CreateToggle({Name = 'Jump on impact', Tooltip = 'Jumps when the ability makes contact'})
-    Break = AutoDavey:CreateToggle({Name = 'Break on impact', Tooltip = 'Breaks the item on impact with a surface'})
-    Switch = AutoDavey:CreateToggle({Name = 'Legit switch', Tooltip = 'Switches to a more legit-looking mode automatically'})
-    Limit = AutoDavey:CreateToggle({Name = 'Limit to Item', Tooltip = 'Only breaks the cannon block while a pickaxe is held'})
-    IncludeWood = AutoDavey:CreateToggle({Name = 'Include Wood Pickaxe', Tooltip = 'Counts the wood pickaxe as a valid item for Limit to Item'})
+    			repeat
+    				if on(AutoAim) then
+    					pcall(aimAndFire)
+    				end
+    				task.wait(Delay.Value)
+    			until not PirateDavey.Enabled
+    		else
+    			if old then
+    				bedwars.CannonHandController.launchSelf = old
+    			end
+    		end
+    	end
+    })
+    AutoAim = PirateDavey:CreateToggle({
+    	Name = 'Auto Aim',
+    	Tooltip = 'Points the nearest cannon and fires it on its own',
+    	Default = true
+    })
+    AimAt = PirateDavey:CreateDropdown({
+    	Name = 'Aim At',
+    	Tooltip = 'What the cannon is pointed at',
+    	List = {'Nearest Enemy', 'Mouse', 'Camera'},
+    	Default = 'Nearest Enemy',
+    	Darker = true,
+    	ItemTooltips = {
+    		['Nearest Enemy'] = 'Finds a player to fire at, which is what makes this automatic',
+    		Mouse = 'Fires wherever your cursor is pointing',
+    		Camera = 'Fires wherever the camera is looking',
+    	}
+    })
+    AimMode = PirateDavey:CreateDropdown({
+    	Name = 'Aim Mode',
+    	Tooltip = 'How the cannon is aimed',
+    	List = {'Fast', 'Legit'},
+    	Default = 'Fast',
+    	Darker = true,
+    	ItemTooltips = {
+    		Fast = 'Sends the aim straight to the server and launches',
+    		Legit = 'Holds the prompts and turns the camera the way a player would',
+    	}
+    })
+    SearchRange = PirateDavey:CreateSlider({
+    	Name = 'Search Range',
+    	Tooltip = 'How far to look for one of your cannons (default 20)',
+    	Min = 1,
+    	Max = 60,
+    	Default = 20,
+    	Darker = true,
+    	Suffix = function(val)
+    		return val <= 1 and 'stud' or 'studs'
+    	end
+    })
+    Delay = PirateDavey:CreateSlider({
+    	Name = 'Delay',
+    	Tooltip = 'Wait between shots (default 1)',
+    	Min = 0.1,
+    	Max = 5,
+    	Default = 1,
+    	Decimal = 10,
+    	Darker = true,
+    	Suffix = 'sec'
+    })
+    Launch = PirateDavey:CreateToggle({
+    	Name = 'Launch',
+    	Tooltip = 'Fires yourself out of the cannon once it is aimed',
+    	Darker = true,
+    	Default = true
+    })
+    Break = PirateDavey:CreateToggle({
+    	Name = 'Break on impact',
+    	Tooltip = 'Breaks the block you land on'
+    })
+    Jump = PirateDavey:CreateToggle({
+    	Name = 'Jump on impact',
+    	Tooltip = 'Jumps as you land'
+    })
+    Switch = PirateDavey:CreateToggle({
+    	Name = 'Legit switch',
+    	Tooltip = 'Swaps to the breaking tool the way a player would',
+    	Darker = true
+    })
+    Limit = PirateDavey:CreateToggle({
+    	Name = 'Limit to Item',
+    	Tooltip = 'Only breaks while a pickaxe is held',
+    	Darker = true
+    })
+    IncludeWood = PirateDavey:CreateToggle({
+    	Name = 'Include Wood Pickaxe',
+    	Tooltip = 'Counts the wood pickaxe for Limit to Item',
+    	Darker = true
+    })
 end)
 
 kitRun(function()
@@ -15159,115 +15374,6 @@ kitRun(function()
     	Suffix = function(val)
     		return val > 1 and 'secs' or 'sec'
     	end
-    })
-end)
-
-kitRun(function()
-    local DaveyAim
-    local Range
-    local Mode
-    local Launch
-
-    local rayCheck = RaycastParams.new()
-    rayCheck.RespectCanCollide = true
-
-    DaveyAim = vain.Categories.Kit:CreateModule({
-    	Name = 'Davey Aim',
-    	Tooltip = 'Automatically aims the Davey kit cannon at enemies',
-    	Function = function(call)
-    		if call then
-    			DaveyAim:Toggle()
-    			local targetpos
-    			local ray = cloneref(lplr:GetMouse()).UnitRay
-    			rayCheck.FilterDescendantsInstances = {lplr.Character, gameCamera}
-    			ray = workspace:Raycast(ray.Origin, ray.Direction * 1000000, rayCheck)
-    			if ray then
-    				targetpos = ray.Position
-    			end
-
-    			if targetpos then
-    				local cannon, dis = nil, Range.Value + 0.1
-    				for _, v in collectionService:GetTagged('block') do
-    					local mag = (entitylib.character.RootPart.Position - v.Position).Magnitude
-    					if v.Name == 'cannon' and mag < dis then
-    						cannon = v
-    						dis = mag
-    						break
-    					end
-    				end
-
-    				if cannon then
-    					local lookpos, blockpos = targetpos, bedwars.BlockController:getBlockPosition(cannon.Position)
-    					if lookpos then
-    						if Mode.Value == 'Legit' then
-    							cannon.AimPrompt:InputHoldBegin()
-    							task.wait(cannon.AimPrompt.HoldDuration)
-    							local wait = tick() + 0.3
-    							repeat
-    								gameCamera.CFrame = gameCamera.CFrame:Lerp(CFrame.lookAt(gameCamera.CFrame.p, lookpos), 22 * runService.PostSimulation:Wait())
-    								bedwars.Client:Get(remotes.CannonAim):SendToServer({
-    									cannonBlockPos = blockpos,
-    									lookVector = gameCamera.CFrame.LookVector,
-    								})
-    							until tick() > wait
-    							cannon.StopAimingPrompt:InputHoldBegin()
-    							task.wait(cannon.StopAimingPrompt.HoldDuration + runService.PostSimulation:Wait()) -- the hold duration is zero, but just incase...
-    							if Launch.Enabled then
-    								cannon.LaunchSelfPrompt:InputHoldBegin()
-    								task.wait(cannon.LaunchSelfPrompt.HoldDuration + runService.PostSimulation:Wait())
-    							end
-    						else
-    							bedwars.Client:Get(remotes.CannonAim):SendToServer({
-    								cannonBlockPos = blockpos,
-    								lookVector = CFrame.lookAt(cannon.Position, lookpos).LookVector * 200,
-    							})
-    							task.wait(0.5)
-    							if Launch.Enabled then
-    								bedwars.CannonHandController:launchSelf(cannon)
-    							end
-    						end
-    					end
-    				end
-    			end
-    		end
-    	end,
-    	Tooltip = 'Automatically aims cannon'
-    })
-
-    Mode = DaveyAim:CreateDropdown({
-    	Name = 'Aim Mode',
-    	Tooltip = 'Selects the aiming technique',
-    	List = {'Fast', 'Legit'},
-    	Default = 'Fast',
-    	ItemTooltips = {
-    		Fast = 'Instantly snaps the cannon aim to the target each frame',
-    		Legit = 'Smoothly lerps the cannon aim toward the target for a human-like appearance',
-    	},
-    })
-    DaveyAim:CreateDropdown({
-    	Name = 'Position Mode',
-    	Tooltip = 'Selects the reference position for aiming',
-    	List = {'Mouse', 'Camera'},
-    	Default = 'Mouse',
-    	ItemTooltips = {
-    		Mouse = 'Aims the cannon based on your mouse cursor position',
-    		Camera = 'Aims the cannon based on where the camera is looking',
-    	}
-    })
-    Range = DaveyAim:CreateSlider({
-    	Name = 'Search Range',
-    	Tooltip = 'Distance in studs to search for targets',
-    	Min = 1,
-    	Max = 30,
-    	Default = 10,
-    	Suffix = function(val)
-    		return val <= 1 and 'stud' or 'studs'
-    	end
-    })
-    Launch = DaveyAim:CreateToggle({
-    	Name = 'Launch Cannon',
-    	Tooltip = 'Automatically launches the Davey cannon at enemies',
-    	Default = true
     })
 end)
 
