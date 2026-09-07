@@ -2088,8 +2088,6 @@ run(function()
 	-- toward a new one keeps the motion continuous.
 	local humanizeoffset, humanizetarget, humanizenext = Vector2.zero, Vector2.zero, 0
 	
-	-- Named once so binding and unbinding cannot drift apart.
-	local RENDER_BIND = 'VainAimAssist'
 	
 	local function heldItemMeta()
 		local hand = store.hand
@@ -2235,18 +2233,18 @@ run(function()
 		Function = function(callback)
 			if callback then
 				--[[
-					Bound to the render step above the camera, not to Heartbeat.
+					Driven off the render step, not Heartbeat.
 	
-					Roblox's camera script runs during the render step and builds the CFrame
+					Roblox's camera script runs during the render step and rebuilds the CFrame
 					from its own yaw and pitch - it never reads Camera.CFrame back. Heartbeat
 					fires after the frame is already rendered, so a write there survived only
 					until the next render step recomputed over the top of it, and the assist
 					moved the camera for no frame anyone ever saw.
 	
-					Binding one priority above Camera puts this after that recompute in the
-					same frame, which is the only point a write to the camera holds.
+					RenderStepped is where Voidware drives its own aim assist from, and it is
+					enough: the write lands inside the render phase rather than after it.
 				]]
-				runService:BindToRenderStep(RENDER_BIND, Enum.RenderPriority.Camera.Value + 1, function(dt)
+				AimAssist:Clean(runService.RenderStepped:Connect(function(dt)
 					-- Guarded as a whole: this reads game state that can disappear between
 					-- frames (entities dying, the held item changing mid-swing). A throw here
 					-- would otherwise spam the console every single frame.
@@ -2307,7 +2305,20 @@ run(function()
 						local basespeed = (not issword) and ProjectileSpeed.Value or AimSpeed.Value
 						local speed = basespeed + (StrafeIncrease.Enabled and (inputService:IsKeyDown(Enum.KeyCode.A) or inputService:IsKeyDown(Enum.KeyCode.D)) and 10 or 0)
 						local alpha
-						if AimMode.Value == 'Constant' then
+						if AimMode.Value == 'Voidware' then
+							--[[
+								Voidware's curve, kept as it is written there: a flat fraction
+								of the remaining angle each frame, taken as one over the slider
+								rather than scaled by frame time, with a small extra push while
+								strafing. That makes it frame rate dependent, which the other
+								modes are not - it is here because it is the feel that was
+								asked for, not because it is the sounder of the two.
+							]]
+							alpha = 1 / math.max(AimSpeed.Value, 1)
+							if StrafeIncrease.Enabled and (inputService:IsKeyDown(Enum.KeyCode.A) or inputService:IsKeyDown(Enum.KeyCode.D)) then
+								alpha = alpha + 0.01
+							end
+						elseif AimMode.Value == 'Constant' then
 							-- Turn at a fixed angular rate: work out what fraction of the
 							-- remaining error that rate covers this frame. Distance to the
 							-- target stops mattering, which is what makes it look steady.
@@ -2352,11 +2363,7 @@ run(function()
 	
 						gameCamera.CFrame = newcframe
 					end)
-				end)
-	
-				AimAssist:Clean(function()
-					pcall(runService.UnbindFromRenderStep, runService, RENDER_BIND)
-				end)
+				end))
 			else
 				locked = nil
 				humanizeoffset, humanizetarget, humanizenext = Vector2.zero, Vector2.zero, 0
@@ -2401,8 +2408,9 @@ run(function()
 	AimMode = AimAssist:CreateDropdown({
 		Name = 'Aim Mode',
 		Tooltip = 'How the camera moves toward the target',
-		List = {'Linear', 'Smooth', 'Constant'},
+		List = {'Linear', 'Smooth', 'Constant', 'Voidware'},
 		Tooltips = {
+			Voidware = 'Voidware\'s curve. Higher Aim Speed is smoother here, not faster',
 			Linear = 'Moves a fixed fraction of the way each frame - fast at first, slower as it closes in',
 			Smooth = 'Eases off as the crosshair approaches',
 			Constant = 'Turns at a steady speed no matter how far off the target is'
