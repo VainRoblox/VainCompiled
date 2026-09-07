@@ -1045,6 +1045,19 @@ run(function()
 		WarlockTarget = debug.getproto(Knit.Controllers.WarlockStaffController.KnitStart, 2)
 	}
 
+	--[[
+		The remote name out of a function's constants.
+
+		Every one of these is read from a call shaped like <something>.Client:Get('<name>'),
+		which compiles to the constants 'Client', 'Get' and then the name, in that order.
+		Taking the one straight after 'Client' therefore handed back the method name, so
+		these resolved to 'Get' rather than to a remote - Killaura swung, drew its boxes
+		and played its particles while every attack went to a remote that does not exist,
+		and the same silence covered every other entry here.
+
+		It reads past the method name to the first constant that is neither, so a call
+		whose constants do not carry 'Get' between the two is unaffected.
+	]]
 	local function dumpRemote(tab)
 		local ind
 		for i, v in tab do
@@ -1053,7 +1066,17 @@ run(function()
 				break
 			end
 		end
-		return ind and tab[ind + 1] or ''
+		if not ind then return '' end
+
+		local best, bestindex
+		for i, v in tab do
+			if i > ind and type(v) == 'string' and v ~= 'Client' and v ~= 'Get' then
+				if not bestindex or i < bestindex then
+					best, bestindex = v, i
+				end
+			end
+		end
+		return best or ''
 	end
 
 	for i, v in remoteNames do
@@ -10967,10 +10990,15 @@ kitRun(function()
                         if target then
 							if getAccountTier(target.Player) >= 1 and getAccountTier(lplr) == 0 then continue end
                             local selfpos = entitylib.character.RootPart.Position
-                            local localFacing = (ViewMode.Value == 'Third Person' and gameCamera.CFrame.LookVector or entitylib.character.RootPart.CFrame.LookVector) * Vector3.new(1, 0, 1)
+                            -- The camera, rather than a ViewMode setting. This module
+                            -- never had one: the name read here belongs to Aim Assist's
+                            -- block, so out here it was a nil global and this threw on
+                            -- the first target that came into range. An FOV is a cone
+                            -- around where you are looking, which is the camera.
+                            local localFacing = gameCamera.CFrame.LookVector * Vector3.new(1, 0, 1)
                             local delta = (target.RootPart.Position - selfpos) * Vector3.new(1, 0, 1)
                             if delta.Magnitude > 0.001 then
-                                local angle = math.acos(math.clamp(localfacing:Dot(delta.Unit), -1, 1))
+                                local angle = math.acos(math.clamp(localFacing:Dot(delta.Unit), -1, 1))
                                 if angle <= math.rad(FOV.Value) / 2 then
                                     shootLasso(target)
                                 end
