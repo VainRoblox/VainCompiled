@@ -3965,18 +3965,44 @@ run(function()
 										hits += 1
 
 										local dir = aim.Unit
-										local pos = selfpos + dir * math.max(aimdist - 14.399, 0)
+										-- Fourteen rather than 14.399: the same claim, further
+										-- inside the server's limit instead of sitting on it.
+										local pos = selfpos + dir * math.max(aimdist - 14, 0)
 										bedwars.SwordController.lastAttack = workspace:GetServerTimeNow()
 										store.attackReach = (aimdist * 100) // 1 / 100
 										store.attackReachUpdate = tick() + 1
 
+										--[[
+											A charged sword has to say it is charged.
+
+											chargeRatio was pinned at zero, which is an uncharged
+											swing - the server scales the hit by it, so every
+											attack with a chargeable sword landed at its weakest.
+											Anything whose charge is not disabled on the ground
+											claims a full one.
+										]]
+										local charged = meta.sword.chargedAttack
+										local ratio = (charged and not charged.disableOnGrounded) and 0.999 or 0
+
 										AttackRemote:FireServer({
 											weapon = sword.tool,
-											chargedAttack = {chargeRatio = 0},
+											chargedAttack = {chargeRatio = ratio},
 											entityInstance = v.Character,
 											validate = {
+												--[[
+													The ray starts at the target, not at us.
+
+													This is the position the server traces the
+													swing from. Handing it the spoofed self
+													position meant the trace had to cross whatever
+													stood between the two, so a hit through a wall
+													or round a corner was thrown away even though
+													the reach claim was fine. Starting it on the
+													target is what the swing is being checked
+													against, and it is what Voidware sends.
+												]]
 												raycast = {
-													cameraPosition = {value = pos},
+													cameraPosition = {value = actualRoot.Position},
 													cursorDirection = {value = dir}
 												},
 												targetPosition = {value = actualRoot.Position},
