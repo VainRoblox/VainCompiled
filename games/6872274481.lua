@@ -118,6 +118,20 @@ local TrapDisabler
 local AntiFallPart
 local bedwars, remotes, sides, oldinvrender, oldSwing = {}, {}, {}
 
+--[[
+	Declared out here rather than in the block that defines them.
+
+	Both are published on the bedwars table so the other run blocks can reach them, and
+	that table is not the one they were being written to: it starts as an empty local and
+	is replaced outright by the real one further down, which threw away anything already
+	set on it. So bedwars.sameTeam read back as nil, and the modules calling it unguarded
+	threw instead of answering.
+
+	Holding them here means the publication can happen after the replacement, where it
+	sticks, while the definitions stay next to the entity checks that use them.
+]]
+local sameTeam, attackable
+
 local function addBlur(parent)
 	local blur = Instance.new('ImageLabel')
 	blur.Name = 'Blur'
@@ -806,23 +820,17 @@ run(function()
 		loaded would be a worse failure than briefly not protecting somebody, and the answer
 		corrects itself within the same second.
 	]]
-	local function attackable(plr)
+	function attackable(plr)
 		if not (whitelist and type(whitelist.get) == 'function') then return true end
 		local ok, _, allowed = pcall(whitelist.get, whitelist, plr)
 		if not ok then return true end
 		return allowed
 	end
 
-	local function sameTeam(plr)
+	function sameTeam(plr)
 		local mine = lplr:GetAttribute('Team')
 		return mine ~= nil and mine == plr:GetAttribute('Team')
 	end
-	bedwars.sameTeam = sameTeam
-	-- Published alongside sameTeam because the block protection below lives in a different
-	-- run block, and a local from this one is simply a nil global over there. That is what
-	-- was throwing straight through the block breaker: not the whitelist being unready, but
-	-- the functions not being reachable from where they were called at all.
-	bedwars.attackable = attackable
 
 	entitylib.protectionCheck = function(ent)
 		if not ent.Player or sameTeam(ent.Player) then return true end
@@ -972,6 +980,13 @@ run(function()
 			return rawget(self, ind)
 		end
 	})
+
+	-- Published here rather than where they are defined, because everything written to
+	-- the bedwars table before the assignment above went with the table it replaced.
+	-- Modules in other run blocks read them off here; a local from one block is simply a
+	-- nil global in the next.
+	bedwars.sameTeam = sameTeam
+	bedwars.attackable = attackable
 
 	-- The game dropped SoundManager for AudioManager:playAudio(sound, config), so
 	-- bedwars.SoundManager resolved to nil and every module that plays a sound threw on
@@ -5597,18 +5612,53 @@ run(function()
 		entry.Shown = any
 	end
 	
+	--[[
+		Whether this player's loot is somebody else's business.
+	
+		Someone who outranks you is not read: knowing what they carry is as much a use of
+		them as aiming at them, so this follows the same rule the other render modules do.
+		Teammates share your stock rather than stand between you and it, so what they carry
+		is noise on the screen rather than anything to act on.
+	
+		sameTeam is asked for rather than called outright. It is published on the bedwars
+		table from a different run block, and when that publication was being lost this
+		threw - which took down the whole pass, not just this player. Unanswerable is read as
+		"not a teammate", so the worst case is showing loot that could have been hidden
+		rather than hiding all of it.
+	]]
+	local function hidden(ent, plr)
+		if ent.Protected then return true end
+		if not on(Teammates) then return false end
+	
+		local sameTeam = bedwars.sameTeam
+		return sameTeam ~= nil and sameTeam(plr) == true
+	end
+	
+	-- Reported once rather than every pass, so a fault says so instead of looking like an
+	-- empty inventory.
+	local complained = false
+	local function complain(err)
+		if complained then return end
+		complained = true
+		notif('InventoryESP', 'Failed to read an inventory: ' .. tostring(err), 6, 'alert')
+	end
+	
 	local function refreshAll()
 		for ent, entry in Entries do
 			if entry.Billboard.Parent and entry.Player and entry.Player.Parent then
-				-- Someone who outranks you is not read either. Knowing what they carry is as
-				-- much a use of them as aiming at them, so this follows the same rule the
-				-- other render modules do.
-				-- Teammates share your stock rather than stand between you and it, so what
-				-- they carry is noise on the screen rather than anything to act on.
-				if ent.Protected or (on(Teammates) and bedwars.sameTeam(entry.Player)) then
+				-- Each player is read on its own. One that cannot be read used to abort the
+				-- pass where it failed, leaving everybody after it holding whatever they were
+				-- last drawn with - which is why the display could not recover.
+				local ok, err = pcall(function()
+					if hidden(ent, entry.Player) then
+						entry.Shown = false
+					else
+						refreshAdornee(entry, entry.Player)
+					end
+				end)
+				if not ok then
 					entry.Shown = false
-				else
-					refreshAdornee(entry, entry.Player)
+					complain(err)
 				end
 			else
 				entry.Billboard:Destroy()

@@ -186,60 +186,97 @@ function module.solveQuartic(c0, c1, c2, c3, c4)
 	return {s3, s2, s1, s0}
 end
 
-function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, targetVelocity, playerGravity, playerHeight, playerJump, params)
+-- Solve for the flight time `t` of a projectile fired from `origin` at
+-- `projectileSpeed` under downward `gravity` so that it intercepts a target
+-- starting at `targetPos` and moving at constant `targetVelocity`. This is the
+-- classic ballistic-intercept quartic: we want |aimDir|*speed such that, after
+-- time t, the projectile (origin + dir*speed*t - 0.5*g*t^2 ŷ) meets the target
+-- (targetPos + targetVelocity*t). Squaring the speed constraint gives a quartic
+-- in t with the coefficients below. Returns the earliest positive real root.
+local function solveInterceptTime(origin, projectileSpeed, gravity, targetPos, targetVelocity)
 	local disp = targetPos - origin
 	local p, q, r = targetVelocity.X, targetVelocity.Y, targetVelocity.Z
 	local h, j, k = disp.X, disp.Y, disp.Z
-	local l = -.5 * gravity
-	--attemped gravity calculation, may return to it in the future.
-	if math.abs(q) > 0.01 and playerGravity and playerGravity > 0 then
-		local estTime = (disp.Magnitude / projectileSpeed)
-		local origq = q
-		local origj = j
-		for i = 1, 100 do
-			q -= (.5 * playerGravity) * estTime
-			local velo = targetVelocity * 0.016
-			local ray = workspace.Raycast(workspace, Vector3.new(targetPos.X, targetPos.Y, targetPos.Z), Vector3.new(velo.X, (q * estTime) - playerHeight, velo.Z), params)
-			if ray then
-				local newTarget = ray.Position + Vector3.new(0, playerHeight, 0)
-				estTime -= math.sqrt(((targetPos - newTarget).Magnitude * 2) / playerGravity)
-				targetPos = newTarget
-				j = (targetPos - origin).Y
-				q = 0
-				break
-			else
-				break
+	local l = -0.5 * gravity
+
+	local solutions = module.solveQuartic(
+		l * l,
+		-2 * q * l,
+		q * q - 2 * j * l - projectileSpeed * projectileSpeed + p * p + r * r,
+		2 * j * q + 2 * h * p + 2 * k * r,
+		j * j + h * h + k * k
+	)
+
+	if not solutions then return nil end
+
+	local bestT = math.huge
+	for _, v in solutions do
+		if v > 0 and v < bestT then
+			bestT = v
+		end
+	end
+	return bestT < math.huge and bestT or nil
+end
+
+function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, targetVelocity, playerGravity, playerHeight, playerJump, params)
+	-- If the target is on (or barely above) the ground with no real vertical
+	-- velocity, don't try to lead them downward — snap to the ground beneath
+	-- them so a tiny negative Y velocity reading doesn't tilt the aim.
+	local groundHit = workspace:Raycast(targetPos, Vector3.new(0, -playerHeight - 0.5, 0), params)
+	local grounded = groundHit ~= nil and math.abs(targetVelocity.Y) <= 0.1
+
+	-- The target accelerates under their own gravity over the projectile's
+	-- flight, so their intercept position is a parabola, not a straight line.
+	-- Flight time depends on that position and vice-versa, so iterate: solve a
+	-- linear-motion intercept, then re-aim at where gravity will have carried
+	-- the target by that time, and re-solve. Converges in a couple of passes.
+	local effectiveTargetPos = targetPos
+	local effectiveTargetVel = targetVelocity
+	local applyGravity = (not grounded) and playerGravity and playerGravity > 0 and math.abs(targetVelocity.Y) > 0.01
+
+	local t = solveInterceptTime(origin, projectileSpeed, gravity, effectiveTargetPos, effectiveTargetVel)
+
+	if applyGravity and t then
+		for _ = 1, 3 do
+			-- predicted target position at flight time t, including their fall
+			local fallY = targetVelocity.Y * t - 0.5 * playerGravity * t * t
+			local predicted = targetPos + Vector3.new(targetVelocity.X * t, fallY, targetVelocity.Z * t)
+
+			-- stop the target falling through the floor
+			if groundHit and predicted.Y < groundHit.Position.Y then
+				predicted = Vector3.new(predicted.X, groundHit.Position.Y, predicted.Z)
 			end
+
+			-- the velocity the solver should assume to reach `predicted` in t,
+			-- so the quartic lead and the gravity-curved point stay consistent
+			effectiveTargetPos = targetPos
+			effectiveTargetVel = (predicted - targetPos) / t
+			local newT = solveInterceptTime(origin, projectileSpeed, gravity, effectiveTargetPos, effectiveTargetVel)
+			if not newT then break end
+			if math.abs(newT - t) < 1e-3 then t = newT break end
+			t = newT
 		end
 	end
 
-	local solutions = module.solveQuartic(
-		l*l,
-		-2*q*l,
-		q*q - 2*j*l - projectileSpeed*projectileSpeed + p*p + r*r,
-		2*j*q + 2*h*p + 2*k*r,
-		j*j + h*h + k*k
-	)
-	if solutions then
-		local posRoots = table.create(2)
-		for _, v in solutions do --filter out the negative roots
-			if v > 0 then
-				table.insert(posRoots, v)
-			end
-		end
-		posRoots[1] = posRoots[1]
-		if posRoots[1] then
-			local t = posRoots[1]
-			local d = (h + p*t)/t
-			local e = (j + q*t - l*t*t)/t
-			local f = (k + r*t)/t
-			return origin + Vector3.new(d, e, f)
-		end
+	if t then
+		local disp = effectiveTargetPos - origin
+		local p, q, r = effectiveTargetVel.X, effectiveTargetVel.Y, effectiveTargetVel.Z
+		local h, j, k = disp.X, disp.Y, disp.Z
+		local l = -0.5 * gravity
+		local d = (h + p * t) / t
+		local e = (j + q * t - l * t * t) / t
+		local f2 = (k + r * t) / t
+		local aimDir = Vector3.new(d, e, f2).Unit
+		return origin + Vector3.new(d, e, f2), aimDir, t
 	elseif gravity == 0 then
-		local t = (disp.Magnitude / projectileSpeed)
-		local d = (h + p*t)/t
-		local e = (j + q*t - l*t*t)/t
-		local f = (k + r*t)/t
+		-- straight-line fallback for non-ballistic projectiles
+		local disp = targetPos - origin
+		local p, q, r = targetVelocity.X, targetVelocity.Y, targetVelocity.Z
+		local h, j, k = disp.X, disp.Y, disp.Z
+		local ft = disp.Magnitude / projectileSpeed
+		local d = (h + p * ft) / ft
+		local e = (j + q * ft) / ft
+		local f = (k + r * ft) / ft
 		return origin + Vector3.new(d, e, f)
 	end
 end
