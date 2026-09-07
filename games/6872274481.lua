@@ -5730,8 +5730,20 @@ run(function()
 				continue
 			end
 	
-			local head = ent.RootPart.Position + Vector3.new(0, (ent.HipHeight or 2.6) + 1, 0)
-			local point, onScreen = gameCamera:WorldToViewportPoint(head)
+			--[[
+				Pinned to the head itself, rather than to a point floating above it.
+	
+				The anchor was the root plus HipHeight plus a stud, and a world-space offset
+				does not hold still on screen: a stud is a couple of pixels across the map and
+				a good part of the screen when you are stood next to somebody. So the strip
+				climbed further off the player the closer you got.
+	
+				The head is part of the body, so projecting it puts the strip on the body at
+				every distance. The gap stays in pixels, which is the only offset that means
+				the same thing however far away they are.
+			]]
+			local part = (ent.Head and ent.Head.Parent) and ent.Head or ent.RootPart
+			local point, onScreen = gameCamera:WorldToViewportPoint(part.Position)
 			container.Visible = onScreen
 			if onScreen then
 				container.Position = UDim2.fromOffset(point.X, point.Y + (Gap and Gap.Value or 4))
@@ -5826,7 +5838,7 @@ run(function()
 	})
 	Gap = InventoryESP:CreateSlider({
 		Name = 'Gap',
-		Tooltip = 'Pixels between the name and the icons\nDefault is 2',
+		Tooltip = 'Pixels below the head\nDefault is 2',
 		Min = 0, Max = 40, Default = 2, Suffix = 'px'
 	})
 	Teammates = InventoryESP:CreateToggle({
