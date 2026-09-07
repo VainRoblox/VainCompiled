@@ -8980,6 +8980,21 @@ local AimAssist
 		return bestPart
 	end
 
+	--[[
+		Never defined, though isEntValid has called it since this module was brought over.
+		Calling a nil value threw for every entity on every frame, which is why this Aim
+		Assist never moved the camera and why the console filled with the same line.
+
+		targetCheck is the library's own answer to "should I be acting on this one".
+		Reading it hands back the guarded wrapper, so rank protection and the game's team
+		check both apply here without either being restated.
+	]]
+	local function isEnemy(ent)
+		if not (ent and ent.Character) then return false end
+		if not entitylib.isVulnerable(ent) then return false end
+		return entitylib.targetCheck(ent) == true
+	end
+
 	local function isEntValid(ent)
 		if not ent or not ent.RootPart or not ent.Character or not ent.Character.Parent then return false end
 		if not entitylib.isAlive or not entitylib.character or not entitylib.character.RootPart then return false end
