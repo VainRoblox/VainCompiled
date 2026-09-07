@@ -5243,6 +5243,7 @@ run(function()
 	local List
 	local OtherProjectiles
 	local ViewMode
+	local Mode
 	local rayCheck = RaycastParams.new()
 	rayCheck.FilterType = Enum.RaycastFilterType.Include
 	local mapfolder
@@ -5353,7 +5354,23 @@ run(function()
 											latency = lplr:GetNetworkPing() * 2
 										end)
 										local aimAt = ent.RootPart.Position + (ent.RootPart.Velocity * math.clamp(latency, 0, 0.5))
-										local calc = prediction.SolveTrajectory(pos, projSpeed, gravity, aimAt, ent.RootPart.Velocity, workspace.Gravity, ent.HipHeight, ent.Jumping and 42.6 or nil, rayCheck)
+										--[[
+											Where the shot starts, and whether it is aimed at all.
+	
+											Solving an arc from your own position is the honest way
+											to do this and the reason it kept missing: the solve has
+											to be right, survive the flight, and not clip the map,
+											and any of those failing is a wasted arrow.
+	
+											Instant does not aim. The projectile is created three
+											studs above the target pointing straight down, so it has
+											nowhere to go but into them - no arc, no lead, no flight
+											to survive. Nothing is solved, so nothing can be solved
+											wrong. This is how Voidware does it.
+										]]
+										local instant = Mode == nil or Mode.Value == 'Instant'
+										local calc = instant and (ent.RootPart.Position + Vector3.new(0, 3, 0))
+											or prediction.SolveTrajectory(pos, projSpeed, gravity, aimAt, ent.RootPart.Velocity, workspace.Gravity, ent.HipHeight, ent.Jumping and 42.6 or nil, rayCheck)
 										if calc then
 											targetinfo.Targets[ent] = tick() + 1
 											local switched = switchItem(item.tool)
@@ -5361,8 +5378,13 @@ run(function()
 											task.spawn(function()
 												local dir, id = CFrame.lookAt(pos, calc).LookVector, httpService:GenerateGUID(true)
 												local shootPosition = (CFrame.new(pos, calc) * CFrame.new(Vector3.new(-bedwars.BowConstantsTable.RelX, -bedwars.BowConstantsTable.RelY, -bedwars.BowConstantsTable.RelZ))).Position
+												if instant then
+													-- Straight down onto them, from where they are.
+													shootPosition = calc
+													dir = Vector3.new(0, -1, 0)
+												end
 												bedwars.ProjectileController:createLocalProjectile(meta, ammo, projectile, shootPosition, id, dir * projSpeed, {drawDurationSeconds = 1})
-												local res = projectileRemote:InvokeServer(item.tool, ammo, projectile, shootPosition, pos, dir * projSpeed, id, {drawDurationSeconds = 1, shotId = httpService:GenerateGUID(false)}, workspace:GetServerTimeNow() - 0.045)
+												local res = projectileRemote:InvokeServer(item.tool, ammo, projectile, shootPosition, instant and shootPosition or pos, dir * projSpeed, id, {drawDurationSeconds = 1, shotId = httpService:GenerateGUID(false)}, workspace:GetServerTimeNow() - 0.045)
 												if not res then
 													FireDelays[item.itemType] = tick()
 												else
@@ -5395,6 +5417,16 @@ run(function()
 		Players = true,
 		Walls = true,
 		Tooltip = 'Which entities this module is allowed to target'
+	})
+	Mode = ProjectileAura:CreateDropdown({
+		Name = 'Mode',
+		Tooltip = 'How the shot is placed',
+		List = {'Instant', 'Trajectory'},
+		Default = 'Instant',
+		Tooltips = {
+			Instant = 'Spawns the projectile on the target. Never misses, and obvious',
+			Trajectory = 'Solves a real arc from where you stand. Legit looking, and misses'
+		}
 	})
 	ViewMode = ProjectileAura:CreateDropdown({
 		Name = 'View Mode',
