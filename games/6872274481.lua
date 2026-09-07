@@ -2010,7 +2010,19 @@ run(function()
 	-- map blocks the shot, players are not obstacles to aim around.
 	local aimRayCheck = RaycastParams.new()
 	aimRayCheck.FilterType = Enum.RaycastFilterType.Include
-	aimRayCheck.FilterDescendantsInstances = {workspace:FindFirstChild('Map')}
+	local mapfolder
+	
+	-- Resolved on use rather than once at load, which is what the sibling modules do and
+	-- what the comment above always claimed this did. The map does not exist yet if you
+	-- inject while the round is loading, and an Include filter holding nothing hits nothing -
+	-- so the solve never saw the ground and never clamped a falling target to it.
+	local function refreshMapFilter()
+		local map = workspace:FindFirstChild('Map')
+		if map ~= mapfolder then
+			mapfolder = map
+			aimRayCheck.FilterDescendantsInstances = map and {map} or {}
+		end
+	end
 	
 	-- Remembered between frames so 'Lock on Target' can keep aiming at the same entity
 	-- instead of re-picking the closest one every heartbeat.
@@ -2073,6 +2085,8 @@ run(function()
 		local meta = heldItemMeta()
 		local source = meta and meta.projectileSource
 		if not source then return nil end
+	
+		refreshMapFilter()
 	
 		local ok, solved = pcall(function()
 			local ammo = source.ammoItemTypes and source.ammoItemTypes[1] or 'arrow'
@@ -2585,7 +2599,13 @@ run(function()
 			if callback then
 				old = bedwars.SwordController.isClickingTooFast
 				bedwars.SwordController.isClickingTooFast = function(self)
-					self.lastSwing = os.clock()
+					-- tick(), because that is what the game writes here and what everything
+					-- reading it compares against. os.clock() counts from process start, so
+					-- stamping it left lastSwing about 1.7 billion seconds in the past: every
+					-- "did they swing recently" test then answered no forever, which switched
+					-- off Click Aim in AimAssist and Legit Aura in Killaura for as long as
+					-- this module was on.
+					self.lastSwing = tick()
 					return false
 				end
 			else
