@@ -1625,23 +1625,79 @@ run(function()
 		forward. Falling back to walking ahead keeps it moving if that lookup finds
 		nothing rather than leaving it standing in a cleared room.
 	]]
-	local runOrigin
+	--[[
+		Where the room actually is, taken from where its enemies stand.
+
+		A room model's pivot is the centre of everything in it, barrier and scenery
+		included, which can sit inside a wall. The spawn points are by definition places
+		the game puts something that has to be reachable.
+	]]
+	local function roomPoint(room)
+		local total, count = Vector3.zero, 0
+		for _, d in room:GetDescendants() do
+			if d:IsA('BasePart') and d.Name == 'spawn' then
+				total += d.Position
+				count += 1
+			end
+		end
+		if count > 0 then return total / count end
+
+		local ok, pivot = pcall(function() return room:GetPivot().Position end)
+		return ok and pivot or nil
+	end
+
+	--[[
+		Still shut, and therefore still the room to be in.
+
+		Whether the game destroys a cleared room's barrier or only lets you through it is
+		not something the place file answers, so this treats both as closed: gone counts
+		as open, and so does one left standing with nothing solid in it.
+	]]
+	local function roomLocked(room)
+		local barrier = room:FindFirstChild('barrier')
+		if not barrier then return false end
+		for _, d in barrier:GetDescendants() do
+			if d:IsA('BasePart') and d.CanCollide then return true end
+		end
+		return false
+	end
+
+	--[[
+		Room by room, in the order the game numbers them.
+
+		This used to pick whichever room was furthest from where the run started and walk
+		at it, which is the boss room from the first second - so it spent the run pressed
+		against the barriers of rooms it had not cleared yet, and the fallback for being
+		stuck was to head twenty studs forward.
+
+		Every room carries an order and its own barrier. The room to be in is the lowest
+		numbered one still shut; everything below it is done and everything above is not
+		open yet. When they are all open the only thing left is the boss.
+	]]
 	local function nextRoomGoal(hrp)
 		local dungeon = workspace:FindFirstChild('dungeon')
 		if not dungeon then return nil end
 
-		local best, bestDist
+		local rooms = {}
 		for _, room in dungeon:GetChildren() do
-			local ok, pivot = pcall(function() return room:GetPivot().Position end)
-			if ok and pivot then
-				local dist = (pivot - runOrigin).Magnitude
-				if not bestDist or dist > bestDist then best, bestDist = pivot, dist end
+			local order = room:FindFirstChild('order')
+			if order and order:IsA('IntValue') then
+				table.insert(rooms, {room = room, order = order.Value})
+			end
+		end
+		table.sort(rooms, function(a, b) return a.order < b.order end)
+
+		for _, entry in rooms do
+			if roomLocked(entry.room) then
+				return roomPoint(entry.room)
 			end
 		end
 
-		-- Already standing in the furthest room, so there is nothing further to aim at.
-		if best and (best - hrp.Position).Magnitude < 15 then return nil end
-		return best
+		local boss = dungeon:FindFirstChild('bossRoom')
+		local point = boss and roomPoint(boss)
+		-- Standing in it already, so there is nothing further to walk at.
+		if point and (point - hrp.Position).Magnitude < 15 then return nil end
+		return point
 	end
 
 	-- Heal-swap: when HP is low, if the inventory has heal spell(s), save the current
@@ -1891,10 +1947,6 @@ run(function()
 			local weaponUsed = remote('weaponUsed')
 			local abilityUsed = remote('abilityUsed')
 			local retreating = false
-
-			local startChar = lplr.Character
-			local startHrp = startChar and startChar:FindFirstChild('HumanoidRootPart')
-			runOrigin = startHrp and startHrp.Position or Vector3.zero
 
 			--[[
 				Errors are said out loud, once each.
