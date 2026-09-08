@@ -896,6 +896,39 @@ run(function()
 				end
 			end
 
+			--[[
+				Parts that turn up after the model does.
+
+				A model is not always full when it is parented - the game builds some of
+				these in place, and streaming can deliver the pieces a frame or two behind
+				the container. Reading its descendants once, at that instant, then sees an
+				empty model and registers nothing, and the attack goes completely unwatched
+				while everything looks like it is working.
+
+				So the model is watched for a few seconds afterwards and anything that
+				lands in it is registered too.
+			]]
+			local late
+			late = object.DescendantAdded:Connect(function(part)
+				if not part:IsA('BasePart') then return end
+				if workspace:GetServerTimeNow() > expire then
+					late:Disconnect()
+					return
+				end
+				local circle = part:IsA('Part') and part.Shape == Enum.PartType.Cylinder
+				table.insert(dangers, {
+					kind = circle and 'circle' or 'cube',
+					part = part,
+					cf = part.CFrame,
+					pos = part.Position,
+					size = part.Size,
+					radius = part.Size.Y * 0.5,
+					expire = expire,
+				})
+				seenZones += 1
+			end)
+			task.delay(5, function() late:Disconnect() end)
+
 			if added > 0 then
 				seenZones += added
 				say(string.format('attack %s: %d parts', object.Name, added))
@@ -1052,6 +1085,17 @@ run(function()
 		return false
 	end
 
+	-- How much of a hit a spot is, rather than whether it is one at all. With several
+	-- overlapping attacks there is often nowhere fully clear, and the difference between
+	-- standing in one and standing in three is the difference between living and not.
+	local function dangerCount(pos, margin)
+		local count = 0
+		for _, d in dangers do
+			if inDanger(pos, d, margin) then count += 1 end
+		end
+		return count
+	end
+
 	local function dodgeTarget(pos, anchor, ideal)
 		local now = workspace:GetServerTimeNow()
 		for i = #dangers, 1, -1 do
@@ -1099,22 +1143,46 @@ run(function()
 		end
 		if quickest then return quickest end
 
+		--[[
+			Somewhere less bad, when there is nowhere good.
+
+			Every candidate had to be clear of every zone, and when several attacks overlap
+			there is frequently no such spot - so the search returned nothing, the farm
+			carried on fighting, and it ate the attack standing still. Which is the worst
+			of the available options rather than the best.
+
+			The least covered spot found along the way is kept, and used only if nothing
+			fully clear turns up. Standing in one attack having tried is better than
+			standing in three having not.
+		]]
+		local fallback, fallbackCount = nil, dangerCount(pos, margin)
+
 		for _, radius in DODGE_RINGS do
 			local best, bestScore
 			for i = 0, DODGE_SAMPLES - 1 do
 				local angle = (i / DODGE_SAMPLES) * math.pi * 2
 				local candidate = pos + Vector3.new(math.cos(angle), 0, math.sin(angle)) * radius
 
-				-- Somewhere there is actually floor. Without this the search happily
-				-- returned spots over a ledge or inside geometry, the step refused them
-				-- every tick, and the farm stood still announcing a dodge it could not
-				-- take - which is exactly what standing still while logging looked like.
-				local footing = not needFooting or groundAt(candidate, pos.Y)
-
-				if footing
-					and not anyDanger(candidate, margin + 3)
+				-- Somewhere there is actually floor, and reachable without crossing a
+				-- barrier. Without this the search happily returned spots over a ledge or
+				-- inside geometry, the step refused them every tick, and the farm stood
+				-- still announcing a dodge it could not take - which is exactly what
+				-- standing still while logging looked like.
+				--
+				-- Worked out once: groundAt is a raycast, and this runs for every sample
+				-- of every ring on a loop that wants to finish inside a tenth of a second.
+				local legal = (not needFooting or groundAt(candidate, pos.Y))
 					and not insideBarrier(candidate, 2)
-					and not crossesBarrier(pos, candidate) then
+					and not crossesBarrier(pos, candidate)
+
+				if legal then
+					local covered = dangerCount(candidate, margin)
+					if covered < fallbackCount then
+						fallback, fallbackCount = candidate, covered
+					end
+				end
+
+				if legal and not anyDanger(candidate, margin + 3) then
 					--[[
 						Scored on staying in the fight, not on getting away from it.
 
@@ -1160,7 +1228,7 @@ run(function()
 			if best then return best end
 		end
 
-		return nil
+		return fallback
 	end
 
 	-- storage items may store a field as a plain value or as {Value=x}.
