@@ -7396,8 +7396,36 @@ run(function()
 		end
 	}
 	
+	--[[
+		Tags whose entity is gone, swept up.
+	
+		Removal hangs entirely off the EntityRemoved event, and anything that event does not
+		reach stays on screen for the rest of the session - a tag built while one render mode
+		was active and removed under another, an entity dropped while the module was off, a
+		character replaced without the event landing. There is nothing that ever looks again.
+	
+		So the render loop checks as it goes. An entity whose character has left the world is
+		not one to draw a name over, whatever did or did not fire.
+	]]
+	local function stale(ent)
+		if not ent then return true end
+		local char = ent.Character
+		if not (char and char.Parent) then return true end
+		local root = ent.RootPart
+		return not (root and root.Parent)
+	end
+	
+	local function sweep()
+		for ent in Reference do
+			if stale(ent) then
+				Removed[methodused](ent)
+			end
+		end
+	end
+	
 	local Loop = {
 		Normal = function()
+			sweep()
 			local due = statusDue()
 			if due then
 				fetchDivisions()
@@ -7446,6 +7474,7 @@ run(function()
 			end
 		end,
 		Drawing = function()
+			sweep()
 			local due = statusDue()
 			if due then
 				fetchDivisions()
