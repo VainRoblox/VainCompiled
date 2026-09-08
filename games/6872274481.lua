@@ -10606,32 +10606,55 @@ run(function()
 	        Either way it walks up from whatever was actually hit: the thing in front of a
 	        player is usually their helmet or chestplate, not a body part.
 	    ]]
-	    local aimParams = RaycastParams.new()
-	    aimParams.FilterType = Enum.RaycastFilterType.Exclude
+	    --[[
+	        Whoever the pointer is on, decided by angle rather than by what it hit.
+	
+	        Asking what part is under the cursor and walking up to its owner is the obvious
+	        way and it kept coming back with nothing: what is in front of a player is their
+	        armour, a held item, a hitbox, or a part the game has marked unqueryable, and only
+	        some of those lead back to the character.
+	
+	        So nobody is asked what was hit. A ray is taken through the pointer and every
+	        player is measured against it by angle, nearest to the line winning - which is the
+	        same question you were answering by eye when you pointed at them, and does not
+	        care what happens to be in the way.
+	    ]]
+	    local POINT_TOLERANCE = math.rad(14)
 	
 	    local function playerUnderMouse()
-	        local ok, node = pcall(function() return lplr:GetMouse().Target end)
-	        if not ok then node = nil end
+	        local camera = workspace.CurrentCamera
+	        if not camera then return nil end
 	
-	        if not node then
-	            pcall(function()
-	                local camera = workspace.CurrentCamera
-	                if not camera then return end
-	                aimParams.FilterDescendantsInstances = {lplr.Character, camera}
+	        local ok, ray = pcall(function()
+	            local mouse = lplr:GetMouse()
+	            -- No cursor in first person or shift lock, so the middle of the screen is
+	            -- where you are pointing.
+	            local x, y = mouse.X, mouse.Y
+	            if x == 0 and y == 0 then
 	                local centre = camera.ViewportSize / 2
-	                local ray = camera:ViewportPointToRay(centre.X, centre.Y)
-	                local hit = workspace:Raycast(ray.Origin, ray.Direction * 1000, aimParams)
-	                node = hit and hit.Instance
-	            end)
-	        end
+	                x, y = centre.X, centre.Y
+	            end
+	            return camera:ViewportPointToRay(x, y)
+	        end)
+	        if not (ok and ray) then return nil end
 	
-	        for _ = 1, 8 do
-	            if not node then return nil end
-	            local found = playersService:GetPlayerFromCharacter(node)
-	            if found then return found end
-	            node = node.Parent
+	        local best, bestAngle
+	        for _, plr in playersService:GetPlayers() do
+	            if plr ~= lplr and plr.Character then
+	                local part = plr.Character:FindFirstChild('UpperTorso')
+	                    or plr.Character:FindFirstChild('HumanoidRootPart')
+	                if part then
+	                    local offset = part.Position - ray.Origin
+	                    if offset.Magnitude > 0.1 then
+	                        local angle = math.acos(math.clamp(ray.Direction.Unit:Dot(offset.Unit), -1, 1))
+	                        if angle <= POINT_TOLERANCE and (not bestAngle or angle < bestAngle) then
+	                            best, bestAngle = plr, angle
+	                        end
+	                    end
+	                end
+	            end
 	        end
-	        return nil
+	        return best
 	    end
 	
 	    local function clearContracts()
@@ -10970,20 +10993,35 @@ run(function()
 	                    selectContract looks the target up in the available list and returns
 	                    false when it is not there, so right clicking anyone else is ignored.
 	                ]]
-	                pcall(function()
-	                    -- Mouse.Button2Down rather than InputBegan. Right click is what turns
-	                    -- the camera, so it arrives already marked as handled and the
-	                    -- gameProcessed check threw it away - the click was being seen and
-	                    -- then ignored.
-	                    table.insert(connections, lplr:GetMouse().Button2Down:Connect(function()
-	                        if not on(RightClickSelect) then return end
+	                --[[
+	                    Listened for two ways, because either can be the one that arrives.
 	
-	                        local plr = playerUnderMouse()
-	                        if plr and plr ~= lplr then
-	                            pcall(selectContract, plr)
-	                        end
-	                    end))
+	                    Right click is what turns the camera, so InputBegan reports it already
+	                    marked as handled and a gameProcessed check throws it away - which is
+	                    what was happening. Mouse.Button2Down is not filtered that way, but it
+	                    depends on GetMouse, which some executors replace.
+	
+	                    Both are taken and neither is trusted alone. selectContract already
+	                    refuses a second call inside a tenth of a second, so hearing the same
+	                    click twice costs nothing.
+	                ]]
+	                local function pointedSelect()
+	                    if not on(RightClickSelect) then return end
+	                    local plr = playerUnderMouse()
+	                    if plr and plr ~= lplr then
+	                        pcall(selectContract, plr)
+	                    end
+	                end
+	
+	                pcall(function()
+	                    table.insert(connections, lplr:GetMouse().Button2Down:Connect(pointedSelect))
 	                end)
+	
+	                table.insert(connections, inputService.InputBegan:Connect(function(input)
+	                    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+	                        pointedSelect()
+	                    end
+	                end))
 	
 	                local damageConnection = vainEvents.EntityDamageEvent.Event:Connect(function(damageTable)
 	                    if not entitylib.isAlive then return end
