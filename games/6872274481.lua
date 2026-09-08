@@ -10449,18 +10449,41 @@ run(function()
 	    contractFolder.Parent = vain.gui
 	    local contractMarks, contractScan = {}, 0
 	
-	    -- Resolved on use and remembered, rather than added to the bedwars table: that table
-	    -- is built in a single constructor, so one bad path there takes every bedwars module
-	    -- down with it. A miss here costs this one highlight its colour.
-	    local bloodMeta
+	    --[[
+	        Which upgrades are the good ones, asked two ways.
+	
+	        Reading it from the game is the better answer: BloodUpgradeMeta gives every
+	        upgrade either a perk field or a baseValue, and that split is the distinction
+	        without anything hardcoded. It is resolved on use rather than added to the bedwars
+	        table, since that table is built in one constructor and a bad path there takes
+	        every bedwars module with it.
+	
+	        A failure is retried rather than remembered. Caching the miss meant one unlucky
+	        first call - asked before the module had replicated, most likely - turned the
+	        colour off for the rest of the session with nothing to show for it.
+	
+	        And if it stays unreachable there is still an answer: BloodUpgrade is a plain
+	        numbered enum, so the seven perks worth crossing the map for have fixed ids. That
+	        is the thing that would need revisiting if the game renumbers them, which is why
+	        it is the fallback rather than the answer.
+	    ]]
+	    local bloodMeta, bloodMetaTried = nil, 0
+	
 	    local function upgradeMeta()
-	        if bloodMeta ~= nil then return bloodMeta or nil end
+	        if bloodMeta then return bloodMeta end
+	        if os.clock() - bloodMetaTried < 5 then return nil end
+	        bloodMetaTried = os.clock()
+	
 	        local ok, meta = pcall(function()
 	            return require(replicatedStorage.TS.games.bedwars.kit.kits['blood-assassin']['blood-upgrade-meta']).BloodUpgradeMeta
 	        end)
-	        bloodMeta = (ok and type(meta) == 'table') and meta or false
-	        return bloodMeta or nil
+	        bloodMeta = (ok and type(meta) == 'table') and meta or nil
+	        return bloodMeta
 	    end
+	
+	    -- ASSASSIN_INSTINCT, SERRATED_BLADE, THRILL_OF_THE_HUNT, DARK_INSIGHT, SILENCE,
+	    -- BOUNTY, VULNERABLE. Not ABSOLUTION (12), and not the four stat gains (1 to 4).
+	    local PERK_IDS = {[5] = true, [6] = true, [7] = true, [8] = true, [9] = true, [10] = true, [11] = true}
 	
 	    local function clearContracts()
 	        for plr, mark in contractMarks do
@@ -10511,8 +10534,14 @@ run(function()
 	        ]]
 	        local function isLegendary(contract)
 	            local upgrade = contract.rewardUpgrade
-	            local meta = upgrade and upgradeMeta() and upgradeMeta()[upgrade]
-	            return meta ~= nil and meta.perk ~= nil and meta.itemType == nil
+	            if upgrade == nil then return false end
+	
+	            local all = upgradeMeta()
+	            local meta = all and all[upgrade]
+	            if meta then
+	                return meta.perk ~= nil and meta.itemType == nil
+	            end
+	            return PERK_IDS[upgrade] == true
 	        end
 	
 	        local wanted = {}
