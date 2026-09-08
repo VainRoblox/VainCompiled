@@ -1250,20 +1250,139 @@ run(function()
 		return workspace:Raycast(from, part.Position - from, reachParams) == nil
 	end
 
-	local function nearestEnemy(pos)
+	--[[
+		Where the room actually is, taken from where its enemies stand.
+
+		A room model's pivot is the centre of everything in it, barrier and scenery
+		included, which can sit inside a wall. The spawn points are by definition places
+		the game puts something that has to be reachable.
+	]]
+	local function roomPoint(room)
+		local total, count = Vector3.zero, 0
+		for _, d in room:GetDescendants() do
+			if d:IsA('BasePart') and d.Name == 'spawn' then
+				total += d.Position
+				count += 1
+			end
+		end
+		if count > 0 then return total / count end
+
+		local ok, pivot = pcall(function() return room:GetPivot().Position end)
+		return ok and pivot or nil
+	end
+
+	--[[
+		Still shut, and therefore still the room to be in.
+
+		Whether the game destroys a cleared room's barrier or only lets you through it is
+		not something the place file answers, so this treats both as closed: gone counts
+		as open, and so does one left standing with nothing solid in it.
+	]]
+	local function roomLocked(room)
+		local barrier = room:FindFirstChild('barrier')
+		if not barrier then return false end
+		for _, d in barrier:GetDescendants() do
+			if d:IsA('BasePart') and d.CanCollide then return true end
+		end
+		return false
+	end
+
+	--[[
+		Room by room, in the order the game numbers them.
+
+		This used to pick whichever room was furthest from where the run started and walk
+		at it, which is the boss room from the first second - so it spent the run pressed
+		against the barriers of rooms it had not cleared yet, and the fallback for being
+		stuck was to head twenty studs forward.
+
+		Every room carries an order and its own barrier. The room to be in is the lowest
+		numbered one still shut; everything below it is done and everything above is not
+		open yet. When they are all open the only thing left is the boss.
+	]]
+	--[[
+		The room being fought, by the game's own numbering.
+
+		Rooms cannot be told apart by name: a Desert Temple run has two separate Instances
+		both called room6, at different places and different orders. The order value and
+		the Instance are the identity.
+	]]
+	local function currentRoom()
+		local dungeon = workspace:FindFirstChild('dungeon')
+		if not dungeon then return nil end
+
+		local rooms = {}
+		for _, room in dungeon:GetChildren() do
+			local order = room:FindFirstChild('order')
+			if order and order:IsA('IntValue') then
+				table.insert(rooms, {room = room, order = order.Value})
+			end
+		end
+		table.sort(rooms, function(a, b) return a.order < b.order end)
+
+		for _, entry in rooms do
+			if roomLocked(entry.room) then return entry.room end
+		end
+		return nil
+	end
+
+	-- Whether something is in this room, from the room's own bounds. Neighbouring rooms
+	-- overlap slightly at the doorway, which only matters for something standing in it.
+	local function inRoom(position, room, margin)
+		if not room then return true end
+		local ok, cf, size = pcall(function() return room:GetBoundingBox() end)
+		if not ok or not cf then return true end
+
+		margin = margin or 0
+		local offset = cf:PointToObjectSpace(position)
+		return math.abs(offset.X) <= size.X * 0.5 + margin
+			and math.abs(offset.Z) <= size.Z * 0.5 + margin
+	end
+
+	--[[
+		One room, one group at a time.
+
+		This used to consider every enemy in the dungeon and take the closest, falling back
+		to one it could not even reach. In a map whose rooms are 250 to 300 studs across
+		and whose enemies stand in four separate clusters of four to eight, that means
+		walking the length of a room at something on the far side, through two other
+		clusters on the way, and pulling all of them. It also meant chasing things in the
+		next room before this one was finished.
+
+		Enemies outside the room being fought are ignored, so a room is left only when it
+		is genuinely empty. Within the room it stays on the cluster it started - anything
+		within 25 studs of the current target, the spacing the clusters actually separate
+		at - until that cluster is dead, rather than drifting to whichever enemy happens
+		to be nearest this frame.
+	]]
+	local CLUSTER = 25
+	local engaged
+
+	local function nearestEnemy(pos, room)
 		if os.clock() - lastScan > 1.5 or #enemyCache == 0 then rescan() end
 
 		local best, bestPart, bestDist
 		local anyBest, anyPart, anyDist
+		local engagedAlive = false
 
 		for i = #enemyCache, 1, -1 do
 			local m = enemyCache[i]
 			local hum = m and m.Parent and m:FindFirstChildOfClass('Humanoid')
 			local part = m and enemyPart(m)
 			if not (m and m.Parent and hum and hum.Health > 0 and part) then
+				if m == engaged then engaged = nil end
 				table.remove(enemyCache, i)
-			else
+			elseif inRoom(part.Position, room, 10) then
+				if m == engaged then engagedAlive = true end
+
 				local dist = (part.Position - pos).Magnitude
+				-- Sticking with the group already pulled rather than the closest body.
+				if engaged and engaged.Parent then
+					local anchor = enemyPart(engaged)
+					if anchor and (part.Position - anchor.Position).Magnitude > CLUSTER then
+						continue
+					end
+				end
+
 				if not anyDist or dist < anyDist then anyBest, anyPart, anyDist = m, part, dist end
 				if (not bestDist or dist < bestDist) and reachable(pos, part) then
 					best, bestPart, bestDist = m, part, dist
@@ -1271,11 +1390,13 @@ run(function()
 			end
 		end
 
-		-- Falling back to the unreachable one on purpose: with the room already clear, the
-		-- only thing left is whatever is through the next door, and walking at it is how
-		-- the door gets opened.
-		if best then return best, bestPart, bestDist end
-		return anyBest, anyPart, anyDist
+		-- The group is down, so the next call is free to pick a fresh one.
+		if engaged and not engagedAlive then engaged = nil end
+
+		local pick, pickPart, pickDist = best, bestPart, bestDist
+		if not pick then pick, pickPart, pickDist = anyBest, anyPart, anyDist end
+		if pick and not engaged then engaged = pick end
+		return pick, pickPart, pickDist
 	end
 
 	--[[
@@ -1625,73 +1746,12 @@ run(function()
 		forward. Falling back to walking ahead keeps it moving if that lookup finds
 		nothing rather than leaving it standing in a cleared room.
 	]]
-	--[[
-		Where the room actually is, taken from where its enemies stand.
-
-		A room model's pivot is the centre of everything in it, barrier and scenery
-		included, which can sit inside a wall. The spawn points are by definition places
-		the game puts something that has to be reachable.
-	]]
-	local function roomPoint(room)
-		local total, count = Vector3.zero, 0
-		for _, d in room:GetDescendants() do
-			if d:IsA('BasePart') and d.Name == 'spawn' then
-				total += d.Position
-				count += 1
-			end
-		end
-		if count > 0 then return total / count end
-
-		local ok, pivot = pcall(function() return room:GetPivot().Position end)
-		return ok and pivot or nil
-	end
-
-	--[[
-		Still shut, and therefore still the room to be in.
-
-		Whether the game destroys a cleared room's barrier or only lets you through it is
-		not something the place file answers, so this treats both as closed: gone counts
-		as open, and so does one left standing with nothing solid in it.
-	]]
-	local function roomLocked(room)
-		local barrier = room:FindFirstChild('barrier')
-		if not barrier then return false end
-		for _, d in barrier:GetDescendants() do
-			if d:IsA('BasePart') and d.CanCollide then return true end
-		end
-		return false
-	end
-
-	--[[
-		Room by room, in the order the game numbers them.
-
-		This used to pick whichever room was furthest from where the run started and walk
-		at it, which is the boss room from the first second - so it spent the run pressed
-		against the barriers of rooms it had not cleared yet, and the fallback for being
-		stuck was to head twenty studs forward.
-
-		Every room carries an order and its own barrier. The room to be in is the lowest
-		numbered one still shut; everything below it is done and everything above is not
-		open yet. When they are all open the only thing left is the boss.
-	]]
 	local function nextRoomGoal(hrp)
 		local dungeon = workspace:FindFirstChild('dungeon')
 		if not dungeon then return nil end
 
-		local rooms = {}
-		for _, room in dungeon:GetChildren() do
-			local order = room:FindFirstChild('order')
-			if order and order:IsA('IntValue') then
-				table.insert(rooms, {room = room, order = order.Value})
-			end
-		end
-		table.sort(rooms, function(a, b) return a.order < b.order end)
-
-		for _, entry in rooms do
-			if roomLocked(entry.room) then
-				return roomPoint(entry.room)
-			end
-		end
+		local room = currentRoom()
+		if room then return roomPoint(room) end
 
 		local boss = dungeon:FindFirstChild('bossRoom')
 		local point = boss and roomPoint(boss)
@@ -2029,7 +2089,8 @@ run(function()
 						hum.AutoRotate = not ShiftLock.Enabled
 					end
 
-					local target, part, dist = nearestEnemy(hrp.Position)
+					local room = currentRoom()
+					local target, part, dist = nearestEnemy(hrp.Position, room)
 
 					-- DODGE first: standing in a telegraphed attack costs more than a turn
 					-- spent fighting, so this outranks everything below it.
@@ -2058,7 +2119,7 @@ run(function()
 							the honest version of the same idea: it buys distance rather
 							than immunity, so Keep Away decides how much.
 						]]
-						local _, part, dist = nearestEnemy(hrp.Position)
+						local _, part, dist = nearestEnemy(hrp.Position, currentRoom())
 						if part and (dist or 0) < KeepAway.Value then
 							local away = (hrp.Position - part.Position) * Vector3.new(1, 0, 1)
 							away = away.Magnitude > 0.1 and away.Unit or hrp.CFrame.LookVector
