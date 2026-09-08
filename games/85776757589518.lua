@@ -1934,11 +1934,6 @@ run(function()
 					local hum = char and char:FindFirstChildOfClass('Humanoid')
 					if not (char and hrp and hum) then return end
 
-					-- Recorded wherever you are, fighting or walking, so the route keeps
-					-- the detours that got you past something as well as the straight bits.
-					if RecordRoute and RecordRoute.Enabled then
-						recordStep(hrp.Position)
-					end
 
 					local peaceful = lplr:FindFirstChild('peaceful')
 					if peaceful and peaceful.Value == true then return end
@@ -2160,12 +2155,31 @@ run(function()
 	RecordRoute = AutoFarm:CreateToggle({ Name = 'Record Route', Default = false,
 		Tooltip = 'Remembers where you walk, so the farm can follow it later',
 		Function = function(callback)
-			if callback then
-				routePoints, routeIndex, lastRecorded = {}, 1, nil
-				say('Recording. Walk the dungeon through once, then switch this off')
-			elseif saveRoute() then
-				say(#routePoints .. ' points saved for ' .. dungeonKey():gsub('_', ' '))
+			if not callback then
+				if saveRoute() then
+					say(#routePoints .. ' points saved for ' .. dungeonKey():gsub('_', ' '))
+				end
+				return
 			end
+
+			routePoints, routeIndex, lastRecorded = {}, 1, nil
+			say('Recording. Walk the dungeon through once, then switch this off')
+
+			--[[
+				On its own loop rather than the farm's.
+
+				Recording is something you do by walking the dungeon yourself, so tying it
+				to the farm's loop meant the farm had to be running to record - and it
+				would then be steering while you were trying to walk the route.
+			]]
+			task.spawn(function()
+				repeat
+					local char = lplr.Character
+					local hrp = char and char:FindFirstChild('HumanoidRootPart')
+					if hrp then recordStep(hrp.Position) end
+					task.wait(0.2)
+				until not RecordRoute.Enabled
+			end)
 		end })
 	FollowRoute = AutoFarm:CreateToggle({ Name = 'Follow Route', Default = true,
 		Tooltip = 'Walks the recorded route between fights instead of working the way out itself',
