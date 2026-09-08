@@ -4837,7 +4837,7 @@ run(function()
 	local rayCheck = RaycastParams.new()
 	rayCheck.FilterType = Enum.RaycastFilterType.Include
 	local mapfolder
-	local old
+	local old, hook
 	
 	-- Resolved on use rather than once at load. The map does not exist yet if you inject
 	-- while the round is still loading, and an Include filter holding nothing hits nothing -
@@ -5069,7 +5069,15 @@ run(function()
 				end))
 	
 				old = bedwars.ProjectileController.calculateImportantLaunchValues
-				bedwars.ProjectileController.calculateImportantLaunchValues = function(...)
+				--[[
+					Kept in a name, so putting it back can be conditional.
+	
+					Fisherman's auto cast wraps this same method, so the two have to stack in
+					either order. Restoring blindly on the way out throws away whatever wrapped
+					after us, and clearing what our own wrapper calls leaves a nil call inside
+					the game's bow for anyone still holding it.
+				]]
+				hook = function(...)
 					-- Guarded because the game calls this, not us. Anything that throws in
 					-- here used to surface inside the game's own bow logic and take the bow
 					-- with it; now a failure just hands the shot back untouched. old() stays
@@ -5080,8 +5088,14 @@ run(function()
 					end
 					return old(...)
 				end
+				bedwars.ProjectileController.calculateImportantLaunchValues = hook
 			else
-				bedwars.ProjectileController.calculateImportantLaunchValues = old
+				-- Only when ours is still the installed one, and old is left alone so a
+				-- wrapper that captured ours keeps working.
+				if hook and old and bedwars.ProjectileController.calculateImportantLaunchValues == hook then
+					bedwars.ProjectileController.calculateImportantLaunchValues = old
+				end
+				hook = nil
 			end
 		end,
 		Tooltip = 'Silently adjusts your aim towards the enemy'
@@ -15837,55 +15851,40 @@ run(function()
 	        own cast and cleared afterwards - so every other throw, and every other item, is
 	        left alone.
 	    ]]
-	    local aimOld, aimOwner
+	    local aimOriginal, aimWrapper
 	    local castTarget
 	
 	    --[[
-	        Patching where the method lives, not where we found it.
+	        Wrapped on the controller itself, and never left dangling.
 	
-	        bedwars.ProjectileController is one instance, but calculateImportantLaunchValues
-	        is defined on its class and reached through the metatable. Writing the override
-	        onto the instance only covers launches that go through that same instance - which
-	        is why the aim preview followed the hook while the throw itself still went
-	        wherever the mouse pointed. Walking up to the table that actually holds the
-	        function covers every path into it.
-	    ]]
-	    local function ownerOf(object, key)
-	        if type(object) ~= 'table' then return end
-	        if rawget(object, key) ~= nil then return object end
+	        ProjectileAimbot wraps this same method on the same object, so the two have to be
+	        able to sit on top of each other in either order. Two rules make that safe, and
+	        breaking the second of them is what put a nil call inside the game's own bow.
 	
-	        local current = object
-	        for _ = 1, 8 do
-	            local meta = getmetatable(current)
-	            local index = meta and rawget(meta, '__index')
-	            if type(index) ~= 'table' then break end
-	            if rawget(index, key) ~= nil then return index end
-	            current = index
-	        end
-	    end
+	        The first is to patch the instance, as the aimbot does, rather than walking up to
+	        the class it inherits from. A class patch is wider than the object we were asked
+	        about and turns a shared method into ours.
 	
-	    --[[
-	        The direction is decided from Camera:ScreenPointToRay(Mouse.X, Mouse.Y) - the real
-	        cursor - unless the projectile handler carries a targetPoint, which the game
-	        checks first and uses as-is. Setting that is how the game itself aims a throw at
-	        something, so it is set here and the original does the rest; the velocity is
-	        corrected afterwards as well, in case a path builds it some other way.
+	        The second is that a wrapper, once installed, must work forever. Whoever wraps
+	        after us captures ours as their original and will keep calling it long after we
+	        have stepped out - so what it calls is kept, and only the pointer to our own
+	        wrapper is dropped. Clearing that too is what left the aimbot calling into a
+	        function whose insides had been taken away.
 	
-	        Only a launch we asked for is touched: castTarget is set for the moment of our own
-	        cast and cleared again, so every other throw and every other item is left alone.
+	        The direction itself comes from Camera:ScreenPointToRay(Mouse.X, Mouse.Y) - the
+	        real cursor - unless the handler carries a targetPoint, which the game checks
+	        first and uses as-is. Setting that is how the game aims a throw at something, so
+	        it is set here and the original does the rest.
 	    ]]
 	    local function setupAim()
 	        local controller = bedwars and bedwars.ProjectileController
-	        if aimOld or not controller then return end
+	        if aimWrapper or not controller then return end
 	
-	        aimOwner = ownerOf(controller, 'calculateImportantLaunchValues') or controller
-	        aimOld = aimOwner.calculateImportantLaunchValues
-	        if not aimOld then
-	            aimOwner = nil
-	            return
-	        end
+	        local original = controller.calculateImportantLaunchValues
+	        if not original then return end
+	        aimOriginal = original
 	
-	        aimOwner.calculateImportantLaunchValues = function(self, handler, ...)
+	        aimWrapper = function(self, handler, ...)
 	            local held = store.hand and store.hand.tool
 	            local wanted = castTarget and held and held.Name == 'fishing_rod' and castTarget
 	
@@ -15894,7 +15893,7 @@ run(function()
 	                handler.lockedAimPoint = nil
 	            end
 	
-	            local values = aimOld(self, handler, ...)
+	            local values = aimOriginal(self, handler, ...)
 	
 	            if wanted and values and values.initialVelocity and values.positionFrom then
 	                local heading = wanted - values.positionFrom
@@ -15905,14 +15904,24 @@ run(function()
 	
 	            return values
 	        end
+	
+	        controller.calculateImportantLaunchValues = aimWrapper
 	    end
 	
 	    local function cleanupAim()
 	        castTarget = nil
-	        if aimOwner and aimOld then
-	            aimOwner.calculateImportantLaunchValues = aimOld
+	
+	        -- Put back only if ours is still the one installed. Something wrapped after us
+	        -- owns the slot now, and writing over it would throw their hook away.
+	        local controller = bedwars and bedwars.ProjectileController
+	        if controller and aimWrapper and aimOriginal
+	            and controller.calculateImportantLaunchValues == aimWrapper then
+	            controller.calculateImportantLaunchValues = aimOriginal
 	        end
-	        aimOwner, aimOld = nil, nil
+	
+	        -- aimOriginal is deliberately kept. Anything holding our wrapper still calls
+	        -- through it, and a nil here is a nil call inside the game.
+	        aimWrapper = nil
 	    end
 	
 	    local function findVoid()
