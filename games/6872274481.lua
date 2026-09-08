@@ -15880,11 +15880,26 @@ run(function()
 	        local controller = bedwars and bedwars.ProjectileController
 	        if aimWrapper or not controller then return end
 	
+	        --[[
+	            Each wrapper holds its own original, not a shared one.
+	
+	            A single upvalue between them is what put a nil back inside the game's bow:
+	            the aimbot captures our wrapper as its original and keeps it forever, and the
+	            next time this ran it pointed that one variable somewhere else. The wrapper
+	            the aimbot was still calling then went through whatever the variable had
+	            become - or through nothing at all.
+	
+	            Closed over per wrapper, an old one keeps calling exactly what it was built
+	            with however many times this is switched on and off.
+	        ]]
 	        local original = controller.calculateImportantLaunchValues
-	        if not original then return end
+	        if type(original) ~= 'function' then return end
 	        aimOriginal = original
 	
-	        aimWrapper = function(self, handler, ...)
+	        local wrapper
+	        wrapper = function(self, handler, ...)
+	            if type(original) ~= 'function' then return end
+	
 	            local held = store.hand and store.hand.tool
 	            local wanted = castTarget and held and held.Name == 'fishing_rod' and castTarget
 	
@@ -15893,7 +15908,7 @@ run(function()
 	                handler.lockedAimPoint = nil
 	            end
 	
-	            local values = aimOriginal(self, handler, ...)
+	            local values = original(self, handler, ...)
 	
 	            if wanted and values and values.initialVelocity and values.positionFrom then
 	                local heading = wanted - values.positionFrom
@@ -15905,7 +15920,8 @@ run(function()
 	            return values
 	        end
 	
-	        controller.calculateImportantLaunchValues = aimWrapper
+	        aimWrapper = wrapper
+	        controller.calculateImportantLaunchValues = wrapper
 	    end
 	
 	    local function cleanupAim()
@@ -15919,8 +15935,6 @@ run(function()
 	            controller.calculateImportantLaunchValues = aimOriginal
 	        end
 	
-	        -- aimOriginal is deliberately kept. Anything holding our wrapper still calls
-	        -- through it, and a nil here is a nil call inside the game.
 	        aimWrapper = nil
 	    end
 	
@@ -19473,14 +19487,31 @@ run(function()
 	local function checkJoin(plr, connection)
 		if not plr:GetAttribute('Team') and plr:GetAttribute('Spectator') and not bedwars.Store:getState().Game.customMatch then
 			connection:Disconnect()
-			local tab, pages = {}, playersService:GetFriendsAsync(plr.UserId)
-			for _ = 1, 4 do
-				for _, v in pages:GetCurrentPage() do
-					table.insert(tab, v.Id)
+	
+			--[[
+				Roblox refuses this often enough that it cannot be treated as reliable.
+	
+				GetFriendsAsync is a web request, and it answers 403 when the endpoint is rate
+				limited or the account's list is not public. Unguarded, every such refusal
+				threw out of here on somebody joining - which is a red stack in the console for
+				something that was only ever a nice-to-have check.
+	
+				A refusal now means no friends were seen, and a spectator nobody can be
+				vouched for by is left alone rather than reported on a failed lookup.
+			]]
+			local tab = {}
+			local ok, pages = pcall(playersService.GetFriendsAsync, playersService, plr.UserId)
+			if not ok or not pages then return end
+	
+			pcall(function()
+				for _ = 1, 4 do
+					for _, v in pages:GetCurrentPage() do
+						table.insert(tab, v.Id)
+					end
+					if pages.IsFinished then break end
+					pages:AdvanceToNextPageAsync()
 				end
-				if pages.IsFinished then break end
-				pages:AdvanceToNextPageAsync()
-			end
+			end)
 	
 			local friend = checkFriends(tab)
 			if not friend then
