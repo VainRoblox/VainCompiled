@@ -10444,10 +10444,23 @@ run(function()
 	    local lastHitTime = 0
 	    local lastContractSelect = 0
 	
-	    local ContractESP, ContractColor, ContractWalls
+	    local ContractESP, ContractColor, LegendaryColor, ContractWalls
 	    local contractFolder = Instance.new('Folder')
 	    contractFolder.Parent = vain.gui
 	    local contractMarks, contractScan = {}, 0
+	
+	    -- Resolved on use and remembered, rather than added to the bedwars table: that table
+	    -- is built in a single constructor, so one bad path there takes every bedwars module
+	    -- down with it. A miss here costs this one highlight its colour.
+	    local bloodMeta
+	    local function upgradeMeta()
+	        if bloodMeta ~= nil then return bloodMeta or nil end
+	        local ok, meta = pcall(function()
+	            return require(replicatedStorage.TS.games.bedwars.kit.kits['blood-assassin']['blood-upgrade-meta']).BloodUpgradeMeta
+	        end)
+	        bloodMeta = (ok and type(meta) == 'table') and meta or false
+	        return bloodMeta or nil
+	    end
 	
 	    local function clearContracts()
 	        for plr, mark in contractMarks do
@@ -10483,12 +10496,31 @@ run(function()
 	        local ok, state = pcall(function() return bedwars.Store:getState() end)
 	        if not (ok and state and state.Kit) then return end
 	
+	        --[[
+	            Which contracts are worth crossing the map for.
+	
+	            The reward tells you, and the game's own data splits them cleanly. A contract
+	            rewards a BloodUpgrade, and BloodUpgradeMeta holds two shapes: the four plain
+	            stat gains carry baseValue and maxValue, while the eight perks carry a perk
+	            field instead. That is a structural difference rather than a list of names, so
+	            it keeps working when the game adds another one.
+	
+	            Absolution is the exception you asked for. It is the only perk that hands you
+	            an item rather than changing how decay behaves, and it is the only one
+	            carrying itemType - so it is told apart without hardcoding what it is called.
+	        ]]
+	        local function isLegendary(contract)
+	            local upgrade = contract.rewardUpgrade
+	            local meta = upgrade and upgradeMeta() and upgradeMeta()[upgrade]
+	            return meta ~= nil and meta.perk ~= nil and meta.itemType == nil
+	        end
+	
 	        local wanted = {}
 	        for _, contract in state.Kit.availableContracts or {} do
-	            if contract.target then wanted[contract.target] = true end
+	            if contract.target then wanted[contract.target] = isLegendary(contract) end
 	        end
 	        local active = state.Kit.activeContract
-	        if active and active.target then wanted[active.target] = true end
+	        if active and active.target then wanted[active.target] = isLegendary(active) end
 	
 	        for plr, mark in contractMarks do
 	            if not wanted[plr] or not plr.Parent or not plr.Character then
@@ -10497,8 +10529,10 @@ run(function()
 	            end
 	        end
 	
-	        local colour = Color3.fromHSV(ContractColor.Hue or 0.95, ContractColor.Sat or 1, ContractColor.Value or 1)
-	        for plr in wanted do
+	        local plain = Color3.fromHSV(ContractColor.Hue or 0.95, ContractColor.Sat or 1, ContractColor.Value or 1)
+	        local rare = Color3.fromHSV(LegendaryColor.Hue or 0.14, LegendaryColor.Sat or 1, LegendaryColor.Value or 1)
+	
+	        for plr, legendary in wanted do
 	            local char = plr.Character
 	            if char then
 	                local mark = contractMarks[plr]
@@ -10507,11 +10541,13 @@ run(function()
 	                    mark.Parent = contractFolder
 	                    contractMarks[plr] = mark
 	                end
+	                local colour = legendary and rare or plain
+	                local slider = legendary and LegendaryColor or ContractColor
 	                mark.Adornee = char
 	                mark.DepthMode = Enum.HighlightDepthMode[ContractWalls.Enabled and 'AlwaysOnTop' or 'Occluded']
 	                mark.FillColor = colour
 	                mark.OutlineColor = colour
-	                mark.FillTransparency = 1 - (ContractColor.Opacity or 0.5)
+	                mark.FillTransparency = 1 - (slider.Opacity or 0.5)
 	            end
 	        end
 	    end
@@ -10712,7 +10748,7 @@ run(function()
 	        Name = 'Contract ESP',
 	        Tooltip = 'Highlights whoever your contracts are on',
 	        Function = function(callback)
-	            for _, setting in {ContractColor, ContractWalls} do
+	            for _, setting in {ContractColor, LegendaryColor, ContractWalls} do
 	                if setting and setting.Object then setting.Object.Visible = callback end
 	            end
 	            if not callback then clearContracts() end
@@ -10722,6 +10758,14 @@ run(function()
 	        Name = 'Contract Color',
 	        Tooltip = 'Colour of the highlight',
 	        DefaultHue = 0.95,
+	        DefaultOpacity = 0.5,
+	        Visible = false,
+	        Darker = true
+	    })
+	    LegendaryColor = Caitlyn:CreateColorSlider({
+	        Name = 'Legendary Color',
+	        Tooltip = 'Colour for contracts rewarding a perk rather than a stat',
+	        DefaultHue = 0.14,
 	        DefaultOpacity = 0.5,
 	        Visible = false,
 	        Darker = true
