@@ -2373,6 +2373,92 @@ run(function()
 		Tooltip = "Reads the game's own attack telegraphs and walks you out before they land. Works on every boss, no per-boss setup" })
 end)
 
+
+-- ── Strip Decorations ────────────────────────────────────────────────────────
+run(function()
+	local Strip, Effects
+
+	-- Its own, because say() is a local of the farm's block and a nil global out here.
+	local function tell(text)
+		if vain and vain.CreateNotification then
+			vain:CreateNotification('Vain DQ', text, 5, 'info')
+		end
+	end
+
+	--[[
+		Deleting the scenery the dungeon does not need.
+
+		Everything the farm reads to get around is either solid or a marker: the floor and
+		walls it raycasts, the barriers it reads a room's state from, the spawn points it
+		aims at, and the enemies themselves. A part that cannot be collided with is none of
+		those - it is decoration, and on these maps there is a great deal of it.
+
+		Removing it cuts what the client has to render, and frame time is not cosmetic
+		here: the farm decides where to stand once a tenth of a second, and a dodge it
+		works out two frames late is a dodge it does not make.
+
+		This does not come back. The scenery is gone until the dungeon is rejoined, which
+		is why it is its own switch rather than something the farm does quietly.
+	]]
+	local function guarded(part)
+		if part.CanCollide then return true end
+		if part:IsA('SpawnLocation') then return true end
+
+		-- The markers the room logic is built on: spawn points are what a room's position
+		-- is averaged from, and a barrier is how it knows the room is still shut.
+		local node = part
+		for _ = 1, 6 do
+			if not node or node == workspace then break end
+			local name = node.Name
+			if name == 'spawn' or name == 'barrier' or name == 'order' then return true end
+			if node:FindFirstChildOfClass('Humanoid') then return true end
+			node = node.Parent
+		end
+		return false
+	end
+
+	local VISUALS = {'ParticleEmitter', 'Trail', 'Beam', 'Smoke', 'Fire', 'Sparkles', 'PointLight', 'SpotLight', 'SurfaceLight'}
+
+	Strip = vain.Categories.Utility:CreateModule({
+		Name = 'Strip Decorations',
+		Tooltip = 'Deletes scenery the farm never touches, to buy frame rate. Rejoin to get it back',
+		Function = function(callback)
+			if not callback then return end
+
+			local dungeon = workspace:FindFirstChild('dungeon')
+			if not dungeon then
+				tell('no dungeon loaded to strip')
+				Strip:Toggle()
+				return
+			end
+
+			local removed = 0
+			for _, object in dungeon:GetDescendants() do
+				local ok = pcall(function()
+					if object:IsA('BasePart') then
+						if not guarded(object) then
+							object:Destroy()
+							removed += 1
+						end
+					elseif Effects.Enabled and table.find(VISUALS, object.ClassName) then
+						object:Destroy()
+						removed += 1
+					end
+				end)
+				if not ok then break end
+			end
+
+			tell(removed .. ' decorations removed')
+			Strip:Toggle()
+		end
+	})
+	Effects = Strip:CreateToggle({
+		Name = 'Effects too',
+		Default = true,
+		Tooltip = 'Also removes particles, beams and lights'
+	})
+end)
+
 --VAINEOF
 
 

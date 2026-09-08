@@ -284,9 +284,35 @@ run(function()
 		if best > 0 then return best end
 		return RARITY[tostring(fv(item, 'rarity') or ''):lower()] or 0
 	end
+
+	local function healthOf(item)
+		return tonumber(fv(item, 'health')) or 0
+	end
+
+	--[[
+		Armour is mostly health, and health was not being read at all.
+
+		Every slot was ranked on the class's power stat alone, which is the right question
+		for a weapon and close to the wrong one for a chest: armour carries its weight in
+		health, so a piece with a lot of it and little power lost to one with a scrap of
+		power and no health, and fell back to comparing rarity when neither was listed.
+
+		The two are put on the same scale first - each as a fraction of the best in that
+		category - because raw health runs into the thousands while power does not, and
+		adding them unscaled just means health decides everything. The weighting is the
+		one the published DQR loadout planner settled on.
+	]]
+	local function score(item, maxPower, maxHealth, isArmour)
+		local raw = power(item)
+		if not isArmour then return raw end
+
+		local powerPart = maxPower > 0 and raw / maxPower or 0
+		local healthPart = maxHealth > 0 and healthOf(item) / maxHealth or 0
+		return powerPart * 0.72 + healthPart * 0.28
+	end
 	AutoEquip = vain.Categories.Utility:CreateModule({
 		Name = 'Auto Equip Best',
-		Tooltip = 'Equips your highest-power gear for the chosen class (Warrior = physical power, Mage = spell power).',
+		Tooltip = 'Equips your best gear for the chosen class. Weapons on damage, armour on health and power together.',
 		Function = function(callback)
 			if not callback then return end
 			local getStorage = remote('reloadInvy')
@@ -303,9 +329,18 @@ run(function()
 					}
 					for _, g in groups do
 						if type(g.sub) == 'table' then
+							local isArmour = g.cat ~= 'weapon'
+							local maxPower, maxHealth = 0, 0
+							if isArmour then
+								for _, item in pairs(g.sub) do
+									maxPower = math.max(maxPower, power(item))
+									maxHealth = math.max(maxHealth, healthOf(item))
+								end
+							end
+
 							local bestId, bestPow, bestEq
 							for id, item in pairs(g.sub) do
-								local p = power(item)
+								local p = score(item, maxPower, maxHealth, isArmour)
 								if not bestPow or p > bestPow then
 									bestId, bestPow, bestEq = tostring(id):sub(g.strip), p, item.equipped
 								end
