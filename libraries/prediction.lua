@@ -220,6 +220,34 @@ local function solveInterceptTime(origin, projectileSpeed, gravity, targetPos, t
 	return roots[1], roots[2]
 end
 
+--[[
+	The flatter of the two angles that reaches a fixed point.
+
+	Textbook ballistics: for a given speed and gravity there are two arcs onto a point,
+	and the smaller angle is the one that gets there soonest, which is the one that leaves
+	the target least time to walk out of it. Nothing under the root means the point cannot
+	be reached at that speed at all.
+]]
+local function launchAngle(speed, gravity, flat, rise)
+	local v2 = speed * speed
+	local inner = v2 * v2 - gravity * (gravity * flat * flat + 2 * rise * v2)
+	if inner < 0 then return nil end
+	return math.atan((v2 - math.sqrt(inner)) / (gravity * flat))
+end
+
+local function ballisticAim(origin, speed, gravity, point)
+	local flatVec = Vector3.new(point.X - origin.X, 0, point.Z - origin.Z)
+	local flat = flatVec.Magnitude
+	if flat < 0.01 or gravity <= 0 or speed <= 0 then return nil end
+
+	local angle = launchAngle(speed, gravity, flat, point.Y - origin.Y)
+	if not angle or angle ~= angle then return nil end
+
+	local axis = Vector3.new(-flatVec.Z, 0, flatVec.X)
+	if axis.Magnitude < 1e-6 then return nil end
+	return CFrame.fromAxisAngle(axis.Unit, angle) * (flatVec.Unit * speed)
+end
+
 function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, targetVelocity, playerGravity, playerHeight, playerJump, params)
 	--[[
 		Two different questions about the floor, asked separately.
@@ -378,6 +406,39 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 		end
 
 		return origin + velocity, velocity.Unit, t
+	end
+
+	--[[
+		When the intercept has no answer, aim where they will be instead.
+
+		The quartic solves for a moving target in one go, and range is exactly where it
+		stops having a positive root: the flight time grows, the target's own velocity
+		comes to dominate the polynomial, and it returns nothing at all rather than a long
+		shot. Nothing is aimed and nothing is fired, which is why this worked up close and
+		simply stopped further out.
+
+		Splitting the question always has an answer up to the projectile's real range, and
+		is what the other clients do. Guess the flight time from the straight distance,
+		work out where the target will be by then, and solve the plain ballistic angle to
+		that fixed point. The angle only fails when the point is genuinely out of reach,
+		which is the honest no.
+	]]
+	if gravity > 0 then
+		local flight = (targetPos - origin).Magnitude / projectileSpeed
+		local predicted = targetPos + targetVelocity * flight
+		if applyGravity then
+			predicted -= Vector3.new(0, 0.5 * playerGravity * flight * flight, 0)
+		end
+
+		local floor = floorUnder(Vector3.new(predicted.X, targetPos.Y, predicted.Z))
+		if floor and predicted.Y < floor then
+			predicted = Vector3.new(predicted.X, floor, predicted.Z)
+		end
+
+		local velocity = ballisticAim(origin, projectileSpeed, gravity, predicted)
+		if velocity then
+			return origin + velocity, velocity.Unit, flight
+		end
 	end
 
 	if gravity == 0 then
