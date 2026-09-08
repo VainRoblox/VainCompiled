@@ -70,7 +70,8 @@ for old, new in {
 	['Fisherman Spy'] = 'Fisherman',
 	-- The two aim assists became one, so a config saved under the KitModules copy's name
 	-- lands on the module that remains.
-	['Aim Assist'] = 'AimAssist'
+	['Aim Assist'] = 'AimAssist',
+	['Auto Caitlyn'] = 'Caitlyn'
 } do
 	vain.Renames.Modules[old] = new
 end
@@ -10442,6 +10443,78 @@ run(function()
 	    local currentTarget = nil
 	    local lastHitTime = 0
 	    local lastContractSelect = 0
+	
+	    local ContractESP, ContractColor, ContractWalls
+	    local contractFolder = Instance.new('Folder')
+	    contractFolder.Parent = vain.gui
+	    local contractMarks, contractScan = {}, 0
+	
+	    local function clearContracts()
+	        for plr, mark in contractMarks do
+	            mark:Destroy()
+	            contractMarks[plr] = nil
+	        end
+	    end
+	
+	    --[[
+	        Whoever the contracts are on, marked the moment they arrive.
+	
+	        The client is handed these outright rather than having to work them out:
+	        BloodAssassinUpdateAvailableContracts drops them into the store under
+	        Kit.availableContracts, three at a time, each carrying the Player it names. The one
+	        you accept moves to Kit.activeContract and is marked too, since it is still the
+	        person to go and find.
+	
+	        One colour, because there is nothing to vary it by. A contract carries its target,
+	        the upgrade it rewards and an explanation of that reward - no rarity and no tier
+	        anywhere on it, and the game's own card colours these by the target's team.
+	    ]]
+	    local function refreshContracts()
+	        if not (ContractESP and ContractESP.Enabled) then
+	            if next(contractMarks) then clearContracts() end
+	            return
+	        end
+	
+	        -- Contracts arrive a few times a match, so this does not need the rate the rest
+	        -- of the loop runs at.
+	        if os.clock() - contractScan < 0.25 then return end
+	        contractScan = os.clock()
+	
+	        local ok, state = pcall(function() return bedwars.Store:getState() end)
+	        if not (ok and state and state.Kit) then return end
+	
+	        local wanted = {}
+	        for _, contract in state.Kit.availableContracts or {} do
+	            if contract.target then wanted[contract.target] = true end
+	        end
+	        local active = state.Kit.activeContract
+	        if active and active.target then wanted[active.target] = true end
+	
+	        for plr, mark in contractMarks do
+	            if not wanted[plr] or not plr.Parent or not plr.Character then
+	                mark:Destroy()
+	                contractMarks[plr] = nil
+	            end
+	        end
+	
+	        local colour = Color3.fromHSV(ContractColor.Hue or 0.95, ContractColor.Sat or 1, ContractColor.Value or 1)
+	        for plr in wanted do
+	            local char = plr.Character
+	            if char then
+	                local mark = contractMarks[plr]
+	                if not mark then
+	                    mark = Instance.new('Highlight')
+	                    mark.Parent = contractFolder
+	                    contractMarks[plr] = mark
+	                end
+	                mark.Adornee = char
+	                mark.DepthMode = Enum.HighlightDepthMode[ContractWalls.Enabled and 'AlwaysOnTop' or 'Occluded']
+	                mark.FillColor = colour
+	                mark.OutlineColor = colour
+	                mark.FillTransparency = 1 - (ContractColor.Opacity or 0.5)
+	            end
+	        end
+	    end
 	    
 	    local function selectContract(targetPlayer)
 	        if not entitylib.isAlive then return false end
@@ -10537,7 +10610,7 @@ run(function()
 	    end
 	    
 	    Caitlyn = vain.Categories.Kit:CreateModule({
-	        Name = 'Auto Caitlyn',
+	        Name = 'Caitlyn',
 	        Function = function(callback)
 	            if callback then
 	                local damageConnection = vainEvents.EntityDamageEvent.Event:Connect(function(damageTable)
@@ -10555,6 +10628,8 @@ run(function()
 	                
 	                task.spawn(function()
 	                    repeat
+	                        refreshContracts()
+	
 	                        if entitylib.isAlive then
 	                            local method = MethodDropdown.Value
 	                            
@@ -10576,7 +10651,8 @@ run(function()
 	                    end
 	                end
 	                table.clear(connections)
-	                
+	                clearContracts()
+	
 	                currentTarget = nil
 	                lastHitTime = 0
 	            end
@@ -10632,6 +10708,32 @@ run(function()
 	        Tooltip = 'Range to auto select nearby players'
 	    })
 	    
+	    ContractESP = Caitlyn:CreateToggle({
+	        Name = 'Contract ESP',
+	        Tooltip = 'Highlights whoever your contracts are on',
+	        Function = function(callback)
+	            for _, setting in {ContractColor, ContractWalls} do
+	                if setting and setting.Object then setting.Object.Visible = callback end
+	            end
+	            if not callback then clearContracts() end
+	        end
+	    })
+	    ContractColor = Caitlyn:CreateColorSlider({
+	        Name = 'Contract Color',
+	        Tooltip = 'Colour of the highlight',
+	        DefaultHue = 0.95,
+	        DefaultOpacity = 0.5,
+	        Visible = false,
+	        Darker = true
+	    })
+	    ContractWalls = Caitlyn:CreateToggle({
+	        Name = 'Through Walls',
+	        Default = true,
+	        Tooltip = 'Shows the highlight through the map',
+	        Visible = false,
+	        Darker = true
+	    })
+	
 	    LowHealthSlider.Object.Visible = true
 	    ExecuteRangeSlider.Object.Visible = true
 	    HitRangeSlider.Object.Visible = false
