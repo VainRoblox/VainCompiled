@@ -10445,6 +10445,7 @@ run(function()
 	    local lastContractSelect = 0
 	
 	    local ContractESP, ContractColor, LegendaryColor, ContractWalls
+	    local ShowReward, HoverOnly, RightClickSelect
 	    local contractFolder = Instance.new('Folder')
 	    contractFolder.Parent = vain.gui
 	    local contractMarks, contractScan = {}, 0
@@ -10485,9 +10486,57 @@ run(function()
 	    -- BOUNTY, VULNERABLE. Not ABSOLUTION (12), and not the four stat gains (1 to 4).
 	    local PERK_IDS = {[5] = true, [6] = true, [7] = true, [8] = true, [9] = true, [10] = true, [11] = true}
 	
+	    -- The same enum written out, so a label still has something to say when the meta
+	    -- module cannot be reached and its display strings are unavailable.
+	    local UPGRADE_NAMES = {
+	        [1] = 'Damage', [2] = 'Armor Penetration', [3] = 'Duration', [4] = 'Target Damage',
+	        [5] = "Assassin's Instinct", [6] = 'Serrated Blade', [7] = 'Thrill of the Hunt',
+	        [8] = 'Dark Insight', [9] = 'Silence', [10] = 'Bounty', [11] = 'Vulnerable',
+	        [12] = 'Absolution'
+	    }
+	
+	    --[[
+	        What the contract actually pays out.
+	
+	        The meta carries a description function per upgrade, and it is the readable answer:
+	        a stat gain takes the contract's rewardValue and comes back "+3 decay damage",
+	        while a perk takes nothing and describes itself. Falling back to the display name,
+	        and then to the written-out enum, means the label never comes up empty.
+	    ]]
+	    local function rewardText(contract)
+	        local upgrade = contract.rewardUpgrade
+	        if upgrade == nil then return nil end
+	
+	        local all = upgradeMeta()
+	        local meta = all and all[upgrade]
+	        if meta then
+	            if type(meta.description) == 'function' then
+	                local ok, text = pcall(meta.description, contract.rewardValue)
+	                if ok and type(text) == 'string' and text ~= '' then return text end
+	            end
+	            if meta.display then return meta.display end
+	        end
+	        return UPGRADE_NAMES[upgrade]
+	    end
+	
+	    -- Their armour and anything else hanging off them counts as them, so this walks up
+	    -- from whatever the cursor actually landed on.
+	    local function playerUnderMouse()
+	        local ok, node = pcall(function() return lplr:GetMouse().Target end)
+	        if not ok then return nil end
+	        for _ = 1, 8 do
+	            if not node then return nil end
+	            local found = playersService:GetPlayerFromCharacter(node)
+	            if found then return found end
+	            node = node.Parent
+	        end
+	        return nil
+	    end
+	
 	    local function clearContracts()
-	        for plr, mark in contractMarks do
-	            mark:Destroy()
+	        for plr, entry in contractMarks do
+	            if entry.mark then entry.mark:Destroy() end
+	            if entry.tag then entry.tag:Destroy() end
 	            contractMarks[plr] = nil
 	        end
 	    end
@@ -10505,8 +10554,14 @@ run(function()
 	        the upgrade it rewards and an explanation of that reward - no rarity and no tier
 	        anywhere on it, and the game's own card colours these by the target's team.
 	    ]]
+	    -- Settings are created after CreateModule returns, so a config that switches this on
+	    -- while they are still nil would otherwise throw once per pass for that window.
+	    local function on(setting)
+	        return setting ~= nil and setting.Enabled
+	    end
+	
 	    local function refreshContracts()
-	        if not (ContractESP and ContractESP.Enabled) then
+	        if not on(ContractESP) then
 	            if next(contractMarks) then clearContracts() end
 	            return
 	        end
@@ -10546,10 +10601,14 @@ run(function()
 	
 	        local wanted = {}
 	        for _, contract in state.Kit.availableContracts or {} do
-	            if contract.target then wanted[contract.target] = isLegendary(contract) end
+	            if contract.target then
+	                wanted[contract.target] = {legendary = isLegendary(contract), reward = rewardText(contract)}
+	            end
 	        end
 	        local active = state.Kit.activeContract
-	        if active and active.target then wanted[active.target] = isLegendary(active) end
+	        if active and active.target then
+	            wanted[active.target] = {legendary = isLegendary(active), reward = rewardText(active)}
+	        end
 	
 	        --[[
 	            Dropped as soon as the contract is.
@@ -10561,9 +10620,10 @@ run(function()
 	            Anything no longer in the store has had its contract taken off the board -
 	            accepting one clears the other two - so the highlight goes with it.
 	        ]]
-	        for plr, mark in contractMarks do
+	        for plr, entry in contractMarks do
 	            if wanted[plr] == nil or not plr.Parent or not plr.Character then
-	                mark:Destroy()
+	                if entry.mark then entry.mark:Destroy() end
+	                if entry.tag then entry.tag:Destroy() end
 	                contractMarks[plr] = nil
 	            end
 	        end
@@ -10571,22 +10631,66 @@ run(function()
 	        local plain = Color3.fromHSV(ContractColor.Hue or 0.95, ContractColor.Sat or 1, ContractColor.Value or 1)
 	        local rare = Color3.fromHSV(LegendaryColor.Hue or 0.14, LegendaryColor.Sat or 1, LegendaryColor.Value or 1)
 	
-	        for plr, legendary in wanted do
+	        local hovered = on(HoverOnly) and playerUnderMouse() or nil
+	
+	        for plr, info in wanted do
 	            local char = plr.Character
+	            local head = char and (char:FindFirstChild('Head') or char:FindFirstChild('HumanoidRootPart'))
 	            if char then
-	                local mark = contractMarks[plr]
-	                if not mark then
-	                    mark = Instance.new('Highlight')
-	                    mark.Parent = contractFolder
-	                    contractMarks[plr] = mark
+	                local entry = contractMarks[plr]
+	                if not entry then
+	                    entry = {}
+	                    contractMarks[plr] = entry
 	                end
-	                local colour = legendary and rare or plain
-	                local slider = legendary and LegendaryColor or ContractColor
-	                mark.Adornee = char
-	                mark.DepthMode = Enum.HighlightDepthMode[ContractWalls.Enabled and 'AlwaysOnTop' or 'Occluded']
-	                mark.FillColor = colour
-	                mark.OutlineColor = colour
-	                mark.FillTransparency = 1 - (slider.Opacity or 0.5)
+	
+	                if not entry.mark then
+	                    entry.mark = Instance.new('Highlight')
+	                    entry.mark.Parent = contractFolder
+	                end
+	
+	                local colour = info.legendary and rare or plain
+	                local slider = info.legendary and LegendaryColor or ContractColor
+	                entry.mark.Adornee = char
+	                entry.mark.DepthMode = Enum.HighlightDepthMode[ContractWalls.Enabled and 'AlwaysOnTop' or 'Occluded']
+	                entry.mark.FillColor = colour
+	                entry.mark.OutlineColor = colour
+	                entry.mark.FillTransparency = 1 - (slider.Opacity or 0.5)
+	
+	                -- What you get for taking it, written above them. On Hover Only keeps the
+	                -- three of them from covering the screen while you decide.
+	                local show = on(ShowReward) and info.reward and head
+	                    and (not on(HoverOnly) or hovered == plr)
+	
+	                if show then
+	                    if not entry.tag then
+	                        local tag = Instance.new('BillboardGui')
+	                        tag.Size = UDim2.fromOffset(220, 26)
+	                        tag.StudsOffsetWorldSpace = Vector3.new(0, 3.2, 0)
+	                        tag.AlwaysOnTop = true
+	                        tag.MaxDistance = 500
+	                        tag.Parent = contractFolder
+	
+	                        local label = Instance.new('TextLabel')
+	                        label.Name = 'Reward'
+	                        label.Size = UDim2.fromScale(1, 1)
+	                        label.BackgroundTransparency = 1
+	                        label.Font = Enum.Font.GothamBold
+	                        label.TextSize = 14
+	                        label.TextStrokeTransparency = 0.4
+	                        label.Parent = tag
+	
+	                        entry.tag = tag
+	                    end
+	                    entry.tag.Adornee = head
+	                    entry.tag.Enabled = true
+	                    local label = entry.tag:FindFirstChild('Reward')
+	                    if label then
+	                        label.Text = info.reward
+	                        label.TextColor3 = colour
+	                    end
+	                elseif entry.tag then
+	                    entry.tag.Enabled = false
+	                end
 	            end
 	        end
 	    end
@@ -10688,6 +10792,27 @@ run(function()
 	        Name = 'Caitlyn',
 	        Function = function(callback)
 	            if callback then
+	                --[[
+	                    Right click takes the contract on whoever is under the cursor.
+	
+	                    The cursor lands on whatever part happens to be in front - a helmet, a
+	                    chestplate, an accessory - so the player is found by walking up from
+	                    it rather than by expecting to hit a body part.
+	
+	                    Only players that actually hold one of your contracts do anything:
+	                    selectContract looks the target up in the available list and returns
+	                    false when it is not there, so right clicking anyone else is ignored.
+	                ]]
+	                table.insert(connections, inputService.InputBegan:Connect(function(input, processed)
+	                    if processed or not on(RightClickSelect) then return end
+	                    if input.UserInputType ~= Enum.UserInputType.MouseButton2 then return end
+	
+	                    local plr = playerUnderMouse()
+	                    if plr and plr ~= lplr then
+	                        pcall(selectContract, plr)
+	                    end
+	                end))
+	
 	                local damageConnection = vainEvents.EntityDamageEvent.Event:Connect(function(damageTable)
 	                    if not entitylib.isAlive then return end
 	                    
@@ -10787,8 +10912,11 @@ run(function()
 	        Name = 'Contract ESP',
 	        Tooltip = 'Highlights whoever your contracts are on',
 	        Function = function(callback)
-	            for _, setting in {ContractColor, LegendaryColor, ContractWalls} do
+	            for _, setting in {ContractColor, LegendaryColor, ContractWalls, ShowReward, RightClickSelect} do
 	                if setting and setting.Object then setting.Object.Visible = callback end
+	            end
+	            if HoverOnly and HoverOnly.Object then
+	                HoverOnly.Object.Visible = callback and on(ShowReward)
 	            end
 	            if not callback then clearContracts() end
 	        end
@@ -10806,6 +10934,32 @@ run(function()
 	        Tooltip = 'Colour for contracts rewarding a perk rather than a stat',
 	        DefaultHue = 0.14,
 	        DefaultOpacity = 0.5,
+	        Visible = false,
+	        Darker = true
+	    })
+	    ShowReward = Caitlyn:CreateToggle({
+	        Name = 'Show Reward',
+	        Default = true,
+	        Tooltip = 'Writes what the contract pays out above the target',
+	        Visible = false,
+	        Darker = true,
+	        Function = function(callback)
+	            if HoverOnly and HoverOnly.Object then
+	                HoverOnly.Object.Visible = callback and on(ContractESP)
+	            end
+	        end
+	    })
+	    HoverOnly = Caitlyn:CreateToggle({
+	        Name = 'On Hover Only',
+	        Default = false,
+	        Tooltip = 'Only writes it while you are looking at that target',
+	        Visible = false,
+	        Darker = true
+	    })
+	    RightClickSelect = Caitlyn:CreateToggle({
+	        Name = 'Right Click Select',
+	        Default = false,
+	        Tooltip = 'Right click a target, or their armour, to take that contract',
 	        Visible = false,
 	        Darker = true
 	    })
