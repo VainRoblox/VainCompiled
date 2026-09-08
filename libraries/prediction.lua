@@ -219,11 +219,29 @@ local function solveInterceptTime(origin, projectileSpeed, gravity, targetPos, t
 end
 
 function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, targetVelocity, playerGravity, playerHeight, playerJump, params)
-	-- If the target is on (or barely above) the ground with no real vertical
-	-- velocity, don't try to lead them downward — snap to the ground beneath
-	-- them so a tiny negative Y velocity reading doesn't tilt the aim.
+	--[[
+		Two different questions about the floor, asked separately.
+
+		"Are they standing on something" only wants to know about the ground directly
+		under their feet, so it stays a short ray - lengthening it would call somebody at
+		the top of a jump grounded, because their vertical velocity passes through zero
+		there, and the shot would then be aimed where they are rather than where they fall
+		to.
+
+		"Where will they land" is a different question and needs to see much further. It
+		was being answered with the same short ray, so anyone actually falling - off a
+		bridge, off an island, the most common way a target moves in this game - returned
+		nothing, the clamp below never fired, and the parabola was free to predict them
+		tens of studs underground. The shot went into the floor.
+	]]
 	local groundHit = workspace:Raycast(targetPos, Vector3.new(0, -playerHeight - 0.5, 0), params)
 	local grounded = groundHit ~= nil and math.abs(targetVelocity.Y) <= 0.1
+
+	local FLOOR_REACH = 512
+	local function floorUnder(position)
+		local hit = workspace:Raycast(position, Vector3.new(0, -FLOOR_REACH, 0), params)
+		return hit and hit.Position.Y or nil
+	end
 
 	-- The target accelerates under their own gravity over the projectile's
 	-- flight, so their intercept position is a parabola, not a straight line.
@@ -237,14 +255,25 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 	local t = solveInterceptTime(origin, projectileSpeed, gravity, effectiveTargetPos, effectiveTargetVel)
 
 	if applyGravity and t then
-		for _ = 1, 3 do
+		-- Five rather than three: each pass is one quartic solve, and a target falling
+		-- fast moves far enough between passes that three did not always settle.
+		for _ = 1, 5 do
 			-- predicted target position at flight time t, including their fall
 			local fallY = targetVelocity.Y * t - 0.5 * playerGravity * t * t
 			local predicted = targetPos + Vector3.new(targetVelocity.X * t, fallY, targetVelocity.Z * t)
 
-			-- stop the target falling through the floor
-			if groundHit and predicted.Y < groundHit.Position.Y then
-				predicted = Vector3.new(predicted.X, groundHit.Position.Y, predicted.Z)
+			--[[
+				Stopped at the floor they are heading for.
+
+				Which is not the floor they left: someone falling off a bridge is moving
+				sideways as well as down, and the ground under where they land can be a
+				different height entirely - a lower island, or the map below the gap. So
+				the floor is looked up under the predicted position rather than under the
+				position they started from.
+			]]
+			local floor = floorUnder(Vector3.new(predicted.X, targetPos.Y, predicted.Z))
+			if floor and predicted.Y < floor then
+				predicted = Vector3.new(predicted.X, floor, predicted.Z)
 			end
 
 			-- the velocity the solver should assume to reach `predicted` in t,
@@ -272,8 +301,9 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 		if t then
 			local fallY = targetVelocity.Y * t - 0.5 * playerGravity * t * t
 			local settled = targetPos + Vector3.new(targetVelocity.X * t, fallY, targetVelocity.Z * t)
-			if groundHit and settled.Y < groundHit.Position.Y then
-				settled = Vector3.new(settled.X, groundHit.Position.Y, settled.Z)
+			local floor = floorUnder(Vector3.new(settled.X, targetPos.Y, settled.Z))
+			if floor and settled.Y < floor then
+				settled = Vector3.new(settled.X, floor, settled.Z)
 			end
 			effectiveTargetPos = targetPos
 			effectiveTargetVel = (settled - targetPos) / t

@@ -10522,8 +10522,18 @@ run(function()
 	        local active = state.Kit.activeContract
 	        if active and active.target then wanted[active.target] = isLegendary(active) end
 	
+	        --[[
+	            Dropped as soon as the contract is.
+	
+	            Compared against nil rather than truth: the table holds whether each target is
+	            a legendary, so an ordinary contract sits in it as false, and testing for
+	            truth threw those marks away and rebuilt them on every pass.
+	
+	            Anything no longer in the store has had its contract taken off the board -
+	            accepting one clears the other two - so the highlight goes with it.
+	        ]]
 	        for plr, mark in contractMarks do
-	            if not wanted[plr] or not plr.Parent or not plr.Character then
+	            if wanted[plr] == nil or not plr.Parent or not plr.Character then
 	                mark:Destroy()
 	                contractMarks[plr] = nil
 	            end
