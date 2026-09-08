@@ -10455,7 +10455,7 @@ run(function()
 	    local ShowReward, HoverOnly, RightClickSelect
 	    local contractFolder = Instance.new('Folder')
 	    contractFolder.Parent = vain.gui
-	    local contractMarks, contractScan = {}, 0
+	    local contractMarks, contractScan, contractWarned = {}, 0, false
 	
 	    --[[
 	        Which upgrades are the good ones, asked two ways.
@@ -10645,6 +10645,13 @@ run(function()
 	        return setting ~= nil and setting.Enabled
 	    end
 	
+	    -- The colour a slider is set to, or the one it will default to when it exists. These
+	    -- are created after CreateModule returns, so for a moment they are not there at all.
+	    local function sliderColour(slider, hue)
+	        if not slider then return Color3.fromHSV(hue, 1, 1) end
+	        return Color3.fromHSV(slider.Hue or hue, slider.Sat or 1, slider.Value or 1)
+	    end
+	
 	    local function refreshContracts()
 	        if not on(ContractESP) then
 	            if next(contractMarks) then clearContracts() end
@@ -10721,8 +10728,8 @@ run(function()
 	            end
 	        end
 	
-	        local plain = Color3.fromHSV(ContractColor.Hue or 0.95, ContractColor.Sat or 1, ContractColor.Value or 1)
-	        local rare = Color3.fromHSV(LegendaryColor.Hue or 0.14, LegendaryColor.Sat or 1, LegendaryColor.Value or 1)
+	        local plain = sliderColour(ContractColor, 0.95)
+	        local rare = sliderColour(LegendaryColor, 0.14)
 	
 	        local hovered = on(HoverOnly) and playerUnderMouse() or nil
 	
@@ -10747,7 +10754,7 @@ run(function()
 	                entry.mark.DepthMode = Enum.HighlightDepthMode[ContractWalls.Enabled and 'AlwaysOnTop' or 'Occluded']
 	                entry.mark.FillColor = colour
 	                entry.mark.OutlineColor = colour
-	                entry.mark.FillTransparency = 1 - (slider.Opacity or 0.5)
+	                entry.mark.FillTransparency = 1 - ((slider and slider.Opacity) or 0.5)
 	
 	                -- What you get for taking it, written above them. On Hover Only keeps the
 	                -- three of them from covering the screen while you decide.
@@ -10802,7 +10809,7 @@ run(function()
 	                    end
 	                    entry.tag.Adornee = head
 	                    entry.tag.Enabled = true
-	                    local readable = Color3.fromHSV(slider.Hue or 0, (slider.Sat or 1) * 0.45, 1)
+	                    local readable = Color3.fromHSV((slider and slider.Hue) or 0, ((slider and slider.Sat) or 1) * 0.45, 1)
 	
 	                    local icon = entry.tag:FindFirstChild('Icon')
 	                    if icon then
@@ -10977,7 +10984,20 @@ run(function()
 	                
 	                task.spawn(function()
 	                    repeat
-	                        refreshContracts()
+	                        --[[
+	                            Guarded, because this loop is not only the highlight.
+	
+	                            refreshContracts reads the store and builds instances, and it
+	                            was called bare - so one error in it killed the loop it runs
+	                            in, which is the same loop that picks contracts. The module
+	                            stopped dead, mid-match, with nothing said about why. Now a
+	                            bad pass costs that pass, and says so once.
+	                        ]]
+	                        local drew, drawErr = pcall(refreshContracts)
+	                        if not drew and not contractWarned then
+	                            contractWarned = true
+	                            notif('Caitlyn', 'Contract ESP: ' .. tostring(drawErr), 8, 'alert')
+	                        end
 	
 	                        if entitylib.isAlive then
 	                            local method = MethodDropdown.Value
@@ -11001,6 +11021,9 @@ run(function()
 	                end
 	                table.clear(connections)
 	                clearContracts()
+	                -- So a fresh run can report a fresh fault rather than staying quiet about
+	                -- one it already mentioned in a previous match.
+	                contractWarned = false
 	
 	                currentTarget = nil
 	                lastHitTime = 0
