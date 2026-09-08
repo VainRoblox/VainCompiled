@@ -10530,53 +10530,6 @@ run(function()
 	    }
 	
 	    --[[
-	        The picture the game puts on the contract card.
-	
-	        Its own card works this out from rewardExplanation, and the same three branches
-	        are followed here so what floats over a target is what you would have seen had you
-	        opened the menu: the assassin ability icon when the reward is one of its own, the
-	        class icon when it comes from a kit class, and the item's icon when it is gear.
-	
-	        It says where the reward comes from rather than which upgrade it is - there is no
-	        picture of "Thrill of the Hunt" anywhere in the game to use. Which of the two a
-	        contract is stays in the colour.
-	    ]]
-	    local ASSASSIN_ICON = 'rbxassetid://74949256950508'
-	    local classMeta, classMetaTried = nil, 0
-	
-	    local function bedwarsClassMeta()
-	        if classMeta then return classMeta end
-	        if os.clock() - classMetaTried < 5 then return nil end
-	        classMetaTried = os.clock()
-	
-	        local ok, meta = pcall(function()
-	            return require(replicatedStorage.TS.games.bedwars.kit.class['bedwars-class-meta']).BedwarsClassMeta
-	        end)
-	        classMeta = (ok and type(meta) == 'table') and meta or nil
-	        return classMeta
-	    end
-	
-	    local function rewardIcon(contract)
-	        local why = contract.rewardExplanation
-	        if type(why) ~= 'table' then return nil end
-	
-	        if why.assassin then return ASSASSIN_ICON end
-	
-	        if why.gear then
-	            local meta = bedwars.ItemMeta[why.gear]
-	            if meta and meta.image then return meta.image end
-	        end
-	
-	        if why.kitClass then
-	            local all = bedwarsClassMeta()
-	            local class = all and all[why.kitClass]
-	            if class and class.imageId then return class.imageId end
-	        end
-	
-	        return nil
-	    end
-	
-	    --[[
 	        What the contract pays, in as few words as it takes.
 	
 	        The meta also carries a description, and it is a whole sentence - "Decay deals
@@ -10746,8 +10699,7 @@ run(function()
 	            if contract.target then
 	                wanted[contract.target] = {
 	                    legendary = isLegendary(contract),
-	                    reward = rewardText(contract),
-	                    icon = rewardIcon(contract)
+	                    reward = rewardText(contract)
 	                }
 	            end
 	        end
@@ -10755,8 +10707,7 @@ run(function()
 	        if active and active.target then
 	            wanted[active.target] = {
 	                legendary = isLegendary(active),
-	                reward = rewardText(active),
-	                icon = rewardIcon(active)
+	                reward = rewardText(active)
 	            }
 	        end
 	
@@ -10808,40 +10759,17 @@ run(function()
 	
 	                -- What you get for taking it, written above them. On Hover Only keeps the
 	                -- three of them from covering the screen while you decide.
-	                local show = on(ShowReward) and (info.reward or info.icon) and head
+	                local show = on(ShowReward) and info.reward and head
 	                    and (not on(HoverOnly) or hovered == plr)
 	
 	                if show then
 	                    if not entry.tag then
 	                        local tag = Instance.new('BillboardGui')
-	                        tag.Size = UDim2.fromOffset(220, 40)
+	                        tag.Size = UDim2.fromOffset(220, 26)
 	                        tag.StudsOffsetWorldSpace = Vector3.new(0, 3.2, 0)
 	                        tag.AlwaysOnTop = true
 	                        tag.MaxDistance = 500
 	                        tag.Parent = contractFolder
-	
-	                        --[[
-	                            The icon carries it, the words are the fallback.
-	
-	                            A picture is read at a glance and a sentence is not, which is
-	                            the whole point of it floating over someone's head. The name
-	                            is still built though, because not every reward has an icon to
-	                            show - a stat gain has no picture anywhere in the game - and
-	                            an empty space over a target says less than "Damage 3" does.
-	                        ]]
-	                        local icon = Instance.new('ImageLabel')
-	                        icon.Name = 'Icon'
-	                        icon.Size = UDim2.fromOffset(34, 34)
-	                        icon.Position = UDim2.fromScale(0.5, 0)
-	                        icon.AnchorPoint = Vector2.new(0.5, 0)
-	                        icon.BackgroundTransparency = 1
-	                        icon.ScaleType = Enum.ScaleType.Fit
-	                        icon.Visible = false
-	                        icon.Parent = tag
-	
-	                        local stroke = Instance.new('UIStroke')
-	                        stroke.Thickness = 2
-	                        stroke.Parent = icon
 	
 	                        local label = Instance.new('TextLabel')
 	                        label.Name = 'Reward'
@@ -10861,21 +10789,8 @@ run(function()
 	                    entry.tag.Enabled = true
 	                    local readable = Color3.fromHSV((slider and slider.Hue) or 0, ((slider and slider.Sat) or 1) * 0.45, 1)
 	
-	                    local icon = entry.tag:FindFirstChild('Icon')
-	                    if icon then
-	                        icon.Visible = info.icon ~= nil
-	                        if info.icon then
-	                            icon.Image = info.icon
-	                            local stroke = icon:FindFirstChildOfClass('UIStroke')
-	                            -- Ringed in the contract's own colour, so a legendary is still
-	                            -- a legendary at a glance even though the picture is not.
-	                            if stroke then stroke.Color = readable end
-	                        end
-	                    end
-	
 	                    local label = entry.tag:FindFirstChild('Reward')
 	                    if label then
-	                        label.Visible = info.icon == nil
 	                        label.Text = info.reward
 	                        --[[
 	                            Bright enough to read, still the colour it belongs to.
@@ -11033,6 +10948,31 @@ run(function()
 	                        pointedSelect()
 	                    end
 	                end))
+	
+	                --[[
+	                    Watched as well as listened for.
+	
+	                    Both events above can be taken away before they reach us - right click
+	                    is bound by the camera and by the game's own action handlers, and
+	                    whether either fires depends on what else has claimed the button. A
+	                    poll cannot be intercepted: it asks the button directly, and only acts
+	                    on the frame it goes down so holding it to turn the camera does
+	                    nothing.
+	                ]]
+	                task.spawn(function()
+	                    local held = false
+	                    repeat
+	                        local down = false
+	                        pcall(function()
+	                            down = inputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+	                        end)
+	                        if down and not held then
+	                            pointedSelect()
+	                        end
+	                        held = down
+	                        task.wait()
+	                    until not Caitlyn.Enabled
+	                end)
 	
 	                local damageConnection = vainEvents.EntityDamageEvent.Event:Connect(function(damageTable)
 	                    if not entitylib.isAlive then return end
