@@ -1747,22 +1747,29 @@ run(function()
 						promise this runs inside for the same 0.3s. The game does not stop
 						this animation by hand at all - it is left to finish.
 					]]
-					if anim then
+					--[[
+						One swing, played through, rather than restarted on every block.
+
+						Both halves used to be replayed for each break, and Nuker breaks
+						several blocks a second - far faster than a swing lasts. So the
+						animation never got past its opening frames before being cut back
+						to the start, which is not a fast swing, it is a stutter.
+
+						A swing already running is left alone now and the next begins when
+						it has finished. swingtrack is cleared by endSwing after the
+						track's own length, so that is the whole of the timing: the arm
+						swings at the speed the animation was made for however quickly the
+						blocks are going.
+					]]
+					if anim and not swingtrack then
 						pcall(function()
 							local held = store.hand.tool and bedwars.ItemMeta[store.hand.tool.Name]
 							local swing = (held and held.breakBlockSwingAnimationOverride) or bedwars.AnimationType.FP_USE_ITEM
 							bedwars.ViewmodelController:playAnimation(swing)
 						end)
 
-						-- The character swing is the half other players can see, so it stays
-						-- - one at a time, replaced rather than layered.
+						-- The character swing is the half other players can see.
 						pcall(function()
-							if swingtrack then
-								swingtrack:Stop(SWING_FADE)
-								swingtrack:Destroy()
-								swingtrack = nil
-							end
-
 							local track = bedwars.AnimationUtil:playAnimation(lplr, bedwars.BlockController:getAnimationController():getAssetId(bedwars.AnimationType.SWORD_SWING))
 							swingtrack = track
 							endSwing(track)
