@@ -10503,12 +10503,17 @@ run(function()
 	    }
 	
 	    --[[
-	        What the contract actually pays out.
+	        What the contract pays, in as few words as it takes.
 	
-	        The meta carries a description function per upgrade, and it is the readable answer:
-	        a stat gain takes the contract's rewardValue and comes back "+3 decay damage",
-	        while a perk takes nothing and describes itself. Falling back to the display name,
-	        and then to the written-out enum, means the label never comes up empty.
+	        The meta also carries a description, and it is a whole sentence - "Decay deals
+	        double damage to your active target". Three of those hanging over the map is
+	        something to read rather than something to glance at, so the name is used
+	        instead, which is what you are actually choosing between.
+	
+	        A stat gain is the exception: its name alone says nothing, since every contract
+	        offering Damage offers a different amount of it. summarize gives that amount in
+	        the shape the game writes it, so it comes out as "Damage 3" or "Armor Penetration
+	        15%". Perks have no amount and need none.
 	    ]]
 	    local function rewardText(contract)
 	        local upgrade = contract.rewardUpgrade
@@ -10516,21 +10521,47 @@ run(function()
 	
 	        local all = upgradeMeta()
 	        local meta = all and all[upgrade]
-	        if meta then
-	            if type(meta.description) == 'function' then
-	                local ok, text = pcall(meta.description, contract.rewardValue)
-	                if ok and type(text) == 'string' and text ~= '' then return text end
+	        local name = (meta and meta.display) or UPGRADE_NAMES[upgrade]
+	        if not name then return nil end
+	
+	        if meta and type(meta.summarize) == 'function' and contract.rewardValue then
+	            local ok, amount = pcall(meta.summarize, contract.rewardValue)
+	            if ok and amount ~= nil and tostring(amount) ~= '' then
+	                return name .. ' ' .. tostring(amount)
 	            end
-	            if meta.display then return meta.display end
 	        end
-	        return UPGRADE_NAMES[upgrade]
+	        return name
 	    end
 	
-	    -- Their armour and anything else hanging off them counts as them, so this walks up
-	    -- from whatever the cursor actually landed on.
+	    --[[
+	        Whoever is under the pointer, however the pointer is being held.
+	
+	        Mouse.Target answers this while the cursor is free, and answers nothing at all in
+	        first person or shift lock, where there is no cursor to be under anything. Then
+	        the middle of the screen is where you are pointing, so that is what gets asked.
+	
+	        Either way it walks up from whatever was actually hit: the thing in front of a
+	        player is usually their helmet or chestplate, not a body part.
+	    ]]
+	    local aimParams = RaycastParams.new()
+	    aimParams.FilterType = Enum.RaycastFilterType.Exclude
+	
 	    local function playerUnderMouse()
 	        local ok, node = pcall(function() return lplr:GetMouse().Target end)
-	        if not ok then return nil end
+	        if not ok then node = nil end
+	
+	        if not node then
+	            pcall(function()
+	                local camera = workspace.CurrentCamera
+	                if not camera then return end
+	                aimParams.FilterDescendantsInstances = {lplr.Character, camera}
+	                local centre = camera.ViewportSize / 2
+	                local ray = camera:ViewportPointToRay(centre.X, centre.Y)
+	                local hit = workspace:Raycast(ray.Origin, ray.Direction * 1000, aimParams)
+	                node = hit and hit.Instance
+	            end)
+	        end
+	
 	        for _ = 1, 8 do
 	            if not node then return nil end
 	            local found = playersService:GetPlayerFromCharacter(node)
@@ -10682,8 +10713,11 @@ run(function()
 	                        label.Size = UDim2.fromScale(1, 1)
 	                        label.BackgroundTransparency = 1
 	                        label.Font = Enum.Font.GothamBold
-	                        label.TextSize = 14
-	                        label.TextStrokeTransparency = 0.4
+	                        label.TextSize = 15
+	                        -- Solid rather than nearly: the outline is the only thing holding
+	                        -- the text apart from whatever colour of map is behind it.
+	                        label.TextStrokeTransparency = 0
+	                        label.TextStrokeColor3 = Color3.new()
 	                        label.Parent = tag
 	
 	                        entry.tag = tag
@@ -10693,7 +10727,17 @@ run(function()
 	                    local label = entry.tag:FindFirstChild('Reward')
 	                    if label then
 	                        label.Text = info.reward
-	                        label.TextColor3 = colour
+	                        --[[
+	                            Bright enough to read, still the colour it belongs to.
+	
+	                            Taking the highlight's colour straight meant a fully saturated
+	                            red on a bright map, which is about the least legible thing
+	                            text can be. The hue is kept so a legendary still reads as a
+	                            different one at a glance, but it is lightened and taken to
+	                            full brightness first - a highlight is a wash over a body and
+	                            can be as deep as it likes, a word has to be read.
+	                        ]]
+	                        label.TextColor3 = Color3.fromHSV(slider.Hue or 0, (slider.Sat or 1) * 0.45, 1)
 	                    end
 	                elseif entry.tag then
 	                    entry.tag.Enabled = false
@@ -10810,15 +10854,20 @@ run(function()
 	                    selectContract looks the target up in the available list and returns
 	                    false when it is not there, so right clicking anyone else is ignored.
 	                ]]
-	                table.insert(connections, inputService.InputBegan:Connect(function(input, processed)
-	                    if processed or not on(RightClickSelect) then return end
-	                    if input.UserInputType ~= Enum.UserInputType.MouseButton2 then return end
+	                pcall(function()
+	                    -- Mouse.Button2Down rather than InputBegan. Right click is what turns
+	                    -- the camera, so it arrives already marked as handled and the
+	                    -- gameProcessed check threw it away - the click was being seen and
+	                    -- then ignored.
+	                    table.insert(connections, lplr:GetMouse().Button2Down:Connect(function()
+	                        if not on(RightClickSelect) then return end
 	
-	                    local plr = playerUnderMouse()
-	                    if plr and plr ~= lplr then
-	                        pcall(selectContract, plr)
-	                    end
-	                end))
+	                        local plr = playerUnderMouse()
+	                        if plr and plr ~= lplr then
+	                            pcall(selectContract, plr)
+	                        end
+	                    end))
+	                end)
 	
 	                local damageConnection = vainEvents.EntityDamageEvent.Event:Connect(function(damageTable)
 	                    if not entitylib.isAlive then return end
