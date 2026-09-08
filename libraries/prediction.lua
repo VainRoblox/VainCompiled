@@ -209,13 +209,15 @@ local function solveInterceptTime(origin, projectileSpeed, gravity, targetPos, t
 
 	if not solutions then return nil end
 
-	local bestT = math.huge
+	-- Both arcs, nearest first. A quartic gives up to two ways to hit a moving target:
+	-- the flat shot that gets there soonest, and the lobbed one that goes over the top.
+	-- The flat one is what you want, right up until something is in the way of it.
+	local roots = {}
 	for _, v in solutions do
-		if v > 0 and v < bestT then
-			bestT = v
-		end
+		if v > 0 then table.insert(roots, v) end
 	end
-	return bestT < math.huge and bestT or nil
+	table.sort(roots)
+	return roots[1], roots[2]
 end
 
 function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, targetVelocity, playerGravity, playerHeight, playerJump, params)
@@ -248,17 +250,27 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 	-- Flight time depends on that position and vice-versa, so iterate: solve a
 	-- linear-motion intercept, then re-aim at where gravity will have carried
 	-- the target by that time, and re-solve. Converges in a couple of passes.
-	local effectiveTargetPos = targetPos
-	local effectiveTargetVel = targetVelocity
 	local applyGravity = (not grounded) and playerGravity and playerGravity > 0 and math.abs(targetVelocity.Y) > 0.01
 
-	local t = solveInterceptTime(origin, projectileSpeed, gravity, effectiveTargetPos, effectiveTargetVel)
+	--[[
+		A flight time, settled into the lead that belongs to it.
 
-	if applyGravity and t then
+		The target accelerates under their own gravity over the projectile's flight, so
+		their intercept position is a parabola rather than a straight line, and the flight
+		time depends on that position as much as the position depends on it. So it
+		iterates: solve a linear intercept, re-aim at where gravity will have carried them
+		by then, re-solve.
+
+		Pulled out into a function because there is more than one flight time worth
+		asking about, and both need the same treatment.
+	]]
+	local function settle(t)
+		local effectiveTargetPos, effectiveTargetVel = targetPos, targetVelocity
+		if not (applyGravity and t) then return t, effectiveTargetPos, effectiveTargetVel end
+
 		-- Five rather than three: each pass is one quartic solve, and a target falling
 		-- fast moves far enough between passes that three did not always settle.
 		for _ = 1, 5 do
-			-- predicted target position at flight time t, including their fall
 			local fallY = targetVelocity.Y * t - 0.5 * playerGravity * t * t
 			local predicted = targetPos + Vector3.new(targetVelocity.X * t, fallY, targetVelocity.Z * t)
 
@@ -267,17 +279,13 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 
 				Which is not the floor they left: someone falling off a bridge is moving
 				sideways as well as down, and the ground under where they land can be a
-				different height entirely - a lower island, or the map below the gap. So
-				the floor is looked up under the predicted position rather than under the
-				position they started from.
+				different height entirely - a lower island, or the map below the gap.
 			]]
 			local floor = floorUnder(Vector3.new(predicted.X, targetPos.Y, predicted.Z))
 			if floor and predicted.Y < floor then
 				predicted = Vector3.new(predicted.X, floor, predicted.Z)
 			end
 
-			-- the velocity the solver should assume to reach `predicted` in t,
-			-- so the quartic lead and the gravity-curved point stay consistent
 			effectiveTargetPos = targetPos
 			effectiveTargetVel = (predicted - targetPos) / t
 			local newT = solveInterceptTime(origin, projectileSpeed, gravity, effectiveTargetPos, effectiveTargetVel)
@@ -289,38 +297,90 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 		--[[
 			The lead and the flight time have to belong to each other.
 
-			effectiveTargetVel is worked out to reach the predicted point in the t of that
-			pass, and then t is replaced by the solve that follows it. Aiming with the two
-			mismatched puts the shot at targetPos + vel * newT rather than at the point the
-			velocity was derived for, which scales the whole lead by newT/oldT.
-
-			That is harmless when the lead is small and badly wrong when it is not: someone
-			rising out of a jump carries most of their lead vertically, so the error lands
-			the shot well over their head, which is exactly where it was going.
+			The lead is worked out to reach the predicted point in the t of that pass, and
+			then t is replaced by the solve that follows it. Aiming with the two mismatched
+			puts the shot at targetPos + lead * newT rather than at the point the lead was
+			derived for, which scales the whole lead by newT/oldT. Harmless when the lead
+			is small and badly wrong when it is not - someone rising out of a jump carries
+			nearly all of their lead vertically.
 		]]
-		if t then
-			local fallY = targetVelocity.Y * t - 0.5 * playerGravity * t * t
-			local settled = targetPos + Vector3.new(targetVelocity.X * t, fallY, targetVelocity.Z * t)
-			local floor = floorUnder(Vector3.new(settled.X, targetPos.Y, settled.Z))
-			if floor and settled.Y < floor then
-				settled = Vector3.new(settled.X, floor, settled.Z)
-			end
-			effectiveTargetPos = targetPos
-			effectiveTargetVel = (settled - targetPos) / t
+		local fallY = targetVelocity.Y * t - 0.5 * playerGravity * t * t
+		local settled = targetPos + Vector3.new(targetVelocity.X * t, fallY, targetVelocity.Z * t)
+		local floor = floorUnder(Vector3.new(settled.X, targetPos.Y, settled.Z))
+		if floor and settled.Y < floor then
+			settled = Vector3.new(settled.X, floor, settled.Z)
 		end
+		return t, targetPos, (settled - targetPos) / t
 	end
 
-	if t then
-		local disp = effectiveTargetPos - origin
-		local p, q, r = effectiveTargetVel.X, effectiveTargetVel.Y, effectiveTargetVel.Z
-		local h, j, k = disp.X, disp.Y, disp.Z
+	-- The velocity the shot has to leave with to arrive at that time.
+	local function launchVelocity(t, effPos, effVel)
+		local disp = effPos - origin
 		local l = -0.5 * gravity
-		local d = (h + p * t) / t
-		local e = (j + q * t - l * t * t) / t
-		local f2 = (k + r * t) / t
-		local aimDir = Vector3.new(d, e, f2).Unit
-		return origin + Vector3.new(d, e, f2), aimDir, t
-	elseif gravity == 0 then
+		return Vector3.new(
+			(disp.X + effVel.X * t) / t,
+			(disp.Y + effVel.Y * t - l * t * t) / t,
+			(disp.Z + effVel.Z * t) / t
+		)
+	end
+
+	--[[
+		Whether the shot can actually get there.
+
+		Walked along the parabola in segments rather than checked as a straight line,
+		because a straight line is not the path an arrow takes - it says a target behind a
+		low wall is unreachable when an arc clears it easily, and says one under an
+		overhang is reachable when the arc will bury itself in the ceiling.
+
+		Only the map is in the filter the caller hands down, so the target's own body
+		cannot count as an obstruction.
+	]]
+	local function arcClear(velocity, flight)
+		local previous, steps = origin, 8
+		for i = 1, steps do
+			local at = flight * (i / steps)
+			local point = origin + velocity * at - Vector3.new(0, 0.5 * gravity * at * at, 0)
+			if workspace:Raycast(previous, point - previous, params) then return false end
+			previous = point
+		end
+		return true
+	end
+
+	local first, second = solveInterceptTime(origin, projectileSpeed, gravity, targetPos, targetVelocity)
+
+	if first then
+		local t, effPos, effVel = settle(first)
+		local velocity = launchVelocity(t, effPos, effVel)
+
+		--[[
+			Over it, when going through it is not an option.
+
+			The flat shot is always preferred: it arrives soonest, which leaves the target
+			least time to move out of it. But when the map is between the two of you it
+			simply stops in the wall, and the lobbed arc the same solve already found may
+			drop straight onto them.
+
+			It is only ever taken when the flat one is known to be blocked and the lobbed
+			one is known to be clear, so a shot that works today keeps working.
+		]]
+		-- One ray before eight. An arc bows upward, so a clear straight line to them means
+		-- the flat shot is clear as well, and walking the parabola on every shot spends
+		-- eight raycasts to learn that. Only when the line is blocked is it worth asking
+		-- whether the arc gets over whatever is in the way.
+		local blocked = params and second and workspace:Raycast(origin, targetPos - origin, params)
+
+		if blocked and not arcClear(velocity, t) then
+			local altT, altPos, altVel = settle(second)
+			local lobbed = launchVelocity(altT, altPos, altVel)
+			if arcClear(lobbed, altT) then
+				return origin + lobbed, lobbed.Unit, altT
+			end
+		end
+
+		return origin + velocity, velocity.Unit, t
+	end
+
+	if gravity == 0 then
 		-- straight-line fallback for non-ballistic projectiles
 		local disp = targetPos - origin
 		local p, q, r = targetVelocity.X, targetVelocity.Y, targetVelocity.Z
