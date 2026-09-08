@@ -256,6 +256,28 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 			if math.abs(newT - t) < 1e-3 then t = newT break end
 			t = newT
 		end
+
+		--[[
+			The lead and the flight time have to belong to each other.
+
+			effectiveTargetVel is worked out to reach the predicted point in the t of that
+			pass, and then t is replaced by the solve that follows it. Aiming with the two
+			mismatched puts the shot at targetPos + vel * newT rather than at the point the
+			velocity was derived for, which scales the whole lead by newT/oldT.
+
+			That is harmless when the lead is small and badly wrong when it is not: someone
+			rising out of a jump carries most of their lead vertically, so the error lands
+			the shot well over their head, which is exactly where it was going.
+		]]
+		if t then
+			local fallY = targetVelocity.Y * t - 0.5 * playerGravity * t * t
+			local settled = targetPos + Vector3.new(targetVelocity.X * t, fallY, targetVelocity.Z * t)
+			if groundHit and settled.Y < groundHit.Position.Y then
+				settled = Vector3.new(settled.X, groundHit.Position.Y, settled.Z)
+			end
+			effectiveTargetPos = targetPos
+			effectiveTargetVel = (settled - targetPos) / t
+		end
 	end
 
 	if t then
