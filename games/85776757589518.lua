@@ -38,6 +38,7 @@ local cloneref = cloneref or function(o) return o end
 local playersService = cloneref(game:GetService('Players'))
 local replicatedStorage = cloneref(game:GetService('ReplicatedStorage'))
 local runService = cloneref(game:GetService('RunService'))
+local httpService = cloneref(game:GetService('HttpService'))
 local lplr = playersService.LocalPlayer
 local vain = shared.vain
 
@@ -1747,6 +1748,103 @@ run(function()
 		return true
 	end
 
+	--[[
+		A route walked once by hand, then followed.
+
+		The hard part of this farm was never the fighting, it was deciding where to walk.
+		Working that out from the geometry means barriers, drops, doorways and dead ends,
+		and when it ran out of ideas the fallback was to head twenty studs forward - which
+		is how it ended up facing a wall.
+
+		Recording sidesteps all of it. Walk the dungeon once with Record Route on and the
+		positions are kept; from then on the farm follows them, so every step is one a
+		person already proved walkable. Routes are stored per dungeon, so each map is
+		recorded once and reused. Nothing else changes: fighting, dodging and retreating
+		are untouched, and the route only answers "where next" when there is nothing left
+		to kill.
+	]]
+	local ROUTE_FOLDER = 'vain/profiles/dqroutes'
+	local RecordRoute, FollowRoute
+	local routePoints, routeIndex, routeMovedAt, lastRecorded = {}, 1, 0, nil
+
+	local function dungeonKey()
+		local value = workspace:FindFirstChild('dungeonName')
+		local name = value and value:IsA('StringValue') and value.Value
+		if not name or name == '' then name = 'Unknown' end
+		return (name:gsub('[^%w]+', '_'))
+	end
+
+	local function routeFile()
+		return ROUTE_FOLDER .. '/' .. dungeonKey() .. '.json'
+	end
+
+	local function saveRoute()
+		if #routePoints == 0 then return false end
+		local raw = {}
+		for _, point in routePoints do
+			table.insert(raw, {X = point.X, Y = point.Y, Z = point.Z})
+		end
+		local ok = pcall(function()
+			if makefolder and isfolder and not isfolder(ROUTE_FOLDER) then
+				makefolder(ROUTE_FOLDER)
+			end
+			writefile(routeFile(), httpService:JSONEncode(raw))
+		end)
+		return ok
+	end
+
+	local function loadRoute()
+		routePoints, routeIndex = {}, 1
+		pcall(function()
+			if not (isfile and isfile(routeFile())) then return end
+			for _, point in httpService:JSONDecode(readfile(routeFile())) do
+				table.insert(routePoints, Vector3.new(point.X, point.Y, point.Z))
+			end
+		end)
+		return #routePoints > 0
+	end
+
+	-- Rejoined wherever we are standing rather than at its start: after dying, or after
+	-- breaking off to fight something, the nearest point is the one that carries on.
+	local function nearestRouteIndex(position)
+		local best, bestDist = 1, math.huge
+		for i, point in routePoints do
+			local d = (point - position).Magnitude
+			if d < bestDist then best, bestDist = i, d end
+		end
+		return best
+	end
+
+	local function recordStep(position)
+		-- Only where you actually went. Sampling every pass would store hundreds of
+		-- points a metre apart and make the replay crawl between them.
+		if lastRecorded and (position - lastRecorded).Magnitude < 6 then return end
+		lastRecorded = position
+		table.insert(routePoints, position)
+	end
+
+	local function routeGoal(hrp)
+		if #routePoints == 0 or routeIndex > #routePoints then return nil end
+
+		-- Far from the point we were heading for means something moved us - a death, or a
+		-- fight that went somewhere else - so pick the route up again from here.
+		if (routePoints[routeIndex] - hrp.Position).Magnitude > 40 then
+			routeIndex = nearestRouteIndex(hrp.Position)
+			routeMovedAt = os.clock()
+		end
+
+		local point = routePoints[routeIndex]
+		-- Moved on once reached, or after a while regardless, so a single point that
+		-- cannot be stood on exactly does not hold up the rest of the route.
+		if (point - hrp.Position).Magnitude <= 8 or os.clock() - routeMovedAt > 4 then
+			routeIndex += 1
+			routeMovedAt = os.clock()
+			if routeIndex > #routePoints then return nil end
+			point = routePoints[routeIndex]
+		end
+		return point
+	end
+
 	AutoFarm = vain.Categories.Blatant:CreateModule({
 		Name = 'Auto Farm',
 		Tooltip = 'Clears the dungeon: fights every enemy with your weapon and Q/E, dodges telegraphed attacks, and backs off to recover when hurt',
@@ -1764,6 +1862,15 @@ run(function()
 			setupDodge()
 			clearPath()
 			moveGoal = nil
+
+			if FollowRoute and FollowRoute.Enabled then
+				loadRoute()
+				local hrp = lplr.Character and lplr.Character:FindFirstChild('HumanoidRootPart')
+				if hrp and #routePoints > 0 then
+					routeIndex = nearestRouteIndex(hrp.Position)
+				end
+			end
+			routeMovedAt = os.clock()
 
 			AutoFarm:Clean(runService.Heartbeat:Connect(function()
 				if not moving() or not moveGoal then return end
@@ -1826,6 +1933,12 @@ run(function()
 					local hrp = char and char:FindFirstChild('HumanoidRootPart')
 					local hum = char and char:FindFirstChildOfClass('Humanoid')
 					if not (char and hrp and hum) then return end
+
+					-- Recorded wherever you are, fighting or walking, so the route keeps
+					-- the detours that got you past something as well as the straight bits.
+					if RecordRoute and RecordRoute.Enabled then
+						recordStep(hrp.Position)
+					end
 
 					local peaceful = lplr:FindFirstChild('peaceful')
 					if peaceful and peaceful.Value == true then return end
@@ -1992,8 +2105,12 @@ run(function()
 							castAbilities(abilityUsed)
 						end
 					else
-						-- Room clear: head for whatever the server has opened up.
-						local goal = nextRoomGoal(hrp)
+						-- Room clear. The recorded route knows where the next one is; the
+						-- old guesswork stays as the fallback for a dungeon never walked.
+						local goal = (FollowRoute and FollowRoute.Enabled) and routeGoal(hrp) or nil
+						if not goal then
+							goal = nextRoomGoal(hrp)
+						end
 						if goal then
 							walkTo(hum, hrp, goal)
 						else
@@ -2040,6 +2157,23 @@ run(function()
 		Tooltip = "Follows the game's own navigation around corners and up stairs instead of walking into walls. Turn off only if it gets stuck" })
 	HealSwap = AutoFarm:CreateToggle({ Name = 'Heal Swap when low', Default = true,
 		Tooltip = 'When low, if you own a heal spell: swap to best spell-power weapon and heals, heal to full while backing off, then restore your set' })
+	RecordRoute = AutoFarm:CreateToggle({ Name = 'Record Route', Default = false,
+		Tooltip = 'Remembers where you walk, so the farm can follow it later',
+		Function = function(callback)
+			if callback then
+				routePoints, routeIndex, lastRecorded = {}, 1, nil
+				say('Recording. Walk the dungeon through once, then switch this off')
+			elseif saveRoute() then
+				say(#routePoints .. ' points saved for ' .. dungeonKey():gsub('_', ' '))
+			end
+		end })
+	FollowRoute = AutoFarm:CreateToggle({ Name = 'Follow Route', Default = true,
+		Tooltip = 'Walks the recorded route between fights instead of working the way out itself',
+		Function = function(callback)
+			if callback and not loadRoute() then
+				say('No route recorded for this dungeon yet')
+			end
+		end })
 	DodgeAttacks = AutoFarm:CreateToggle({ Name = 'Dodge Attacks', Default = true,
 		Tooltip = "Reads the game's own attack telegraphs and walks you out before they land. Works on every boss, no per-boss setup" })
 end)
