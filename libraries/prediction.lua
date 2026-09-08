@@ -187,14 +187,6 @@ function module.solveQuartic(c0, c1, c2, c3, c4)
 end
 
 --[[
-	The flatter of the two angles that reaches a fixed point.
-
-	Textbook ballistics: for a given speed and gravity there are two arcs onto a point,
-	and the smaller angle is the one that gets there soonest, which is the one that leaves
-	the target least time to walk out of it. Nothing under the root means the point cannot
-	be reached at that speed at all.
-]]
---[[
 	Aiming a thrown thing, the way it is actually done.
 
 	The intercept quartic this used to solve is the elegant answer and the wrong tool. It
