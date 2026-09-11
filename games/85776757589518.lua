@@ -3749,9 +3749,23 @@ run(function()
 					-- fighting, so a dodge in progress outranks everything below it. The
 					-- stepping itself belongs to the heartbeat above; this only keeps the
 					-- farm from issuing a walk that would fight it.
+					--[[
+						Dodging owns the feet. It does not own the hands.
+
+						This used to abandon the whole tick the moment a dodge was running -
+						no swings, no casts, nothing - and a boss like the Evil Scientist
+						keeps something on the floor almost continuously. The farm dodged
+						beautifully for the length of the fight and the health bar never
+						moved, which is exactly what was reported.
+
+						Attacks cost nothing to throw while walking: abilities reach much
+						further than the dodge ever takes us, and a swing needs only that
+						the target is in reach at the moment it is thrown.
+					]]
+					local dodging = false
 					if DodgeAttacks.Enabled then
 						watchProjectiles()
-						if dodgeGoal then return end
+						dodging = dodgeGoal ~= nil
 					end
 
 					local hpFrac = hum.MaxHealth > 0 and hum.Health / hum.MaxHealth or 1
@@ -3767,7 +3781,7 @@ run(function()
 							than immunity, so Keep Away decides how much.
 						]]
 						local _, part, dist = nearestEnemy(hrp.Position, currentRoom())
-						if part and (dist or 0) < KeepAway.Value then
+						if part and (dist or 0) < KeepAway.Value and not dodging then
 							local away = (hrp.Position - part.Position) * Vector3.new(1, 0, 1)
 							away = away.Magnitude > 0.1 and away.Unit or hrp.CFrame.LookVector
 							clearPath()
@@ -3844,7 +3858,11 @@ run(function()
 						]]
 						local settling = os.clock() < settleUntil
 
-						if crowded > 0 then
+						if dodging then
+							-- The dodge is steering. Everything below would only argue with it,
+							-- but the casting above and the swing below still happen.
+							clearPath()
+						elseif crowded > 0 then
 							-- Something is inside the distance we hold: give up just enough
 							-- ground to be outside it again, not a retreat across the room.
 							clearPath()
@@ -3907,7 +3925,10 @@ run(function()
 						end
 					else
 						local goal = nextRoomGoal(hrp)
-						if goal then
+						if dodging then
+							-- Travelling can wait until whatever is on the floor has gone.
+							clearPath()
+						elseif goal then
 							walkTo(hum, hrp, goal)
 						else
 							-- Nowhere to go. Walking twenty studs in whatever direction we
@@ -3933,7 +3954,7 @@ run(function()
 		Tooltip = 'How far to put between you and the nearest enemy while recovering (default 70)' })
 	AttackRange = AutoFarm:CreateSlider({ Name = 'Attack Range', Min = 4, Max = 60, Default = 12, Suffix = ' studs',
 		Tooltip = 'How close to get before swinging. Melee wants this low, a staff can sit further back (default 12)' })
-	AbilityRange = AutoFarm:CreateSlider({ Name = 'Ability Range', Min = 10, Max = 120, Default = 25, Suffix = ' studs',
+	AbilityRange = AutoFarm:CreateSlider({ Name = 'Ability Range', Min = 10, Max = 120, Default = 35, Suffix = ' studs',
 		Tooltip = 'Only cast Q/E at a target this close, so casts are not thrown away out of reach. Does not change where the farm stands (default 25)' })
 	FarmDelay = AutoFarm:CreateSlider({ Name = 'Loop Delay', Min = 0, Max = 0.5, Default = 0.1, Decimal = 100, Suffix = 's',
 		Tooltip = 'Time between farm ticks' })
