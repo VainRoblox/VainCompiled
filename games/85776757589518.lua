@@ -1069,9 +1069,6 @@ run(function()
 	]]
 	local settleUntil, dodgeRestUntil = 0, 0
 
-	-- While this is in the future, movement lifts over whatever it is caught on. Declared
-	-- up here because both the stepper and the navigator need it.
-	local climbUntil = 0
 
 
 	--[[
@@ -3033,7 +3030,7 @@ run(function()
 			the same per-frame budget, just without needing floor underfoot. Flying already
 			behaves on this server, so nothing new is being risked.
 		]]
-		if mode() == 'Fly' or os.clock() < climbUntil then
+		if mode() == 'Fly' then
 			local direct = goal - hrp.Position
 			local range = direct.Magnitude
 			if range < 0.5 then return end
@@ -3386,6 +3383,14 @@ run(function()
 		nav.calledAt = now
 		local stuck = now - nav.movedAt > 1.5
 
+		-- Somewhere we demonstrably stood a moment ago, kept for backing out of a wedge.
+		nav.trail = nav.trail or {}
+		local last = nav.trail[#nav.trail]
+		if not last or (pos - last).Magnitude > 6 then
+			table.insert(nav.trail, pos)
+			if #nav.trail > 12 then table.remove(nav.trail, 1) end
+		end
+
 		local pathing = UsePathfinding == nil or UsePathfinding.Enabled
 
 		--[[
@@ -3437,20 +3442,37 @@ run(function()
 		end
 
 		--[[
-			Sidestepping did not free us either, so go over it.
+			Sidestepping did not free us, so leave the way we came.
 
-			A staircase's underside, a corner behind a gear, a lip the stepper will not take:
-			these have no sideways answer, and every rebuilt route begins with the same
-			refused step. Rather than keep trying, movement lifts for a moment - the flying
-			path, at walking pace - which clears the obstruction and lands on the far side.
+			Lifting over the obstruction worked and got pulled back for it, which settles
+			that: rising off the floor is not something this server accepts, however slowly
+			it is done. Walking is, and the one route that is certainly walkable from a wedge
+			is the one that got us into it.
 
-			Only after going round has actually been tried, so ordinary walking is never
-			replaced by this.
+			So the last few seconds of positions are kept, and when nothing else frees us the
+			farm retraces to one of them - out from under the stairs, back into the open,
+			where the route it already has becomes walkable again.
 		]]
-		if stuck and nav.sidestepAt and now - nav.sidestepAt > 1.5 and now > climbUntil + 3 then
-			climbUntil = now + 2
-			nav.movedAt = now
-			say('climbing over an obstruction')
+		if stuck and nav.sidestepAt and now - nav.sidestepAt > 1.5 and now > (nav.backedAt or 0) + 4 then
+			for i = #(nav.trail or {}), 1, -1 do
+				local mark = nav.trail[i]
+				local gap = (mark - pos).Magnitude
+				if gap > 8 and gap < 40 and clearLine(pos, mark, true) then
+					nav.backTo, nav.backUntil, nav.backedAt = mark, now + 1.5, now
+					nav.movedAt = now
+					say('backing out of a wedge')
+					break
+				end
+			end
+		end
+
+		if nav.backTo and now < (nav.backUntil or 0) then
+			goTo(hum, hrp, nav.backTo)
+			if (pos - nav.backTo).Magnitude < 4 then
+				nav.backTo = nil
+				clearPath()
+			end
+			return
 		end
 
 		if stuck and now - (nav.sidestepAt or 0) > 2 then
@@ -3502,11 +3524,28 @@ run(function()
 				and it is part of why routes looked like they went odd ways. A later waypoint
 				in plain sight, on floor, at about our height is walked at directly.
 			]]
-			for ahead = math.min(#wps, nav.index + 3), nav.index + 1, -1 do
-				local wp = wps[ahead].Position + Vector3.new(0, 3, 0)
-				if math.abs(wp.Y - pos.Y) < 3 and clearLine(pos, wp) and groundAt(pos:Lerp(wp, 0.5), pos.Y) then
-					nav.index = ahead
-					break
+			--[[
+				Never cut a corner that is a staircase.
+
+				Skipping ahead to a visible waypoint is right on flat ground and wrong the
+				moment height is involved: the line to a waypoint part way up a flight passes
+				straight through the steps, or under them, which is how the farm ends up
+				pressed into the underside of a staircase instead of walking up the middle of
+				it. Where the route climbs, the route is followed step by step.
+			]]
+			local climbing = false
+			for ahead = nav.index, math.min(#wps, nav.index + 3) do
+				if math.abs(wps[ahead].Position.Y - pos.Y) > 2.5 then climbing = true break end
+			end
+
+			if not climbing then
+				for ahead = math.min(#wps, nav.index + 3), nav.index + 1, -1 do
+					local wp = wps[ahead].Position + Vector3.new(0, 3, 0)
+					if math.abs(wp.Y - pos.Y) < 2 and clearLine(pos, wp, true)
+						and groundAt(pos:Lerp(wp, 0.5), pos.Y) then
+						nav.index = ahead
+						break
+					end
 				end
 			end
 
