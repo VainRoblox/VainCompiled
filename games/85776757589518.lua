@@ -1383,6 +1383,36 @@ run(function()
 		return false
 	end
 
+	--[[
+		Where to stand when the floor itself is the attack.
+
+		Several bosses damage the entire arena except for marked circles - Show Safe Spot,
+		Show Safe Zones, Safe Color Zone, the memory patterns. Treating those circles as
+		"not dangerous" is only half an answer: the dodge still went looking for open floor,
+		and the open floor is the part that kills you. The answer to this mechanic is to
+		walk into the circle and stay in it.
+	]]
+	local function nearestSafeSpot(pos)
+		local best, bestDist
+		for i = #safeZones, 1, -1 do
+			local part = safeZones[i]
+			if not part.Parent then
+				table.remove(safeZones, i)
+			else
+				local cf = zoneShape(part)
+				if cf then
+					local point = Vector3.new(cf.Position.X, pos.Y, cf.Position.Z)
+					local gap = (point - pos).Magnitude
+					if not bestDist or gap < bestDist then best, bestDist = point, gap end
+				end
+			end
+		end
+		if not best then return nil end
+
+		local y = groundAt(best, pos.Y)
+		return y and Vector3.new(best.X, y, best.Z) or best
+	end
+
 	-- Arena-wide, and therefore the kind a safe circle protects you from.
 	local function hugeZone(d)
 		if d.part then
@@ -1549,8 +1579,27 @@ run(function()
 			end
 		end
 
+		-- What we are fighting. Needed here as well as for scoring, because the room it
+		-- stands in is the room the fight is in.
+		local anchor = fightTarget and fightTarget.Parent and fightTarget.Position or nil
+
 		local respectBorders = not insideBarrier(pos, 0, nearBorders)
-		local respectRoom = room ~= nil and inRoom(pos, room, 6)
+
+		--[[
+			The room is the arena, not merely wherever we happen to be standing.
+
+			Bounding a dodge to the room only while already inside it meant that the instant
+			one step carried us through the doorway, every rule about the room stopped
+			applying - so the next dodge went further out, and the next further still. That
+			is how the farm ends up in a corridor with the boss at full health: a sweeping
+			attack is escaped most easily by leaving its reach entirely, and its reach ends
+			outside the room.
+
+			If the thing we are fighting is in the room, spots outside the room are not
+			spots, whichever side of the doorway we are on.
+		]]
+		local respectRoom = room ~= nil
+			and (inRoom(pos, room, 6) or (anchor ~= nil and inRoom(anchor, room, 6)))
 
 		--[[
 			Out of the attack and out of reach, not out of the attack and into the pack.
@@ -1609,8 +1658,8 @@ run(function()
 			spot exists, only spots a little closer or further are still worth considering,
 			which keeps this from turning into a search of the whole room.
 		]]
-		local anchor = fightTarget and fightTarget.Parent and fightTarget.Position or nil
 		local band = keepClear + 4
+		local sheltered = #safeZones > 0 and inSafeZone(pos)
 
 		local function search(useRoom, m, leash)
 			local escaping = escapingAt(m)
@@ -1648,6 +1697,12 @@ run(function()
 					what we are fighting; only the final, desperate pass drops the leash.
 				]]
 				if not stale and leash and anchor and (point - anchor).Magnitude > leash then
+					stale = true
+				end
+
+				-- Standing in the one circle the attack cannot reach: every step out of it
+				-- is a step into the attack, however clear that ground looks.
+				if not stale and sheltered and not inSafeZone(point) then
 					stale = true
 				end
 
@@ -2922,6 +2977,28 @@ run(function()
 					]]
 					local fresh = dangerAdded
 					dangerAdded = false
+
+					--[[
+						A marked circle outranks every other kind of dodging.
+
+						When a boss turns the whole arena into the attack, the only safe
+						ground is the circle it marked - so this is not a question of finding
+						clear floor, it is a question of being in that circle before the
+						attack lands. Anything else the dodge might do is wrong here.
+					]]
+					if #safeZones > 0 and not inSafeZone(pos) then
+						local refuge = nearestSafeSpot(pos)
+						if refuge then
+							if not dodgeGoal then
+								clearPath()
+								if not moving() then hum:MoveTo(pos) end
+								say('moving into the safe zone')
+							end
+							dodgeGoal = refuge
+							stepTo(hrp, hum, refuge)
+							return
+						end
+					end
 
 					-- Clear of it now, so the rest of the walk to a spot that mattered a
 					-- moment ago is time the farm should have back. Judged a little wider
