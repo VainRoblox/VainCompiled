@@ -747,13 +747,39 @@ run(function()
 	losParams.FilterType = Enum.RaycastFilterType.Exclude
 	losParams.RespectCanCollide = true
 
+	--[[
+		Bodies are not walls, whoever they belong to and whether or not they are alive.
+
+		Only our own character and the enemies currently being fought were ignored by these
+		rays, so a teammate standing in a doorway, or the corpse of something just killed,
+		read as solid geometry - every step into it was refused and the farm stood there,
+		looking for all the world like it was wedged against a wall. The probe caught it
+		exactly: a clear route to a goal twenty-eight studs away, and a HumanoidRootPart five
+		studs in front.
+
+		The enemy folders are excluded whole rather than enemy by enemy, which covers the
+		dead as well as the living, and every player's character goes with them.
+	]]
+	local allEnemyFolders = enemyFolders
+
 	local function refreshSkip()
 		if os.clock() - footSkipAt < 0.5 then return end
 		footSkipAt = os.clock()
+
 		local skip = {lplr.Character}
+
+		for _, plr in playersService:GetPlayers() do
+			if plr.Character then table.insert(skip, plr.Character) end
+		end
+
+		for _, folder in allEnemyFolders() do
+			if folder.Parent then table.insert(skip, folder) end
+		end
+
 		for _, m in enemyCache do
 			if m and m.Parent then table.insert(skip, m) end
 		end
+
 		footParams.FilterDescendantsInstances = skip
 		losParams.FilterDescendantsInstances = skip
 	end
