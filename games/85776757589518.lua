@@ -2533,14 +2533,31 @@ run(function()
 		included, which can sit inside a wall. The spawn points are by definition places
 		the game puts something that has to be reachable.
 	]]
-	local function roomPoint(room)
+	--[[
+		A place in the room to walk to, and with somewhere to walk from, the nearest one.
+
+		Averaging every spawn point gives the middle of the room, which on a room built
+		around a pit, a staircase or a raised platform is a point inside the scenery - a goal
+		the pathfinder rejects and the walk presses into. The nearest spawn is a place the
+		game itself puts something that has to be reachable, and it is the end of the room
+		we are arriving at.
+	]]
+	local function roomPoint(room, from)
 		local total, count = Vector3.zero, 0
+		local nearest, nearestGap
+
 		for _, d in room:GetDescendants() do
 			if d:IsA('BasePart') and d.Name == 'spawn' then
 				total += d.Position
 				count += 1
+				if from then
+					local gap = (d.Position - from).Magnitude
+					if not nearestGap or gap < nearestGap then nearest, nearestGap = d.Position, gap end
+				end
 			end
 		end
+
+		if nearest then return nearest end
 		if count > 0 then return total / count end
 
 		local ok, pivot = pcall(function() return room:GetPivot().Position end)
@@ -3138,7 +3155,18 @@ run(function()
 		local stuck = now - nav.movedAt > 1.5
 
 		local pathing = UsePathfinding == nil or UsePathfinding.Enabled
-		local open = clearLine(pos, goal, true)
+
+		--[[
+			Open means reachable, which is not the same as unobstructed.
+
+			The sight test is cast flat - it answers "is there a wall between these two
+			columns of air", and says nothing about height. A room up a flight of stairs is
+			therefore "in plain sight" from the bottom of them, so the farm skipped
+			pathfinding and walked at it, into the underside of the staircase, and stayed
+			there. Anything meaningfully above or below us needs a route, whatever the flat
+			ray says.
+		]]
+		local open = clearLine(pos, goal, true) and math.abs(goal.Y - pos.Y) <= 6
 
 		--[[
 			Straight there only when straight there is actually open.
@@ -3291,10 +3319,10 @@ run(function()
 		if not dungeon then return nil end
 
 		local room = currentRoom()
-		if room then return roomPoint(room) end
+		if room then return roomPoint(room, hrp.Position) end
 
 		local boss = dungeon:FindFirstChild('bossRoom')
-		local point = boss and roomPoint(boss)
+		local point = boss and roomPoint(boss, hrp.Position)
 		-- Standing in it already, so there is nothing further to walk at.
 		if point and (point - hrp.Position).Magnitude < 15 then return nil end
 		return point
