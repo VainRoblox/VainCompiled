@@ -949,6 +949,21 @@ run(function()
 	local lastPlanAt = 0
 
 	--[[
+		Two timers that stop the farm arguing with itself.
+
+		A dodge ends by stepping clear of an attack; the farm's very next tick sees the
+		target further away than it likes and walks straight back toward it, into the zone
+		it just left, which starts the next dodge. From outside that is a character shuffling
+		forward and back on the spot and never fighting. Settling for a moment after a dodge
+		breaks the loop.
+
+		The second is for the opposite failure: when every spot the search offers turns out
+		to be unreachable, dodging achieves nothing at all, and continuing to try it every
+		frame just holds the farm still. Better to stop dodging briefly and let it act.
+	]]
+	local settleUntil, dodgeRestUntil = 0, 0
+
+	--[[
 		Spots the stepper would not actually go to.
 
 		A dodge spot behind a wall, up a ledge or over a border is chosen, refused by every
@@ -1363,18 +1378,26 @@ run(function()
 		]]
 		-- Where it will be shortly, by travel and by turn, worked out once for all three
 		-- heights rather than per height.
+		--[[
+			Looked ahead, but not so far that everything is dangerous.
+
+			A sweep projected a full turn ahead paints an arc across most of the arena, and
+			a dodge that treats all of it as live has nowhere to stand and simply runs - so
+			the turn is read a third of a second forward and no further, while travel, which
+			is much better behaved, keeps its two steps.
+		]]
 		local futures
 		if d.velocity or d.spin then
 			futures = {}
 			for _, ahead in { 0.35, 0.7 } do
-				local future = cf
-				if d.velocity then future += d.velocity * ahead end
-				if d.spin then
-					future = CFrame.new(future.Position)
-						* CFrame.Angles(0, d.spin * ahead, 0)
-						* (future - future.Position)
+				if d.velocity then
+					table.insert(futures, cf + d.velocity * ahead)
 				end
-				table.insert(futures, future)
+			end
+			if d.spin then
+				table.insert(futures, CFrame.new(cf.Position)
+					* CFrame.Angles(0, d.spin * 0.3, 0)
+					* (cf - cf.Position))
 			end
 		end
 
@@ -1928,7 +1951,15 @@ run(function()
 			end
 
 			if best then return best, true end
-			return roomy or detour or fallback, false
+			--[[
+				A detour is the last thing to try, not the second.
+
+				A detour is a spot that is clear when you arrive but whose route crosses an
+				attack on the way - which is walking through the fire to stand beyond it, and
+				from outside it looks exactly like dodging INTO an attack. The least-covered
+				spot is always a genuine improvement on standing still, so it comes first.
+			]]
+			return roomy or fallback or detour, false
 		end
 
 		--[[
@@ -3276,7 +3307,18 @@ run(function()
 					-- Clear of it now, so the rest of the walk to a spot that mattered a
 					-- moment ago is time the farm should have back. Judged a little wider
 					-- than the danger itself, so it does not stop on the edge.
-					if dodgeGoal and not anyDanger(pos, 7) then dodgeGoal = nil end
+					if dodgeGoal and not anyDanger(pos, 7) then
+						dodgeGoal = nil
+						-- Clear of it: hold this ground for a moment rather than letting the
+						-- farm walk straight back into what was just dodged.
+						settleUntil = os.clock() + 0.4
+					end
+
+					-- Dodging has been getting nowhere, so leave it alone briefly.
+					if os.clock() < dodgeRestUntil then
+						dodgeGoal = nil
+						return
+					end
 
 					local stale = not dodgeGoal
 						or (dodgeGoal - pos).Magnitude < 1.5
@@ -3346,7 +3388,13 @@ run(function()
 							table.insert(badSpots, {pos = dodgeGoal, at = os.clock()})
 							dodgeStalls += 1
 							dodgeGoal = dodgeStalls < 3 and dodgeTarget(pos) or nil
-							if not dodgeGoal then lastPlanFailed = os.clock() end
+							if not dodgeGoal then
+								lastPlanFailed = os.clock()
+								-- Three spots in a row it could not reach: stop trying for a
+								-- moment instead of standing here doing this.
+								dodgeRestUntil = os.clock() + 0.7
+								dodgeStalls = 0
+							end
 						end
 					end
 
@@ -3536,18 +3584,32 @@ run(function()
 							castAbilities(abilityUsed)
 						end
 
-						local push, crowded = crowding(hrp.Position, keep)
+						--[[
+							Deadbands, so held distance is a range and not a tightrope.
 
-						if crowded > 0 then
+							Backing off at exactly Keep Distance and closing at exactly the
+							far edge means a stud of drift either way starts a walk, and the
+							walk overshoots, and it starts the opposite walk - the shuffle
+							back and forth that never settles and never fights. A stud and a
+							half of slack on each edge costs nothing and stops all of it.
+						]]
+						local push, crowded = crowding(hrp.Position, keep - 2)
+
+						if os.clock() < settleUntil then
+							-- Just dodged. Hold this ground for a moment: walking back in now
+							-- is walking into what we stepped out of.
+							clearPath()
+							if not moving() then hum:MoveTo(hrp.Position) end
+						elseif crowded > 0 then
 							-- Something is inside the distance we hold: give up just enough
 							-- ground to be outside it again, not a retreat across the room.
 							clearPath()
 							local out = push.Magnitude > 0.1 and push.Unit or away
 							goTo(hum, hrp, hrp.Position + out * 6)
-						elseif gap < keep then
+						elseif gap < keep - 1.5 then
 							clearPath()
 							goTo(hum, hrp, hrp.Position + away * ((keep - gap) + 2))
-						elseif gap > band then
+						elseif gap > band + 1.5 then
 							-- Close the gap, by route or by line depending on what is between.
 							walkTo(hum, hrp, part.Position)
 						elseif Strafe ~= nil and Strafe.Enabled then
