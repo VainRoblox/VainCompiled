@@ -1292,8 +1292,30 @@ run(function()
 		return string.lower(name):find('safe') ~= nil or name:find('Good') ~= nil
 	end
 
+	--[[
+		The cheap question first, because most parts are not attacks.
+
+		This runs for every part that appears in the workspace, and a dungeon streams rooms
+		in as you clear them - the log caught bursts of fourteen hundred parts in a single
+		second. Walking sixteen ancestors and doing name lookups for each of those is what
+		stalled the farm for a moment exactly when a room loaded, which is the random freeze
+		that got the character killed.
+
+		An attack is either a part named as a damage volume, or a part whose model is named
+		in the game's own attack list. Both are answered by looking at the part and its
+		parent - two table lookups - and everything else leaves immediately.
+	]]
+	local function couldBeAttack(part)
+		if HITBOX_NAMES[part.Name] or attackNames[part.Name] then return true end
+		local parent = part.Parent
+		if parent and (attackNames[parent.Name] or isSafeName(parent.Name)) then return true end
+		local above = parent and parent.Parent
+		return above ~= nil and attackNames[above.Name] == true
+	end
+
 	local function registerDanger(part)
 		if not part:IsA('BasePart') then return end
+		if not couldBeAttack(part) then return end
 
 		local char = lplr.Character
 		if char and part:IsDescendantOf(char) then return end
@@ -3470,11 +3492,25 @@ run(function()
 		local dungeon = workspace:FindFirstChild('dungeon')
 		if not dungeon then return nil end
 
+		--[[
+			The near edge to arrive at, the middle once inside.
+
+			Aiming at the nearest spawn point is right while walking to a room - it is the
+			end we are arriving at, and it is reachable. It is wrong once we are standing in
+			the room: the nearest spawn is then the doorway behind us, so the farm arrives,
+			decides it is already there, and stops just inside the entrance with nothing to
+			do. That is the character standing in a corner of the boss room while the fight
+			waits further in.
+		]]
 		local room = currentRoom()
-		if room then return roomPoint(room, hrp.Position) end
+		if room then
+			local inside = inRoom(hrp.Position, room, -4)
+			return roomPoint(room, not inside and hrp.Position or nil)
+		end
 
 		local boss = dungeon:FindFirstChild('bossRoom')
-		local point = boss and roomPoint(boss, hrp.Position)
+		local inside = boss ~= nil and inRoom(hrp.Position, boss, -4)
+		local point = boss and roomPoint(boss, not inside and hrp.Position or nil)
 		-- Standing in it already, so there is nothing further to walk at.
 		if point and (point - hrp.Position).Magnitude < 15 then return nil end
 		return point
