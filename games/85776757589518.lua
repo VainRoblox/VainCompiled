@@ -780,15 +780,28 @@ run(function()
 		return workspace:Raycast(from - Vector3.new(0, 1.2, 0), reach, losParams) ~= nil
 	end
 
-	local function groundAt(position, fallbackY)
+	--[[
+		Two different questions, with two different answers.
+
+		"Can I step there this frame" must be strict, because a step onto something four
+		studs up is a climb and the server notices. "Is that a place a person could stand"
+		is a much softer question, and answering it with the strict limits is why dodging
+		worked in Fly - which skips the check altogether - and failed on foot: a boss arena
+		with steps and tiers had most of its floor rejected, the search came back empty, and
+		the farm stood in the attack.
+
+		So the caller says which it is asking. Choosing a spot up a step is fine: getting
+		there is the stepper's problem, and it will refuse the climb if it really cannot.
+	]]
+	local function groundAt(position, fallbackY, rise, drop)
 		refreshSkip()
 
 		local hit = workspace:Raycast(position + Vector3.new(0, 12, 0), Vector3.new(0, -80, 0), footParams)
 		if not hit then return nil end
 
 		local y = hit.Position.Y + 3
-		if y > fallbackY + MAX_RISE then return nil end
-		if y < fallbackY - MAX_DROP then return nil end
+		if y > fallbackY + (rise or MAX_RISE) then return nil end
+		if y < fallbackY - (drop or MAX_DROP) then return nil end
 		return y
 	end
 
@@ -1271,9 +1284,17 @@ run(function()
 			return
 		end
 
+		--[[
+			Dangerous for a few seconds, not for a quarter of a minute.
+
+			Most of these resolve within a second or two and the game clears them up, so the
+			long window was only ever a backstop - but anything the game leaves lying about
+			stayed "live" for fourteen seconds, and the farm went on dodging an attack that
+			had already happened. That is dodging correctly once and then fleeing nothing.
+		]]
 		table.insert(dangers, {
 			part = part,
-			expire = workspace:GetServerTimeNow() + 14,
+			expire = workspace:GetServerTimeNow() + 6,
 			born = os.clock(),
 			pos = part.Position,
 		})
@@ -1874,7 +1895,9 @@ run(function()
 		-- eighty raycasts is what a dodge costing most of a frame looks like.
 		local rays = 0
 
-		local function search(useRoom, m, leash, needSight)
+		-- How much height a spot may differ by and still count as somewhere to stand. The
+		-- first passes keep it tight; the later ones take a spot up a step over no spot.
+		local function search(useRoom, m, leash, needSight, rise, drop)
 			local escaping = escapingAt(m)
 			local fallback, fallbackCount = nil, dangerCount(pos, m)
 			local detour = nil
@@ -1947,7 +1970,7 @@ run(function()
 						-- since an answer matters more than the frame it costs.
 						if rays >= 110 and best then break end
 						rays += 1
-						y = groundAt(point, pos.Y)
+						y = groundAt(point, pos.Y, rise, drop)
 					else
 						y = point.Y
 					end
@@ -2065,16 +2088,24 @@ run(function()
 			spot = spot or found
 		end
 
+		-- Same rules, but a spot on a step or a tier now counts as floor. This alone is
+		-- most of why walking failed where flying worked.
+		do
+			local found, clean = search(respectRoom, 2, 40, true, 14, 40)
+			if clean then return found end
+			spot = spot or found
+		end
+
 		-- Nothing fits the rules, so they come off: sight of the boss first, then the
 		-- leash, then the room itself.
 		-- The last passes ask only to be out of the attack at all, not to be comfortable:
 		-- a stud past the edge of a lane beats standing inside it.
-		local found, clean = search(respectRoom, 0.75, nil, false)
+		local found, clean = search(respectRoom, 0.75, nil, false, 14, 40)
 		if clean then return found end
 		spot = spot or found
 
 		if respectRoom then
-			local wider, widerClean = search(false, 0.75, nil, false)
+			local wider, widerClean = search(false, 0.75, nil, false, 14, 40)
 			if widerClean then return wider end
 			spot = spot or wider
 		end
@@ -3650,7 +3681,27 @@ run(function()
 								-- A humanoid mid-walk will keep walking while we step, and
 								-- the two fight each other. Stop it once, here.
 								if not moving() then hum:MoveTo(pos) end
-								say(string.format('dodging to %.0f studs away', (safe - pos).Magnitude))
+								--[[
+									Named, so a pointless dodge can be identified.
+
+									"It dodges something that is not there" is impossible to
+									act on; the name of the part it is running from, and how
+									long that part has been around, says immediately whether
+									it is a real attack, a leftover, or scenery matched by
+									name. Debug only.
+								]]
+								local from = {}
+								for _, d in dangers do
+									if #from < 3 and d.part and inDanger(pos, d, 5) then
+										local owner = d.part.Parent
+										table.insert(from, string.format('%s/%s %.1fs',
+											owner and owner.Name or '?', d.part.Name,
+											os.clock() - (d.born or os.clock())))
+									end
+								end
+								say(string.format('dodging %.0f studs from %s',
+									(safe - pos).Magnitude,
+									#from > 0 and table.concat(from, ', ') or 'a telegraph'))
 							end
 							if not dodgeGoal then dodgeStalls = 0 end
 							dodgeGoal = safe
