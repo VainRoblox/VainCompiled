@@ -745,13 +745,26 @@ run(function()
 		stair or a slope is not mistaken for one. Bodies are skipped, so an enemy standing
 		in the way is not a wall; only collidable geometry counts.
 	]]
-	local function clearLine(from, to)
+	--[[
+		The low pass matters for walking, not for seeing.
+
+		Casting at the root and above misses everything shorter than the character's chest -
+		crates, rubble, railings, the lip of a platform - all of which stop a walk dead. That
+		is the farm pressed against an object making no progress while every check says the
+		way ahead is clear.
+
+		It is only asked for when the question is "can I walk there", because a knee-high
+		ledge does not stop an ability, and treating it as cover would have the farm refusing
+		perfectly good ground in a boss fight.
+	]]
+	local function clearLine(from, to, low)
 		refreshSkip()
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
 		if flat.Magnitude < 0.05 then return true end
 		for _, lift in { 0, 1.5 } do
 			if workspace:Raycast(from + Vector3.new(0, lift, 0), flat, losParams) then return false end
 		end
+		if low and workspace:Raycast(from - Vector3.new(0, 1.2, 0), flat, losParams) then return false end
 		return true
 	end
 
@@ -761,7 +774,10 @@ run(function()
 		refreshSkip()
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
 		if flat.Magnitude < 0.05 then return false end
-		return workspace:Raycast(from, flat.Unit * (flat.Magnitude + 1.5), losParams) ~= nil
+		local reach = flat.Unit * (flat.Magnitude + 1.5)
+		if workspace:Raycast(from, reach, losParams) then return true end
+		-- Knee height too: a step is climbed, a crate is walked into.
+		return workspace:Raycast(from - Vector3.new(0, 1.2, 0), reach, losParams) ~= nil
 	end
 
 	local function groundAt(position, fallbackY)
@@ -2769,16 +2785,23 @@ run(function()
 		local now = os.clock()
 		refreshBarriers()
 
-		-- Progress, measured only while actually being asked to go somewhere: time spent
-		-- fighting or holding still is not being stuck.
-		if now - nav.calledAt > 0.5 or not nav.lastPos or (pos - nav.lastPos).Magnitude > 1.5 then
-			nav.lastPos, nav.movedAt = pos, now
+		--[[
+			Progress is getting nearer, not merely moving.
+
+			Measuring raw movement calls a character sliding along the face of a crate
+			"moving", so the stuck check never fired and it scraped along the object
+			indefinitely. What matters is whether the distance to where we are going is
+			actually coming down.
+		]]
+		local flatGap = (Vector3.new(goal.X, 0, goal.Z) - Vector3.new(pos.X, 0, pos.Z)).Magnitude
+		if now - nav.calledAt > 0.5 or not nav.lastGap or flatGap < nav.lastGap - 1.5 then
+			nav.lastGap, nav.movedAt = flatGap, now
 		end
 		nav.calledAt = now
-		local stuck = now - nav.movedAt > 1.2
+		local stuck = now - nav.movedAt > 1.5
 
 		local pathing = UsePathfinding == nil or UsePathfinding.Enabled
-		local open = clearLine(pos, goal)
+		local open = clearLine(pos, goal, true)
 
 		--[[
 			Straight there only when straight there is actually open.
@@ -2801,6 +2824,37 @@ run(function()
 			buildPath(pos, goal)
 			-- A fresh route gets a fair chance before it too is called stuck.
 			if stuck then nav.movedAt = now end
+		end
+
+		--[[
+			Wedged, and a new route will not help.
+
+			Pressed into a corner or the side of an object, every route out starts with the
+			step that is being refused, so rebuilding produces the same answer and it stays
+			there. Stepping deliberately sideways breaks the contact, and from a stud to the
+			left the route that exists becomes walkable again.
+		]]
+		if stuck and now < (nav.sidestepUntil or 0) and nav.sidestep then
+			goTo(hum, hrp, nav.sidestep)
+			return
+		end
+
+		if stuck and now - (nav.sidestepAt or 0) > 2 then
+			local ahead = Vector3.new(goal.X - pos.X, 0, goal.Z - pos.Z)
+			ahead = ahead.Magnitude > 0.1 and ahead.Unit or hrp.CFrame.LookVector
+			local side = Vector3.new(-ahead.Z, 0, ahead.X)
+
+			for _, dir in { 1, -1 } do
+				local probe = pos + side * (12 * dir)
+				local y = groundAt(probe, pos.Y)
+				if y and clearLine(pos, probe, true) and not insideBarrier(probe, 1) then
+					nav.sidestep = Vector3.new(probe.X, y, probe.Z)
+					nav.sidestepUntil, nav.sidestepAt = now + 0.6, now
+					if not moving() then hum.Jump = true end
+					goTo(hum, hrp, nav.sidestep)
+					return
+				end
+			end
 		end
 
 		wps = nav.waypoints
@@ -3610,8 +3664,16 @@ run(function()
 							clearPath()
 							goTo(hum, hrp, hrp.Position + away * ((keep - gap) + 2))
 						elseif gap > band + 1.5 then
-							-- Close the gap, by route or by line depending on what is between.
-							walkTo(hum, hrp, part.Position)
+							--[[
+								Walked to where we want to stand, not into the enemy.
+
+								The goal used to be the enemy's own position - a point inside
+								a body, which the pathfinder rejects as occupied, and which
+								the walk then presses into until something else interrupts.
+								Standing distance out on our own side of it is both reachable
+								and where we actually want to end up.
+							]]
+							walkTo(hum, hrp, part.Position + away * keep)
 						elseif Strafe ~= nil and Strafe.Enabled then
 							clearPath()
 
