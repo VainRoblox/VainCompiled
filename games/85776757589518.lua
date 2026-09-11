@@ -2726,15 +2726,22 @@ run(function()
 		whatever was just cast in the fight; coming back, the heals we have this moment
 		finished casting.
 	]]
+	local function slotCooldown(slot)
+		for _, child in lplr.Backpack:GetChildren() do
+			local marker = child:FindFirstChild('abilitySlot')
+			if marker and marker.Value == slot then
+				local cd = child:FindFirstChild('cooldown')
+				return cd and tonumber(cd.Value) or 0
+			end
+		end
+		return 0
+	end
+
 	local function abilityCooldown()
 		local worst = 0
-		for _, child in lplr.Backpack:GetChildren() do
-			local slot = child:FindFirstChild('abilitySlot')
-			if slot and table.find(ABILITY_SLOTS, slot.Value) then
-				local cd = child:FindFirstChild('cooldown')
-				local left = cd and tonumber(cd.Value) or 0
-				if left and left > worst then worst = left end
-			end
+		for _, slot in ABILITY_SLOTS do
+			local left = slotCooldown(slot) or 0
+			if left > worst then worst = left end
 		end
 		return worst
 	end
@@ -2842,16 +2849,44 @@ run(function()
 			return false
 		end
 
-		if bestW then equipItem('weapon', bestW) end
+		--[[
+			A heal already equipped is a swap that never has to happen.
 
-		local placed = 0
-		for index, slot in ABILITY_SLOTS do
-			local heal = heals[index]
-			if heal and equipItem('ability', heal, slot) then placed += 1 end
+			Every swap has to be undone later, and undoing it is the half that fails - the
+			heal we just cast is on cooldown and the server will not equip over it. So if
+			any slot already holds a heal, nothing is swapped at all: it just casts what is
+			there, and there is nothing to restore.
+		]]
+		local healNumbers = {}
+		for _, num in heals do healNumbers[num] = true end
+
+		local swapped = false
+		for _, slot in ABILITY_SLOTS do
+			if saved[slot] and healNumbers[saved[slot]] then
+				say('heal swap: a heal is already equipped, casting it')
+				swapped = true
+				break
+			end
 		end
-		if placed == 0 then
-			say('heal swap: the server refused to equip a heal (it may not allow swapping mid-dungeon)')
-			return false
+
+		local placedIn = {}
+		if not swapped then
+			if bestW then equipItem('weapon', bestW) end
+
+			-- Only the first pair is touched, so at most two slots have to go back.
+			local placed, index = 0, 1
+			for _, slot in { 'q', 'e' } do
+				local heal = heals[index]
+				if heal and equipItem('ability', heal, slot) then
+					placedIn[slot] = heal
+					placed += 1
+					index += 1
+				end
+			end
+			if placed == 0 then
+				say('heal swap: the server refused to equip a heal (it may not allow swapping mid-dungeon)')
+				return false
+			end
 		end
 		task.wait(0.4)
 
@@ -2887,30 +2922,75 @@ run(function()
 			task.wait(0.2)
 		end
 
+		-- Nothing was swapped, so there is nothing to put back.
+		if not next(placedIn) then return true end
+
 		--[[
-			The heals we just finished casting are the thing now on cooldown.
+			Put back exactly what was there, once each slot will accept it.
 
-			Restoring immediately is therefore the swap most likely to be refused, and being
-			refused here is the expensive one: it leaves you holding heals and a staff for
-			the rest of the run instead of your own loadout.
+			The heal we have this second finished casting is on cooldown, and the server
+			refuses to equip over a cooling ability - so restoring immediately is the swap
+			most certain to be denied, and being denied leaves you holding heals and a spell
+			staff for the rest of the run.
+
+			Each slot is therefore watched on its own and put back the moment that slot's
+			cooldown ends, rather than all of them waiting on the longest one. A slot that
+			held nothing before is emptied again rather than left with a heal in it.
 		]]
-		local settled = waitForCooldowns(12)
+		if savedWeapon then equipItem('weapon', savedWeapon) end
 
-		if savedWeapon then
-			equipItem('weapon', savedWeapon)
-		end
+		local unequip = remote('unequipItem')
+		local pending = {}
+		for slot in placedIn do pending[slot] = true end
 
-		local restored, wanted = 0, 0
-		for _, slot in ABILITY_SLOTS do
-			if saved[slot] then
-				wanted += 1
-				if equipItem('ability', saved[slot], slot) then restored += 1 end
+		local deadline = os.clock() + 90
+		while next(pending) and AutoFarm.Enabled and os.clock() < deadline do
+			local longest = 0
+
+			for slot in pending do
+				local left = slotCooldown(slot) or 0
+				if left <= 0 then
+					local want = saved[slot]
+					local done
+					if want then
+						done = equipItem('ability', want, slot)
+					elseif unequip then
+						-- It held nothing before, so the heal we put there comes back out.
+						local sent, answer = pcall(function()
+							return unequip:InvokeServer('ability', placedIn[slot])
+						end)
+						done = sent and answer ~= false
+					else
+						done = true
+					end
+					if done then pending[slot] = nil end
+				elseif left > longest then
+					longest = left
+				end
 			end
+
+			if not next(pending) then break end
+
+			-- Still backing away while waiting it out, rather than standing in the fight.
+			local char = lplr.Character
+			local hrp = char and char:FindFirstChild('HumanoidRootPart')
+			local hum = char and char:FindFirstChildOfClass('Humanoid')
+			if hrp and hum then
+				local _, part = nearestEnemy(hrp.Position, currentRoom())
+				if part then
+					local away = (hrp.Position - part.Position) * Vector3.new(1, 0, 1)
+					away = away.Magnitude > 0.1 and away.Unit or hrp.CFrame.LookVector
+					goTo(hum, hrp, hrp.Position + away * KeepAway.Value)
+				end
+			end
+
+			task.wait(math.clamp(longest > 0 and longest or 0.5, 0.2, 1))
 		end
 
-		if restored < wanted then
-			say(string.format('heal swap: healed, but %d of %d abilities would not go back on%s',
-				wanted - restored, wanted, settled and '' or ' (still cooling)'))
+		if next(pending) then
+			local stuck = {}
+			for slot in pending do table.insert(stuck, slot) end
+			say('heal swap: healed, but ' .. table.concat(stuck, '/') .. ' would not go back (still cooling)')
 		end
 		return true
 	end
