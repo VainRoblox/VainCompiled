@@ -62,6 +62,14 @@ local tuning = {
 	-- How long an attack part that has gone invisible and stopped changing is still
 	-- treated as dangerous. Visible or moving ones are kept alive regardless.
 	stale = 8,
+	-- How far ahead a turning attack is predicted, and the most its far edge may be
+	-- carried while predicting it. The cap is what stops a long sweeping beam being
+	-- predicted across the whole room.
+	spinLead = 0.3,
+	spinReach = 8,
+	-- How heavily a spot beyond fighting range is penalised. Higher keeps the farm on
+	-- the boss; lower lets it take safer ground further out.
+	anchorPull = 1.6,
 }
 
 -- What the farm is doing this instant, written out for diagnosis.
@@ -1667,12 +1675,32 @@ run(function()
 				table.insert(futures, cf + d.velocity * 0.7)
 				d.spread += d.velocity.Magnitude * 0.7
 			end
-			if d.spin then
-				table.insert(futures, CFrame.new(cf.Position)
-					* CFrame.Angles(0, d.spin * 0.3, 0)
-					* (cf - cf.Position))
-				d.spread += math.abs(d.spin) * 0.3 * d.bound
+			--[[
+				A sweep is predicted a few studs, not a few degrees.
+
+				The turn was applied to the whole part about its own centre - and these
+				beams are two hundred and seventy five studs long, so a fifth of a radian
+				swung their far end across most of the arena. Every gap in the fan then read
+				as about to be covered, the only ground that passed was away from the boss
+				entirely, and the farm ran to the edge of the room while open floor sat in
+				front of it.
+
+				What matters is where the edge nearest us is going, so the angle is capped to
+				move the part's extremity a few studs. On a short part that is most of a
+				turn; on a beam it is the small amount it truly sweeps in that moment.
+			]]
+			local lead = tuning.spinLead or 0.3
+			local turn = d.spin * lead
+			local travelled = math.abs(turn) * math.max(d.bound, 1)
+			local allowed = tuning.spinReach or 8
+			if travelled > allowed then
+				turn = (turn > 0 and 1 or -1) * (allowed / math.max(d.bound, 1))
 			end
+
+			table.insert(futures, CFrame.new(cf.Position)
+				* CFrame.Angles(0, turn, 0)
+				* (cf - cf.Position))
+			d.spread += math.min(travelled, allowed)
 			d.futures = futures
 		end
 
@@ -2191,7 +2219,7 @@ run(function()
 									-- Only being too far is penalised. Closing on the boss is
 									-- free, which is what turns a retreat into a sidestep in.
 									local reach = (grounded - anchor).Magnitude
-									score += math.max(0, reach - band) * 1.6
+									score += math.max(0, reach - band) * (tuning.anchorPull or 1.6)
 								end
 								if not bestScore or score < bestScore then
 									best, bestScore = grounded, score
