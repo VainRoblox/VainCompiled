@@ -65,15 +65,58 @@ end
 -- helper to turn the character to face it. DQ weapon swings and abilities fire in
 -- the character's LOOK direction, so facing the enemy is what makes them connect.
 local _enemyParts, _enemyScan = {}, 0
+
+--[[
+	Read from the enemy folders, not from the whole workspace.
+
+	Walking every descendant of the workspace once a second is cheap in an empty lobby and
+	ruinous by the end of a dungeon: the rooms stream in as the run goes on, so the same
+	loop is a few thousand instances at the start and a hundred thousand at the boss. That
+	is lag that arrives gradually and has nothing to do with what the module is doing.
+
+	Every enemy sits under a folder called enemyFolder, one per room, so those are found
+	once and only their contents are read.
+]]
+local _enemyFolders, _enemyFolderScan = {}, 0
+
+local function enemyFolders()
+	if os.clock() - _enemyFolderScan < 4 and #_enemyFolders > 0 then return _enemyFolders end
+	_enemyFolderScan = os.clock()
+
+	local found = {}
+	local function collect(root, depth)
+		if not root or depth > 2 then return end
+		for _, child in root:GetChildren() do
+			if child.Name == 'enemyFolder' then
+				table.insert(found, child)
+			elseif child:IsA('Folder') or child:IsA('Model') then
+				collect(child, depth + 1)
+			end
+		end
+	end
+
+	collect(workspace:FindFirstChild('dungeon'), 1)
+	for _, child in workspace:GetChildren() do
+		if child.Name == 'enemyFolder' then table.insert(found, child) end
+	end
+
+	_enemyFolders = found
+	return _enemyFolders
+end
+
 local function scanEnemyParts()
 	_enemyParts = {}
 	pcall(function()
-		for _, d in workspace:GetDescendants() do
-			if d:IsA('Humanoid') and d.Health > 0 then
-				local m = d.Parent
-				if m and m:IsA('Model') and not playersService:GetPlayerFromCharacter(m) and m:FindFirstAncestor('enemyFolder') then
-					local part = m.PrimaryPart or m:FindFirstChild('HumanoidRootPart') or m:FindFirstChildWhichIsA('BasePart')
-					if part then table.insert(_enemyParts, part) end
+		for _, folder in enemyFolders() do
+			if folder.Parent then
+				for _, d in folder:GetDescendants() do
+					if d:IsA('Humanoid') and d.Health > 0 then
+						local m = d.Parent
+						if m and m:IsA('Model') and not playersService:GetPlayerFromCharacter(m) then
+							local part = m.PrimaryPart or m:FindFirstChild('HumanoidRootPart') or m:FindFirstChildWhichIsA('BasePart')
+							if part then table.insert(_enemyParts, part) end
+						end
+					end
 				end
 			end
 		end
@@ -794,7 +837,7 @@ run(function()
 		trying to respect. Each part becomes a box in its own space, which is cheap enough
 		for the dozens a room has, and correct whatever their query flags say.
 	]]
-	local barrierParts, barrierScan = {}, 0
+	local barrierParts, barrierScan, deepScan = {}, 0, -math.huge
 
 	local function collectBorders(root, out, depth)
 		if not root or depth > 3 then return end
@@ -828,9 +871,17 @@ run(function()
 			end
 		end
 
-		-- Nothing anywhere obvious, so pay for the deep search once rather than give up on
-		-- the walls entirely.
-		if #found == 0 then
+		--[[
+			The deep search, rarely.
+
+			A recursive FindFirstChild over the workspace is a walk of every instance in the
+			dungeon, and running it every three seconds - which is what happened anywhere
+			the folders are not where they usually are, a boss room among them - costs more
+			as the run goes on and the map streams in. Once every half minute is enough to
+			pick one up if it appears late.
+		]]
+		if #found == 0 and os.clock() - deepScan > 30 then
+			deepScan = os.clock()
 			local folder = workspace:FindFirstChild('borders', true) or workspace:FindFirstChild('Barriers', true)
 			if folder then
 				for _, d in folder:GetDescendants() do
@@ -839,7 +890,11 @@ run(function()
 			end
 		end
 
-		barrierParts = found
+		-- Nothing found this pass does not mean the walls have gone: keep the last set
+		-- rather than dropping every bound until the next deep search.
+		if #found > 0 or #barrierParts == 0 then
+			barrierParts = found
+		end
 	end
 
 	-- Tested against a nearby subset when one is given: a room's worth of border parts
@@ -887,6 +942,11 @@ run(function()
 	-- every single frame while there is nowhere to go only drops the frame rate, and a
 	-- lower frame rate is a slower dodge.
 	local lastPlanFailed = 0
+
+	-- A full search is a few hundred geometry tests and up to a hundred rays. Sixteen of
+	-- them a second is plenty to react to anything; sixty is just a lower frame rate, and a
+	-- lower frame rate is a slower dodge.
+	local lastPlanAt = 0
 
 	--[[
 		Spots the stepper would not actually go to.
@@ -1528,8 +1588,8 @@ run(function()
 			from whatever is casting. Closer rings and more directions per ring mean the gap
 			between two lanes is offered as a candidate at all.
 		]]
-		for _, radius in { 6, 9, 12, 16, 20, 25, 31, 38, 47, 58, 72, 92 } do
-			local samples = radius <= 12 and 16 or (radius <= 31 and 28 or 32)
+		for _, radius in { 6, 9, 13, 18, 24, 31, 40, 52, 66, 84 } do
+			local samples = radius <= 13 and 16 or (radius <= 31 and 24 or 28)
 			for i = 0, samples - 1 do
 				local angle = (i / samples) * math.pi * 2
 				offer(pos + Vector3.new(math.cos(angle), 0, math.sin(angle)) * radius)
@@ -1661,13 +1721,16 @@ run(function()
 		local band = keepClear + 4
 		local sheltered = #safeZones > 0 and inSafeZone(pos)
 
-		local function search(useRoom, m, leash)
+		-- One budget for the whole call, not one per pass: three passes each paying for
+		-- eighty raycasts is what a dodge costing most of a frame looks like.
+		local rays = 0
+
+		local function search(useRoom, m, leash, needSight)
 			local escaping = escapingAt(m)
 			local fallback, fallbackCount = nil, dangerCount(pos, m)
 			local detour = nil
 			local roomy, roomyScore = nil, nil
 			local best, bestScore, firstClear = nil, nil, nil
-			local rays = 0
 
 			for _, candidate in candidates do
 				local point = candidate.point
@@ -1733,7 +1796,7 @@ run(function()
 						-- Rays are the one expensive thing in here. Once a safe spot is in
 						-- hand, stop paying for more of them; without one, keep looking,
 						-- since an answer matters more than the frame it costs.
-						if rays >= 80 and best then break end
+						if rays >= 110 and best then break end
 						rays += 1
 						y = groundAt(point, pos.Y)
 					else
@@ -1744,7 +1807,24 @@ run(function()
 						local grounded = Vector3.new(point.X, y, point.Z)
 						-- Behind a wall is not a spot: the step would clip into the wall, and
 						-- the server pulls you back for arriving somewhere you could not walk.
+						--[[
+							A spot you cannot see the boss from is not a dodge, it is hiding.
+
+							The room's bounds are the whole room model, doorway and entry
+							corridor included, so "inside the room" still allowed the spot
+							behind the door frame - and a sweeping attack is escaped most
+							cheaply by stepping behind something solid. From there nothing
+							can be hit and the fight never ends.
+
+							Requiring sight of what we are fighting rules out every one of
+							those: behind the pillar, through the doorway, round the corner.
+						]]
 						local reachable_ = clearLine(pos, grounded)
+						if reachable_ and needSight and anchor then
+							rays += 1
+							reachable_ = clearLine(grounded, anchor)
+						end
+
 						if clear and reachable_ then
 							local safePath = true
 							for step = 1, 4 do
@@ -1802,20 +1882,29 @@ run(function()
 			pass that finds anything wins. The last pass asks only for the character's own
 			width and a little, which is what actually fits between two lanes.
 		]]
+		--[[
+			Two passes, then one that gives up the rules.
+
+			Each pass costs a sweep of every candidate, so three graded margins plus the
+			relaxations was up to four sweeps for one dodge - at ten dodges a second while a
+			boss casts, that is the frame rate. A comfortable berth and a tight one cover
+			nearly every case between them.
+		]]
 		local spot
-		for _, m in { margin, 3, 1.5 } do
-			local found, clean = search(respectRoom, m, 55)
+		for _, m in { margin, 2 } do
+			local found, clean = search(respectRoom, m, 40, true)
 			if clean then return found end
 			spot = spot or found
 		end
 
-		-- Still nothing, so the leash and then the room bounds are what is left to relax.
-		local found, clean = search(respectRoom, 1.5, nil)
+		-- Nothing fits the rules, so they come off: sight of the boss first, then the
+		-- leash, then the room itself.
+		local found, clean = search(respectRoom, 1.5, nil, false)
 		if clean then return found end
 		spot = spot or found
 
 		if respectRoom then
-			local wider, widerClean = search(false, 1.5, nil)
+			local wider, widerClean = search(false, 1.5, nil, false)
 			if widerClean then return wider end
 			spot = spot or wider
 		end
@@ -1912,16 +2001,59 @@ run(function()
 	end
 
 	-- cached list of enemy models (non-player Humanoids), refreshed periodically.
+	--[[
+		The folders enemies actually live in, found once instead of hunted for constantly.
+
+		This used to walk every descendant of the workspace, twice a second, to find the
+		humanoids. A dungeon streams its rooms in as you clear them, so that walk starts at
+		a few thousand instances and ends at a hundred thousand - the farm ran well at the
+		start of a run and progressively worse the further it got, which is exactly the lag
+		that shows up by the boss.
+
+		Enemies are always under a folder called enemyFolder, and there is one per room, so
+		finding those folders once and reading their contents is the same answer for a
+		thousandth of the work.
+	]]
+	local enemyFolders, enemyFolderScan = {}, 0
+
+	local function refreshEnemyFolders()
+		if os.clock() - enemyFolderScan < 4 and #enemyFolders > 0 then return end
+		enemyFolderScan = os.clock()
+
+		local found = {}
+		local function collect(root, depth)
+			if not root or depth > 2 then return end
+			for _, child in root:GetChildren() do
+				if child.Name == 'enemyFolder' then
+					table.insert(found, child)
+				elseif child:IsA('Folder') or child:IsA('Model') then
+					collect(child, depth + 1)
+				end
+			end
+		end
+
+		collect(workspace:FindFirstChild('dungeon'), 1)
+		for _, child in workspace:GetChildren() do
+			if child.Name == 'enemyFolder' then table.insert(found, child) end
+		end
+		enemyFolders = found
+	end
+
 	local function rescan()
 		enemyCache = {}
+		refreshEnemyFolders()
+
 		pcall(function()
-			for _, d in workspace:GetDescendants() do
-				if d:IsA('Humanoid') and d.Health > 0 then
-					local m = d.Parent
-					if m and m:IsA('Model') and enemyPart(m)
-						and not playersService:GetPlayerFromCharacter(m)
-						and m:FindFirstAncestor('enemyFolder') then
-						table.insert(enemyCache, m)
+			for _, folder in enemyFolders do
+				if folder.Parent then
+					for _, d in folder:GetDescendants() do
+						if d:IsA('Humanoid') and d.Health > 0 then
+							local m = d.Parent
+							if m and m:IsA('Model') and enemyPart(m)
+								and not playersService:GetPlayerFromCharacter(m) then
+								table.insert(enemyCache, m)
+							end
+						end
 					end
 				end
 			end
@@ -3108,7 +3240,12 @@ run(function()
 						stale = false
 					end
 
+					if stale and os.clock() - lastPlanAt < 0.06 then
+						stale = false
+					end
+
 					if stale then
+						lastPlanAt = os.clock()
 						local safe = dodgeTarget(pos) or projectileDodge(pos)
 						if safe then
 							if not dodgeGoal then
