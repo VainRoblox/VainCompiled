@@ -889,6 +889,17 @@ run(function()
 	local lastPlanFailed = 0
 
 	--[[
+		Spots the stepper would not actually go to.
+
+		A dodge spot behind a wall, up a ledge or over a border is chosen, refused by every
+		step, and then held for ever - and since the farm waits for a dodge to finish, the
+		character stands still until something else happens. Spots that fail to move us are
+		remembered for a few seconds so the search offers a different one instead.
+	]]
+	local badSpots = {}
+	local dodgeStalls, dodgeLastPos, dodgeMovedAt = 0, nil, 0
+
+	--[[
 		Declared up here, defined with the rest of the room logic further down.
 
 		The dodge has to keep its chosen spot inside the room being fought, and the room
@@ -1549,7 +1560,12 @@ run(function()
 			end
 		end
 
-		local keepClear = math.max(KeepDistance ~= nil and KeepDistance.Value or 0, 14)
+		local keepClear = math.max(KeepDistance ~= nil and KeepDistance.Value or 0, 9)
+
+		-- Spots that were chosen and could not be reached, forgotten after a few seconds.
+		for i = #badSpots, 1, -1 do
+			if os.clock() - badSpots[i].at > 4 then table.remove(badSpots, i) end
+		end
 
 		local function enemyGap(point)
 			local nearest = math.huge
@@ -1572,9 +1588,14 @@ run(function()
 			for _, candidate in candidates do
 				local point = candidate.point
 
+				local stale = false
+				for _, bad in badSpots do
+					if (bad.pos - point).Magnitude < 5 then stale = true break end
+				end
+
 				-- Attacks first, because they are the cheapest test that rejects most
 				-- candidates; borders, room and the ground ray only for what survives.
-				local covered = dangerCount(point, margin)
+				local covered = stale and math.huge or dangerCount(point, margin)
 				local clear = covered == 0 and not anyDanger(point, margin + 3)
 
 				if (clear or covered < fallbackCount)
@@ -2277,7 +2298,10 @@ run(function()
 	end
 
 	local function buildPath(from, goal)
-		if nav.building then return end
+		-- A build that never finished used to block every build after it for the rest of
+		-- the run, which is a farm that stops pathing and stands still. It cannot wait
+		-- longer than this, so after that it is treated as gone.
+		if nav.building and os.clock() - nav.builtAt < 4 then return end
 		nav.building, nav.builtAt = true, os.clock()
 
 		task.spawn(function()
@@ -2302,13 +2326,18 @@ run(function()
 				return #points >= 2 and points or nil
 			end
 
-			local target = snapToFloor(goal)
-			-- A goal on an enemy or a spawn marker can read as occupied, and a start inside
-			-- a slope as blocked; nudging up answers both. Failing that, half the way there
-			-- is still progress, and the rest is found from wherever that ends.
-			local points = try(from, target)
-				or try(from + Vector3.new(0, 2, 0), target)
-				or try(from, snapToFloor(from:Lerp(goal, 0.5)))
+			-- Whatever happens in here, the build is over when this thread is: an error
+			-- that left it marked as still running would stop the farm pathing for good.
+			local ok, points = pcall(function()
+				local target = snapToFloor(goal)
+				-- A goal on an enemy or a spawn marker can read as occupied, and a start
+				-- inside a slope as blocked; nudging up answers both. Failing that, half the
+				-- way there is still progress, and the rest is found from wherever that ends.
+				return try(from, target)
+					or try(from + Vector3.new(0, 2, 0), target)
+					or try(from, snapToFloor(from:Lerp(goal, 0.5)))
+			end)
+			if not ok then points = nil end
 
 			nav.building = false
 			if points then
@@ -2421,9 +2450,36 @@ run(function()
 		-- not open it waits the moment it takes for the route to arrive.
 		if open then
 			goTo(hum, hrp, goal)
-		elseif not moving() then
-			hum:MoveTo(pos)
+			return
 		end
+
+		--[[
+			Waiting for a route is right; waiting for one that is never coming is not.
+
+			Some goals simply have no route - a spawn point inside scenery, an enemy on a
+			ledge - and standing there until the dungeon ends is the worst answer available.
+			Once the wait has gone on, the most direct opening that actually has floor and
+			no wall is taken, which at least gets us somewhere a route can be found from.
+		]]
+		if nav.failedAt > 0 or now - nav.builtAt > 1.5 then
+			local best, bestScore
+			for i = 0, 11 do
+				local angle = (i / 12) * math.pi * 2
+				local probe = pos + Vector3.new(math.cos(angle), 0, math.sin(angle)) * 14
+				local y = groundAt(probe, pos.Y)
+				if y and clearLine(pos, probe) and not insideBarrier(probe, 1) then
+					local grounded = Vector3.new(probe.X, y, probe.Z)
+					local score = (grounded - goal).Magnitude
+					if not bestScore or score < bestScore then best, bestScore = grounded, score end
+				end
+			end
+			if best then
+				goTo(hum, hrp, best)
+				return
+			end
+		end
+
+		if not moving() then hum:MoveTo(pos) end
 	end
 
 	--[[
@@ -2616,6 +2672,11 @@ run(function()
 					local fresh = dangerAdded
 					dangerAdded = false
 
+					-- Clear of it now, so the rest of the walk to a spot that mattered a
+					-- moment ago is time the farm should have back. Judged a little wider
+					-- than the danger itself, so it does not stop on the edge.
+					if dodgeGoal and not anyDanger(pos, 7) then dodgeGoal = nil end
+
 					local stale = not dodgeGoal
 						or (dodgeGoal - pos).Magnitude < 1.5
 						or anyDanger(dodgeGoal, 5)
@@ -2649,10 +2710,33 @@ run(function()
 								if not moving() then hum:MoveTo(pos) end
 								say(string.format('dodging to %.0f studs away', (safe - pos).Magnitude))
 							end
+							if not dodgeGoal then dodgeStalls = 0 end
 							dodgeGoal = safe
 						else
 							if anyDanger(pos, 5) then lastPlanFailed = os.clock() end
 							dodgeGoal = nil
+						end
+					end
+
+					if dodgeGoal then
+						--[[
+							A plan that is not moving us is not a plan.
+
+							Every step to this spot can be refused - a wall in the way, a
+							ledge, a border - and nothing noticed: the goal stayed, the farm
+							kept waiting for the dodge, and the character stood still. If we
+							have not moved in half a second the spot is written off and
+							another is asked for; after a few of those the dodge gives up and
+							lets the farm act instead of freezing behind it.
+						]]
+						if not dodgeLastPos or (pos - dodgeLastPos).Magnitude > 0.6 then
+							dodgeLastPos, dodgeMovedAt = pos, os.clock()
+						elseif os.clock() - dodgeMovedAt > 0.5 then
+							dodgeLastPos, dodgeMovedAt = pos, os.clock()
+							table.insert(badSpots, {pos = dodgeGoal, at = os.clock()})
+							dodgeStalls += 1
+							dodgeGoal = dodgeStalls < 3 and dodgeTarget(pos) or nil
+							if not dodgeGoal then lastPlanFailed = os.clock() end
 						end
 					end
 
@@ -2807,37 +2891,35 @@ run(function()
 						local spellReach = AbilityRange ~= nil and AbilityRange.Value or 35
 
 						--[[
-							Fought at range, with the weapon as the short-range option.
+							Fought from just outside melee, not from across the room.
 
-							Melee enemies have no answer to distance: their hitboxes are
-							built onto the swing and reach about seven studs, so anything
-							beyond that simply cannot be hit by them. Abilities reach far
-							further than any weapon and cost nothing to throw from back
-							there, which makes standing off the correct way to fight rather
-							than a cautious one.
+							A melee enemy's swing is a hitbox reaching about seven studs, so a
+							couple of studs past that is already out of its reach. Every
+							ability in the game covers far more: the smallest of them is about
+							ten studs across from where you stand and most are thirty or more.
+							Distance beyond melee reach therefore buys nothing and costs every
+							cast that falls short.
 
-							So the distance held is whichever is larger - what the settings
-							ask for, or what keeps melee out of reach - and it closes to
-							weapon range only when there is nothing to cast.
+							Holding anywhere inside Ability Range was the mistake. Set to
+							forty, the farm parked forty studs out and threw every spell into
+							empty floor - and since an ability with no published cooldown
+							always reads as ready, it stood there doing it indefinitely. That
+							is both "keeps so much distance" and one of the ways it froze.
+
+							So the distance held is Keep Distance, floored just past melee
+							reach, and Ability Range only decides when a cast is worth making.
 						]]
-						local MELEE_REACH = 14
-						local keep = math.max(KeepDistance.Value, MELEE_REACH)
+						local keep = math.max(KeepDistance.Value, 9)
 						local away = (hrp.Position - part.Position) * Vector3.new(1, 0, 1)
 						away = away.Magnitude > 0.1 and away.Unit or hrp.CFrame.LookVector
 
-						local ready = abilityReady()
 						local gap = dist or math.huge
+						-- A band rather than a line, so being a stud too far is not a reason
+						-- to walk in and then straight back out again.
+						local band = keep + 4
 
-						--[[
-							Cast the moment it is in range, before anything else is decided.
-
-							This used to be the last thing in the tick and gated behind
-							weapon reach, so every ability in the game was held until we had
-							walked into melee distance to use it - the one place the farm
-							should not be. Range is the ability's, so it fires from where it
-							is standing.
-						]]
-						if ready and gap <= spellReach and not (busy and busy.Value ~= false) then
+						-- Cast the moment it is in range, from wherever we are standing.
+						if gap <= spellReach and not (busy and busy.Value ~= false) then
 							faceTarget(hrp, part)
 							castAbilities(abilityUsed)
 						end
@@ -2845,47 +2927,30 @@ run(function()
 						local push, crowded = crowding(hrp.Position, keep)
 
 						if crowded > 0 then
-							-- Anything at all inside the keep distance takes priority over
-							-- circling: get clear of the pack first, then resume.
+							-- Something is inside the distance we hold: give up just enough
+							-- ground to be outside it again, not a retreat across the room.
 							clearPath()
 							local out = push.Magnitude > 0.1 and push.Unit or away
-							goTo(hum, hrp, hrp.Position + out * (keep + 10))
+							goTo(hum, hrp, hrp.Position + out * 6)
 						elseif gap < keep then
 							clearPath()
-							goTo(hum, hrp, hrp.Position + away * ((keep - gap) + 8))
-						elseif ready and gap <= spellReach then
-							-- In range of what we are actually fighting with, so there is
-							-- nowhere to be: hold the distance and keep casting.
-							clearPath()
-							if Strafe ~= nil and Strafe.Enabled then
-								local tangent = Vector3.new(-away.Z, 0, away.X)
-								if os.clock() > strafeUntil then
-									strafeDir = clearestTangent(hrp.Position, part.Position, tangent, keep)
-									strafeUntil = os.clock() + 2
-								end
-								goTo(hum, hrp, part.Position + (away * keep) + (tangent * strafeDir * 14))
-							else
-								hum:MoveTo(hrp.Position)
-							end
-						elseif gap > math.max(reach, ready and spellReach or 0) then
-							-- Close the gap. Pathfinding while far, straight in once near,
-							-- because a route recomputed around a moving enemy is worse
-							-- than walking at it.
+							goTo(hum, hrp, hrp.Position + away * ((keep - gap) + 2))
+						elseif gap > band then
+							-- Close the gap, by route or by line depending on what is between.
 							walkTo(hum, hrp, part.Position)
 						elseif Strafe ~= nil and Strafe.Enabled then
 							clearPath()
 
-							local ideal = math.max(keep, (keep + reach) * 0.5)
 							local tangent = Vector3.new(-away.Z, 0, away.X)
 
 							-- Reconsidered on a timer rather than every tick, but chosen by
 							-- which side is emptier rather than simply alternating.
 							if os.clock() > strafeUntil then
-								strafeDir = clearestTangent(hrp.Position, part.Position, tangent, ideal)
+								strafeDir = clearestTangent(hrp.Position, part.Position, tangent, keep)
 								strafeUntil = os.clock() + 2
 							end
 
-							goTo(hum, hrp, part.Position + (away * ideal) + (tangent * strafeDir * 14))
+							goTo(hum, hrp, part.Position + (away * keep) + (tangent * strafeDir * 10))
 						else
 							clearPath()
 							-- Stop walking and hold position while swinging, so the hit is
@@ -2931,14 +2996,14 @@ run(function()
 		Tooltip = 'Back away and stop fighting once your HP drops below this' })
 	RecoverHP = AutoFarm:CreateSlider({ Name = 'Resume at HP', Min = 20, Max = 100, Default = 85, Suffix = '%',
 		Tooltip = 'Return to the fight once HP recovers to this' })
-	KeepDistance = AutoFarm:CreateSlider({ Name = 'Keep Distance', Min = 0, Max = 50, Default = 9, Suffix = ' studs',
-		Tooltip = 'Never let an enemy get closer than this while fighting - back away instead, still attacking. Held below Attack Range (default 9)' })
+	KeepDistance = AutoFarm:CreateSlider({ Name = 'Keep Distance', Min = 0, Max = 50, Default = 10, Suffix = ' studs',
+		Tooltip = 'How far to stand from what you are fighting. Never goes below 9, which is just outside melee reach (default 10)' })
 	KeepAway = AutoFarm:CreateSlider({ Name = 'Keep Away', Min = 20, Max = 200, Default = 70, Suffix = ' studs',
 		Tooltip = 'How far to put between you and the nearest enemy while recovering (default 70)' })
 	AttackRange = AutoFarm:CreateSlider({ Name = 'Attack Range', Min = 4, Max = 60, Default = 12, Suffix = ' studs',
 		Tooltip = 'How close to get before swinging. Melee wants this low, a staff can sit further back (default 12)' })
-	AbilityRange = AutoFarm:CreateSlider({ Name = 'Ability Range', Min = 10, Max = 120, Default = 40, Suffix = ' studs',
-		Tooltip = 'How far your Q/E reach. Anything inside this is cast at from where you stand, without closing to weapon range (default 40)' })
+	AbilityRange = AutoFarm:CreateSlider({ Name = 'Ability Range', Min = 10, Max = 120, Default = 25, Suffix = ' studs',
+		Tooltip = 'Only cast Q/E at a target this close, so casts are not thrown away out of reach. Does not change where the farm stands (default 25)' })
 	FarmDelay = AutoFarm:CreateSlider({ Name = 'Loop Delay', Min = 0, Max = 0.5, Default = 0.1, Decimal = 100, Suffix = 's',
 		Tooltip = 'Time between farm ticks' })
 	Debug = AutoFarm:CreateToggle({ Name = 'Debug', Default = false,
