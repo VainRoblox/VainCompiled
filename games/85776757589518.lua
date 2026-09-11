@@ -3128,16 +3128,20 @@ run(function()
 			end
 
 			--[[
-				Enough height per step to actually climb a stair.
+				Height earned by going forward, not spent freely.
 
-				Height was budgeted at the same rate as forward travel, which at sixty frames
-				a second is about a quarter of a stud - so a stair two studs tall took eight
-				frames to rise while the feet kept going forward into it, and Step TP simply
-				stopped on staircases. A walking player crosses a step in one go, so a couple
-				of studs is what this allows, and no more: beyond that it is a climb, and a
-				climb is what gets noticed.
+				Budgeting height at the same rate as forward travel - a quarter of a stud a
+				frame - meant a two stud riser took eight frames while the feet kept walking
+				into it, so Step TP stopped on staircases. Allowing a flat couple of studs
+				per frame fixed that and broke it the other way: at sixty frames a second
+				that is rising far faster than walking, so it climbed off the steps and
+				missed the staircase entirely.
+
+				A staircase is a slope, so the rise is tied to the advance: up to twice the
+				ground covered, which carries a person up anything up to about sixty degrees,
+				with a small floor so a lip can still be crossed when barely moving.
 			]]
-			local allowance = math.max(full, 2)
+			local allowance = math.max(full * 2, 0.6)
 			local rise = math.clamp(desired.Y - hrp.Position.Y, -allowance, allowance)
 			hrp.CFrame = CFrame.new(hrp.Position + flat + Vector3.new(0, rise, 0))
 				* (hrp.CFrame - hrp.CFrame.Position)

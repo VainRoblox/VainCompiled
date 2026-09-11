@@ -1358,6 +1358,31 @@ run(function()
 	Overlay.FilterType = Enum.RaycastFilterType.Include
 	local modified = {}
 	
+	--[[
+		NPCs are found by looking, because nothing registers them.
+	
+		entitylib only ever learns about players - it watches PlayerAdded and walks the player
+		list, and there is no equivalent for anything else. So the NPC option here matched an
+		empty set in every game whose enemies are NPCs, which is most of them: the module looked
+		switched on and did nothing at all.
+	
+		Rather than have entitylib track every humanoid in the world - expensive, and wrong in
+		games with hundreds of them - the parts already being swept for are asked what they
+		belong to. A body with a Humanoid that no player owns is an NPC, which costs two lookups
+		per part and needs no scanning.
+	]]
+	local NPCOverlay = OverlapParams.new()
+	NPCOverlay.FilterType = Enum.RaycastFilterType.Exclude
+	
+	local function ownerOf(part)
+		local model = part:FindFirstAncestorWhichIsA('Model')
+		while model do
+			if model:FindFirstChildOfClass('Humanoid') then return model end
+			model = model:FindFirstAncestorWhichIsA('Model')
+		end
+		return nil
+	end
+	
 	Reach = vain.Categories.Combat:CreateModule({
 		Name = 'Reach',
 		Function = function(callback)
@@ -1376,8 +1401,40 @@ run(function()
 								end
 							end
 	
+							local reachCF = tool.Parent.CFrame * CFrame.new(0, 0, Value.Value / 2)
+							local reachSize = tool.Parent.Size + Vector3.new(0, 0, Value.Value)
+	
 							Overlay.FilterDescendantsInstances = entites
-							local parts = workspace:GetPartBoundsInBox(tool.Parent.CFrame * CFrame.new(0, 0, Value.Value / 2), tool.Parent.Size + Vector3.new(0, 0, Value.Value), Overlay)
+							local parts = workspace:GetPartBoundsInBox(reachCF, reachSize, Overlay)
+	
+							--[[
+								Anything with a Humanoid that entitylib never heard of.
+	
+								Swept separately from the entity list so the team checks and
+								targeting rules above still decide who counts among players, while
+								the bodies nothing registers - mobs, bosses, summons - are picked
+								up by what is physically in reach.
+							]]
+							if Targets.NPCs.Enabled then
+								local own = entitylib.character and entitylib.character.Character or lplr.Character
+								NPCOverlay.FilterDescendantsInstances = { own }
+	
+								local seen = {}
+								for _, part in parts do seen[part] = true end
+	
+								for _, part in workspace:GetPartBoundsInBox(reachCF, reachSize, NPCOverlay) do
+									if not seen[part] then
+										local body = ownerOf(part)
+										if body and not playersService:GetPlayerFromCharacter(body) then
+											local humanoid = body:FindFirstChildOfClass('Humanoid')
+											if humanoid and humanoid.Health > 0 then
+												seen[part] = true
+												table.insert(parts, part)
+											end
+										end
+									end
+								end
+							end
 	
 							for _, v in parts do
 								if Random.new().NextNumber(Random.new(), 0, 100) > Chance.Value then
@@ -1410,7 +1467,8 @@ run(function()
 		end,
 		Tooltip = 'Extends tool attack reach'
 	})
-	Targets = Reach:CreateTargets({Players = true})
+	-- NPCs on by default: in most games with them, they are what you are hitting.
+	Targets = Reach:CreateTargets({Players = true, NPCs = true})
 	Mode = Reach:CreateDropdown({
 		Name = 'Mode',
 		List = {'TouchInterest', 'Resize'},
