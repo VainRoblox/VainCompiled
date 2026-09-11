@@ -1525,9 +1525,12 @@ run(function()
 			came back empty and the dodge did not move. That was the whole of "barely dodges".
 			Only zones we are not already in can make a path unsafe.
 		]]
-		local escaping = {}
-		for _, d in dangers do
-			if inDanger(pos, d, margin) then escaping[d] = true end
+		local function escapingAt(m)
+			local inside = {}
+			for _, d in dangers do
+				if inDanger(pos, d, m) then inside[d] = true end
+			end
+			return inside
 		end
 
 		--[[
@@ -1609,8 +1612,9 @@ run(function()
 		local anchor = fightTarget and fightTarget.Parent and fightTarget.Position or nil
 		local band = keepClear + 4
 
-		local function search(useRoom)
-			local fallback, fallbackCount = nil, dangerCount(pos, margin)
+		local function search(useRoom, m)
+			local escaping = escapingAt(m)
+			local fallback, fallbackCount = nil, dangerCount(pos, m)
 			local detour = nil
 			local roomy, roomyScore = nil, nil
 			local best, bestScore, firstClear = nil, nil, nil
@@ -1637,8 +1641,18 @@ run(function()
 
 				-- Attacks first, because they are the cheapest test that rejects most
 				-- candidates; borders, room and the ground ray only for what survives.
-				local covered = stale and math.huge or dangerCount(point, margin)
-				local clear = covered == 0 and not anyDanger(point, margin + 3)
+				--[[
+					Clear means clear by the margin being asked for, and no more.
+
+					It used to demand the margin AND another three studs on top, which with
+					the character's own width is about ten studs of empty floor in every
+					direction. A fan of beams leaves gaps a good deal narrower than that, so
+					every gap in the pattern read as unsafe and the only spots that passed
+					were outside the whole fan - which is down the length of the beams, and
+					is exactly the wrong way to run.
+				]]
+				local covered = stale and math.huge or dangerCount(point, m)
+				local clear = covered == 0
 
 				if (clear or covered < fallbackCount)
 					and (not respectBorders or (not insideBarrier(point, 2, nearBorders)
@@ -1668,7 +1682,7 @@ run(function()
 							local safePath = true
 							for step = 1, 4 do
 								local sample = pos:Lerp(grounded, step / 4)
-								if anyDanger(sample, margin, escaping) or enemyGap(sample) < pathGap then
+								if anyDanger(sample, m, escaping) or enemyGap(sample) < pathGap then
 									safePath = false
 									break
 								end
@@ -1709,10 +1723,30 @@ run(function()
 			return roomy or detour or fallback, false
 		end
 
-		local spot, clean = search(respectRoom)
-		if not clean and respectRoom then
-			local wider, widerClean = search(false)
-			if widerClean or not spot then spot = wider end
+		--[[
+			A comfortable gap if there is one, a usable gap if there is not.
+
+			Asking for one clearance and giving up is what sent the dodge out of the pattern
+			instead of into it. A wide berth is worth having when the floor is mostly empty,
+			but between two beams there is no wide berth to be had - and standing in the
+			beam because the gap was three studs too narrow is not the better answer.
+
+			So the same search is run again with less room demanded each time, and the first
+			pass that finds anything wins. The last pass asks only for the character's own
+			width and a little, which is what actually fits between two lanes.
+		]]
+		local spot
+		for _, m in { margin, 3, 1.5 } do
+			local found, clean = search(respectRoom, m)
+			if clean then return found end
+			spot = spot or found
+		end
+
+		-- Still nothing, so the room bounds are the last thing left to relax.
+		if respectRoom then
+			local found, clean = search(false, 1.5)
+			if clean then return found end
+			spot = spot or found
 		end
 		return spot
 	end
