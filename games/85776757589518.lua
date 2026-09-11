@@ -279,7 +279,7 @@ run(function()
 					local ok = inCombat()
 					if not (ok and abilityUsed) then return end
 					faceNearest() -- point at the enemy so directional abilities go the right way
-					for _, slot in { 'q', 'e' } do
+					for _, slot in { 'q', 'e', 'q2', 'e2' } do
 						for _, child in lplr.Backpack:GetChildren() do
 							if child:FindFirstChild('abilitySlot') and child.abilitySlot.Value == slot then
 								local cd = child:FindFirstChild('cooldown')
@@ -898,6 +898,10 @@ run(function()
 	]]
 	local badSpots = {}
 	local dodgeStalls, dodgeLastPos, dodgeMovedAt = 0, nil, 0
+
+	-- What the farm is currently fighting, so a dodge can be judged on whether it keeps
+	-- the fight rather than only on how near it is. Set by the farm tick, read by the dodge.
+	local fightTarget = nil
 
 	--[[
 		Declared up here, defined with the rest of the room logic further down.
@@ -1580,13 +1584,36 @@ run(function()
 		local startGap = enemyGap(pos)
 		local pathGap = math.min(6, startGap)
 
+		--[[
+			Out of the attack, and still in the fight.
+
+			Taking the nearest safe spot treats every direction as equal, and they are not:
+			on a boss the free ground is nearly always the ground behind you, so the dodge
+			walked out of the fight, every time - and the whole attack cycle got spent
+			walking back in. Most boss patterns leave a gap that is closer to the boss than
+			you are, and stepping into that one keeps you hitting it.
+
+			So spots are scored rather than taken first-found: distance still counts, and
+			ending further from the target than fighting range counts against a spot enough
+			that an equally short step toward the boss beats one away from it. Once a safe
+			spot exists, only spots a little closer or further are still worth considering,
+			which keeps this from turning into a search of the whole room.
+		]]
+		local anchor = fightTarget and fightTarget.Parent and fightTarget.Position or nil
+		local band = keepClear + 4
+
 		local function search(useRoom)
 			local fallback, fallbackCount = nil, dangerCount(pos, margin)
 			local detour = nil
 			local roomy, roomyScore = nil, nil
+			local best, bestScore, firstClear = nil, nil, nil
 
 			for _, candidate in candidates do
 				local point = candidate.point
+
+				-- A safe spot is already in hand and everything left is a longer walk than
+				-- it is worth comparing against.
+				if best and candidate.travel > firstClear + 16 then break end
 
 				local stale = false
 				for _, bad in badSpots do
@@ -1628,7 +1655,19 @@ run(function()
 							end
 
 							local gap = enemyGap(grounded)
-							if safePath and gap >= keepClear then return grounded, true end
+							if safePath and gap >= keepClear then
+								local score = candidate.travel
+								if anchor then
+									-- Only being too far is penalised. Closing on the boss is
+									-- free, which is what turns a retreat into a sidestep in.
+									local reach = (grounded - anchor).Magnitude
+									score += math.max(0, reach - band) * 1.6
+								end
+								if not bestScore or score < bestScore then
+									best, bestScore = grounded, score
+									firstClear = firstClear or candidate.travel
+								end
+							end
 
 							if safePath then
 								local score = candidate.travel - math.min(gap, keepClear) * 3
@@ -1646,6 +1685,7 @@ run(function()
 				end
 			end
 
+			if best then return best, true end
 			return roomy or detour or fallback, false
 		end
 
@@ -1683,10 +1723,15 @@ run(function()
 		decides whether standing back is fighting or just standing. Asked before closing to
 		weapon range rather than after, which is the whole point of the rework.
 	]]
+	-- Four of them, not two: the game has a second pair of ability slots, q2 and e2, and
+	-- every part of this only ever looked at the first pair - so half of an equipped
+	-- loadout was never cast at all.
+	local ABILITY_SLOTS = { 'q', 'e', 'q2', 'e2' }
+
 	local function abilityReady()
 		for _, child in lplr.Backpack:GetChildren() do
 			local slot = child:FindFirstChild('abilitySlot')
-			if slot and (slot.Value == 'q' or slot.Value == 'e') then
+			if slot and table.find(ABILITY_SLOTS, slot.Value) then
 				local cd = child:FindFirstChild('cooldown')
 				if not (cd and cd.Value > 0) then return true end
 			end
@@ -1726,7 +1771,7 @@ run(function()
 			return
 		end
 
-		for _, slot in { 'q', 'e' } do
+		for _, slot in ABILITY_SLOTS do
 			for _, child in lplr.Backpack:GetChildren() do
 				if child:FindFirstChild('abilitySlot') and child.abilitySlot.Value == slot then
 					local cd = child:FindFirstChild('cooldown')
@@ -2519,6 +2564,24 @@ run(function()
 		containing the word, so anything called Chain Heal or Universal Heal qualifies and
 		a Rending Slice does not - which is the whole of it for most loadouts.
 	]]
+	--[[
+		Heals are equipped by number, and there are four slots.
+
+		Two things made this fail every time. The game's own equip call is
+		equipItem:InvokeServer(kind, uniqueItemNum, slot) with the item number as a NUMBER -
+		its inventory keys look like 'ability_12' and it does tonumber(key:sub(9)) before
+		sending. This sent the string, which the server does not match against anything, so
+		nothing was ever equipped.
+
+		The second is the slots themselves: they are q, e, q2 and e2. Only the first two
+		were saved and restored, so the other half of the loadout was quietly dropped.
+	]]
+	local HEAL_WORDS = { 'heal', 'rejuvenat', 'aura of life', 'life pulse', 'innervate', 'blessing' }
+
+	local function itemNumber(key, prefix)
+		return tonumber(tostring(key):sub(#prefix + 2))
+	end
+
 	local function healSwap()
 		local getStorage, equip, abilityUsed = remote('reloadInvy'), remote('equipItem'), remote('abilityUsed')
 		if not (getStorage and equip and abilityUsed) then
@@ -2535,9 +2598,13 @@ run(function()
 		local heals, owned = {}, 0
 		for id, item in pairs(storage.abilities) do
 			owned += 1
-			if tostring(fv(item, 'name') or ''):lower():find('heal') then
-				table.insert(heals, tostring(id):sub(9))
+			local name = tostring(fv(item, 'name') or ''):lower()
+			local isHeal = false
+			for _, word in HEAL_WORDS do
+				if name:find(word, 1, true) then isHeal = true break end
 			end
+			local num = itemNumber(id, 'ability')
+			if isHeal and num then table.insert(heals, num) end
 		end
 		if #heals == 0 then
 			say(string.format('heal swap: none of your %d abilities is a heal, waiting for regen instead', owned))
@@ -2545,17 +2612,18 @@ run(function()
 		end
 		say(string.format('heal swap: %d heal(s) found, switching', #heals))
 
-		local savedWeapon, savedQ, savedE
+		local savedWeapon, saved = nil, {}
 		if type(storage.weapons) == 'table' then
 			for id, item in pairs(storage.weapons) do
-				if item.equipped == true then savedWeapon = tostring(id):sub(8) break end
+				if item.equipped == true then savedWeapon = itemNumber(id, 'weapon') break end
 			end
 		end
 		for id, item in pairs(storage.abilities) do
 			local eq = item.equipped
 			if type(eq) == 'table' then
-				if eq.q then savedQ = tostring(id):sub(9) end
-				if eq.e then savedE = tostring(id):sub(9) end
+				for _, slot in ABILITY_SLOTS do
+					if eq[slot] then saved[slot] = itemNumber(id, 'ability') end
+				end
 			end
 		end
 
@@ -2563,12 +2631,29 @@ run(function()
 		if type(storage.weapons) == 'table' then
 			for id, item in pairs(storage.weapons) do
 				local sp = tonumber(fv(item, 'spellPower')) or 0
-				if not bestSP or sp > bestSP then bestW, bestSP = tostring(id):sub(8), sp end
+				if not bestSP or sp > bestSP then bestW, bestSP = itemNumber(id, 'weapon'), sp end
 			end
 		end
-		if bestW then pcall(function() equip:InvokeServer('weapon', bestW) end) end
-		pcall(function() equip:InvokeServer('ability', heals[1], 'q') end)
-		if #heals >= 2 then pcall(function() equip:InvokeServer('ability', heals[2], 'e') end) end
+
+		-- The server answers these, so a refusal can be reported rather than looking like
+		-- the swap simply did nothing.
+		local function equipItem(kind, num, slot)
+			if not num then return false end
+			local sent, answer = pcall(function() return equip:InvokeServer(kind, num, slot) end)
+			return sent and answer ~= false
+		end
+
+		if bestW then equipItem('weapon', bestW) end
+
+		local placed = 0
+		for index, slot in ABILITY_SLOTS do
+			local heal = heals[index]
+			if heal and equipItem('ability', heal, slot) then placed += 1 end
+		end
+		if placed == 0 then
+			say('heal swap: the server refused to equip a heal (it may not allow swapping mid-dungeon)')
+			return false
+		end
 		task.wait(0.4)
 
 		local t0 = os.clock()
@@ -2588,7 +2673,7 @@ run(function()
 				hum:MoveTo(hrp.Position + away * 20)
 			end
 
-			for _, slot in { 'q', 'e' } do
+			for _, slot in ABILITY_SLOTS do
 				for _, child in lplr.Backpack:GetChildren() do
 					if child:FindFirstChild('abilitySlot') and child.abilitySlot.Value == slot then
 						local cd = child:FindFirstChild('cooldown')
@@ -2603,9 +2688,14 @@ run(function()
 			task.wait(0.2)
 		end
 
-		if savedWeapon then pcall(function() equip:InvokeServer('weapon', savedWeapon) end) end
-		if savedQ then pcall(function() equip:InvokeServer('ability', savedQ, 'q') end) end
-		if savedE then pcall(function() equip:InvokeServer('ability', savedE, 'e') end) end
+		if savedWeapon then
+			pcall(function() equip:InvokeServer('weapon', savedWeapon) end)
+		end
+		for _, slot in ABILITY_SLOTS do
+			if saved[slot] then
+				pcall(function() equip:InvokeServer('ability', saved[slot], slot) end)
+			end
+		end
 		return true
 	end
 
@@ -2845,6 +2935,8 @@ run(function()
 
 					local room = currentRoom()
 					local target, part, dist = nearestEnemy(hrp.Position, room)
+					-- Handed to the dodge, so it knows which way keeps the fight.
+					fightTarget = part
 
 					-- DODGE first: standing in an attack costs more than a turn spent
 					-- fighting, so a dodge in progress outranks everything below it. The
@@ -3152,7 +3244,7 @@ local function sharedCastAbilities()
 	local abilityUsed = remote('abilityUsed')
 	if not abilityUsed then return end
 
-	for _, slot in {'q', 'e'} do
+	for _, slot in {'q', 'e', 'q2', 'e2'} do
 		for _, child in lplr.Backpack:GetChildren() do
 			local marker = child:FindFirstChild('abilitySlot')
 			if marker and marker.Value == slot then
