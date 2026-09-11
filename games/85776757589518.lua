@@ -1427,7 +1427,15 @@ run(function()
 			and math.abs(lp.Z) <= h.Z + margin
 	end
 
-	local function inDanger(pos, d, margin)
+	--[[
+		nowOnly asks where the attack IS, not where it is going.
+
+		Everything that plans a walk wants the prediction - stepping to where a sweep is
+		about to be is how you get caught by it. The emergency hop wants the opposite: it
+		exists for "this is landing on me", and firing it because something might reach us
+		shortly spends a teleport on a situation walking would have handled.
+	]]
+	local function inDanger(pos, d, margin, nowOnly)
 		margin = (margin or 0) + CHARACTER_RADIUS
 
 		-- A telegraph from the bridge has no part behind it, only the numbers the game was
@@ -1476,11 +1484,19 @@ run(function()
 		for _, height in { 0, -2.6, 1.6 } do
 			local point = pos + Vector3.new(0, height, 0)
 			if pointInZone(cf, size, shape, point, margin) then return true end
-			if futures then
+			if futures and not nowOnly then
 				for _, future in futures do
 					if pointInZone(future, size, shape, point, margin) then return true end
 				end
 			end
+		end
+		return false
+	end
+
+	-- Standing in something this instant, prediction set aside.
+	local function inDangerNow(pos, margin)
+		for _, d in dangers do
+			if inDanger(pos, d, margin, true) then return true end
 		end
 		return false
 	end
@@ -2206,10 +2222,17 @@ run(function()
 		-- covers, which is the line that matters.
 		if os.clock() - lastBlink < 0.5 then return false end
 
-		-- Only when it is already landing on us. Anything less is a walk.
-		if not anyDanger(pos, 0) then return false end
+		--[[
+			Only when it is already on us - where it IS, not where it may be.
 
-		local hop = BlinkDistance ~= nil and BlinkDistance.Value or 14
+			Asking the predicting test meant a sweep that might reach us shortly counted as
+			landing on us, and the hop went off for something a step would have answered.
+			Spent on the wrong moments it is also unavailable for the right ones, since one
+			hop rules out the next half second.
+		]]
+		if not inDangerNow(pos, 0) then return false end
+
+		local hop = BlinkDistance ~= nil and BlinkDistance.Value or 4
 		local delta = (goal - pos) * Vector3.new(1, 0, 1)
 		if delta.Magnitude < 1 then return false end
 
@@ -2229,10 +2252,25 @@ run(function()
 		end
 
 		for _, point in tries do
-			local y = groundAt(point, pos.Y)
+			--[[
+				Level ground, and not merely nearby ground.
+
+				A landing was allowed up to four studs higher, and putting the character four
+				studs up in a single frame is the sudden height change the server pulls you
+				back for - the one thing this was supposed to stay under. Within a stud and a
+				half it reads as standing on the same floor.
+			]]
+			local y = groundAt(point, pos.Y, 1.5, 1.5)
 			if y then
 				local landing = Vector3.new(point.X, y, point.Z)
-				if not anyDanger(landing, 3)
+				--[[
+					Out of the attack is enough to ask for.
+
+					Three studs of clearance on top is a comfort the dense patterns never
+					offer, so in exactly the moments this exists for, nothing qualified and
+					it did nothing at all.
+				]]
+				if not inDangerNow(landing, 0)
 					and not insideBarrier(landing, 1)
 					and clearLine(pos, landing, true) then
 
@@ -2264,7 +2302,8 @@ run(function()
 	local function panicHop(hrp, pos)
 		if not (EmergencyTP ~= nil and EmergencyTP.Enabled) then return false end
 		if os.clock() - lastBlink < 0.5 then return false end
-		if not anyDanger(pos, 0) then return false end
+		-- Standing in it, not predicted to be: the same rule as the ordinary hop.
+		if not inDangerNow(pos, 0) then return false end
 
 		local hop = BlinkDistance ~= nil and BlinkDistance.Value or 4
 		local here = dangerCount(pos, 1)
@@ -2275,7 +2314,8 @@ run(function()
 			local flat = Vector3.new(math.cos(angle), 0, math.sin(angle))
 			for _, reach in { hop, hop * 0.6 } do
 				local point = pos + flat * reach
-				local y = groundAt(point, pos.Y)
+				-- Level, for the same reason: height is what gets noticed.
+				local y = groundAt(point, pos.Y, 1.5, 1.5)
 				if y then
 					local landing = Vector3.new(point.X, y, point.Z)
 					if not insideBarrier(landing, 1) and clearLine(pos, landing, true) then
