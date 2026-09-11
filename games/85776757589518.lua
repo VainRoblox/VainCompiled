@@ -600,7 +600,7 @@ end)
 	attacks come from the precastHitbox telegraph the game sends for all of them.
 ]]
 run(function()
-	local AutoFarm, SafeHP, RecoverHP, AttackRange, AbilityRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, Movement, ShiftLock, Debug, EmergencyTP, BlinkDistance
+	local AutoFarm, SafeHP, RecoverHP, AttackRange, AbilityRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, Movement, ShiftLock, Debug, EmergencyTP, BlinkDistance, AlignAttacks
 
 	--[[
 		How the character gets about, as one choice rather than two toggles.
@@ -2184,11 +2184,70 @@ run(function()
 		Horizontal only: a Humanoid is force-kept upright, so pitching the root just makes
 		it fight our CFrame every frame.
 	]]
+	local facedAt = 0
+
 	local function faceTarget(hrp, part)
 		if not (hrp and part) then return end
 		local flat = Vector3.new(part.Position.X, hrp.Position.Y, part.Position.Z)
 		if (flat - hrp.Position).Magnitude < 0.5 then return end
 		hrp.CFrame = CFrame.lookAt(hrp.Position, flat)
+		facedAt = os.clock()
+	end
+
+	--[[
+		Turned side-on to what is coming, because a character is not round.
+
+		A root part is two studs wide and one deep, so how much of you a lane can clip
+		depends on which way you are facing: square to it you present the full two studs,
+		turned across it barely one. In a fan of beams, where the gaps are only a few studs
+		wide, that difference is the difference between standing in the gap and being caught
+		by its edge.
+
+		The direction wanted is across the attack rather than along it - which is also the
+		way out of it, so the same turn that makes the gap fit points the feet at the exit.
+
+		Facing is given up during the moment around a swing: a hit that lands behind you is
+		worth more than a stud of clearance.
+	]]
+	local function alignToAttacks(hrp)
+		if not (AlignAttacks ~= nil and AlignAttacks.Enabled) then return end
+		if os.clock() - facedAt < 0.25 then return end
+
+		local pos = hrp.Position
+		local best, bestGap
+
+		for _, d in dangers do
+			local cf, size = d.cf, d.size
+			if not cf and d.part then cf, size = zoneShape(d.part) end
+			if cf and size then
+				local gap = (cf.Position - pos).Magnitude - (d.bound or 0)
+				if gap < 45 and (not bestGap or gap < bestGap) then
+					--[[
+						Across the narrow way of it.
+
+						A lane is long in one horizontal direction and thin in the other, and
+						the thin one is the way out. A round attack has no such axis, so the
+						way out is simply outward from its middle.
+					]]
+					local across
+					if size.X > size.Z * 1.4 then
+						across = cf.LookVector
+					elseif size.Z > size.X * 1.4 then
+						across = cf.RightVector
+					else
+						across = (pos - cf.Position)
+					end
+
+					across = Vector3.new(across.X, 0, across.Z)
+					if across.Magnitude > 0.05 then
+						best, bestGap = across.Unit, gap
+					end
+				end
+			end
+		end
+
+		if not best then return end
+		hrp.CFrame = CFrame.lookAt(pos, pos + best)
 	end
 
 	local function castAbilities(abilityUsed)
@@ -3575,8 +3634,13 @@ run(function()
 
 					if dodgeGoal then
 						stepTo(hrp, hum, dodgeGoal)
+						alignToAttacks(hrp)
 						return
 					end
+
+					-- Standing in a gap rather than walking to one: the turn matters just as
+					-- much here, since the gap is only a couple of studs wider than we are.
+					if #dangers > 0 then alignToAttacks(hrp) end
 				else
 					dodgeGoal = nil
 				end
@@ -3900,6 +3964,8 @@ run(function()
 		Tooltip = 'When an attack is already on you and walking out would be too slow, hop clear in one move instead. Level ground only, once a second at most' })
 	BlinkDistance = AutoFarm:CreateSlider({ Name = 'Emergency TP Distance', Min = 5, Max = 30, Default = 14, Suffix = ' studs',
 		Tooltip = 'How far one emergency hop may go. Longer clears more, and looks less like a step (default 14)' })
+	AlignAttacks = AutoFarm:CreateToggle({ Name = 'Align to Attacks', Default = true,
+		Tooltip = 'Turn side-on to whatever is coming, so a lane clips one stud of you instead of two. Needs Shift Lock on to hold while moving' })
 end)
 
 
