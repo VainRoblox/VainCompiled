@@ -781,6 +781,10 @@ run(function()
 		ledge does not stop an ability, and treating it as cover would have the farm refusing
 		perfectly good ground in a boss fight.
 	]]
+	-- Declared before the wall test, which asks it whether a knee-high obstruction has
+	-- standing room on top. A local defined further down is a nil global up here.
+	local groundAt
+
 	local function clearLine(from, to, low)
 		refreshSkip()
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
@@ -798,10 +802,24 @@ run(function()
 		refreshSkip()
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
 		if flat.Magnitude < 0.05 then return false end
+
 		local reach = flat.Unit * (flat.Magnitude + 1.5)
 		if workspace:Raycast(from, reach, losParams) then return true end
-		-- Knee height too: a step is climbed, a crate is walked into.
-		return workspace:Raycast(from - Vector3.new(0, 1.2, 0), reach, losParams) ~= nil
+
+		--[[
+			A step is climbed; a crate is walked into. Telling them apart.
+
+			The knee ray sees the face of a stair exactly as it sees the side of a box, so
+			adding it stopped Step TP on staircases dead: every step forward met a riser and
+			was refused. What separates them is what is on top - a stair has walkable floor a
+			foot or two up, a crate has its lid. So when the low ray hits and the upper ones
+			do not, the question becomes whether there is standing room just above.
+		]]
+		if not workspace:Raycast(from - Vector3.new(0, 1.2, 0), reach, losParams) then
+			return false
+		end
+
+		return groundAt(to, from.Y, 3.5, 6) == nil
 	end
 
 	--[[
@@ -817,7 +835,7 @@ run(function()
 		So the caller says which it is asking. Choosing a spot up a step is fine: getting
 		there is the stepper's problem, and it will refuse the climb if it really cannot.
 	]]
-	local function groundAt(position, fallbackY, rise, drop)
+	function groundAt(position, fallbackY, rise, drop)
 		refreshSkip()
 
 		local hit = workspace:Raycast(position + Vector3.new(0, 12, 0), Vector3.new(0, -80, 0), footParams)
@@ -2949,7 +2967,18 @@ run(function()
 				flat = flat.Unit * full
 			end
 
-			local rise = math.clamp(desired.Y - hrp.Position.Y, -full, full)
+			--[[
+				Enough height per step to actually climb a stair.
+
+				Height was budgeted at the same rate as forward travel, which at sixty frames
+				a second is about a quarter of a stud - so a stair two studs tall took eight
+				frames to rise while the feet kept going forward into it, and Step TP simply
+				stopped on staircases. A walking player crosses a step in one go, so a couple
+				of studs is what this allows, and no more: beyond that it is a climb, and a
+				climb is what gets noticed.
+			]]
+			local allowance = math.max(full, 2)
+			local rise = math.clamp(desired.Y - hrp.Position.Y, -allowance, allowance)
 			hrp.CFrame = CFrame.new(hrp.Position + flat + Vector3.new(0, rise, 0))
 				* (hrp.CFrame - hrp.CFrame.Position)
 		end
