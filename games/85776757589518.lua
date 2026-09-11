@@ -979,17 +979,6 @@ run(function()
 	]]
 	local settleUntil, dodgeRestUntil = 0, 0
 
-	--[[
-		The emergency move, as a sprint rather than a jump.
-
-		Putting the character down fourteen studs away in one frame is not something a
-		walking player can produce, and the server says so - it is the one thing every other
-		movement here is carefully shaped to avoid. The escape is still needed though, so it
-		is spent as speed instead of as distance: the same short hop, covered over a few
-		frames at a few times walking pace, which is a sprint rather than a teleport.
-	]]
-	local blinkGoal, blinkUntil = nil, 0
-	local BLINK_BOOST = 3
 
 	--[[
 		Spots the stepper would not actually go to.
@@ -2101,7 +2090,10 @@ run(function()
 	local function emergencyBlink(hrp, pos, goal)
 		if not (EmergencyTP ~= nil and EmergencyTP.Enabled) then return false end
 		if not goal then return false end
-		if os.clock() - lastBlink < 1.2 then return false end
+		-- Short enough that one alone rarely clears an attack, so they are allowed to
+		-- follow each other - four studs twice a second is still less ground than walking
+		-- covers, which is the line that matters.
+		if os.clock() - lastBlink < 0.5 then return false end
 
 		-- Only when it is already landing on us. Anything less is a walk.
 		if not anyDanger(pos, 0) then return false end
@@ -2133,13 +2125,12 @@ run(function()
 					and not insideBarrier(landing, 1)
 					and clearLine(pos, landing, true) then
 
-					-- Handed to the stepper at several times pace rather than written
-					-- straight into the character: same distance, but an arrival a player
-					-- could have produced.
-					blinkGoal = landing
-					blinkUntil = os.clock() + 0.35
+					-- Written straight into the character: instant is the point of it, and
+					-- a few studs on level ground is inside what the server tolerates.
+					hrp.CFrame = CFrame.new(landing) * (hrp.CFrame - hrp.CFrame.Position)
+					hrp.AssemblyLinearVelocity = Vector3.zero
 					lastBlink = os.clock()
-					say(string.format('emergency step %.0f studs', (landing - pos).Magnitude))
+					say(string.format('emergency hop %.0f studs', (landing - pos).Magnitude))
 					return true
 				end
 			end
@@ -2694,9 +2685,6 @@ run(function()
 			if range < 0.5 then return end
 
 			local speed = (hum.WalkSpeed > 0 and hum.WalkSpeed or 16)
-		-- The emergency escape is the one time this pace is exceeded, and only for the
-		-- third of a second it takes to clear the attack.
-		if os.clock() < blinkUntil then speed *= BLINK_BOOST end
 			local travel = math.min(range, speed * dt)
 			if refused(hrp.Position + direct.Unit * travel) then return end
 			hrp.CFrame = CFrame.new(hrp.Position + direct.Unit * travel)
@@ -2711,9 +2699,6 @@ run(function()
 
 		-- Your own walk speed, which is the pace the server expects to see covered.
 		local speed = (hum.WalkSpeed > 0 and hum.WalkSpeed or 16)
-		-- The emergency escape is the one time this pace is exceeded, and only for the
-		-- third of a second it takes to clear the attack.
-		if os.clock() < blinkUntil then speed *= BLINK_BOOST end
 		local full = math.min(distance, speed * dt)
 		local direction = delta.Unit
 
@@ -3619,19 +3604,9 @@ run(function()
 
 					-- Standing in it already: hop clear rather than start a walk that arrives
 					-- after the attack does.
-					-- Already sprinting clear: carry it through rather than deciding again.
-					if os.clock() < blinkUntil and blinkGoal then
-						stepTo(hrp, hum, blinkGoal)
-						alignToAttacks(hrp)
-						if (hrp.Position - blinkGoal).Magnitude < 1.5 then
-							blinkUntil = 0
-							settleUntil = os.clock() + 0.25
-						end
-						return
-					end
-
 					if dodgeGoal and emergencyBlink(hrp, pos, dodgeGoal) then
 						dodgeGoal = nil
+						settleUntil = os.clock() + 0.25
 						return
 					end
 
@@ -4014,8 +3989,8 @@ run(function()
 		Tooltip = "Steps you out of every enemy attack part the game spawns, reading their names from the game's own attack list" })
 	EmergencyTP = AutoFarm:CreateToggle({ Name = 'Emergency TP', Default = true,
 		Tooltip = 'When an attack is already on you and walking out would be too slow, hop clear in one move instead. Level ground only, once a second at most' })
-	BlinkDistance = AutoFarm:CreateSlider({ Name = 'Emergency TP Distance', Min = 5, Max = 20, Default = 10, Suffix = ' studs',
-		Tooltip = 'How far one emergency escape covers, sprinted over a few frames rather than teleported. Raise it only if the server tolerates it (default 10)' })
+	BlinkDistance = AutoFarm:CreateSlider({ Name = 'Emergency TP Distance', Min = 2, Max = 5, Default = 4, Suffix = ' studs',
+		Tooltip = 'How far one emergency teleport goes. Kept tiny on purpose - further than this and the server pulls you back (default 4)' })
 	AlignAttacks = AutoFarm:CreateToggle({ Name = 'Align to Attacks', Default = true,
 		Tooltip = 'Turn side-on to whatever is coming, so a lane clips one stud of you instead of two. Needs Shift Lock on to hold while moving' })
 end)
