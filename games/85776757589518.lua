@@ -936,12 +936,34 @@ run(function()
 	local function learnNames()
 		if next(attackNames) then return end
 
+		--[[
+			The attacks, not the pieces they are built from.
+
+			Harvesting every descendant collected the mesh names inside each attack -
+			Crystal, base, Ice, flame, circle, rock, even 't' and 'e' - and the dungeon's own
+			scenery uses exactly those names. Rooms stream in during a run, so every
+			matching rock and crystal on the map became a danger zone that never expired,
+			and the dodge found nowhere left to stand.
+
+			Only the entries themselves are names: whatever sits in the folder (recursing
+			through the per-enemy subfolders) and the attack models directly inside a model
+			that groups several. The damage volumes inside an attack are known separately
+			by their own names, below.
+		]]
 		local function harvest(folder, into)
 			if not folder then return end
-			for _, d in folder:GetDescendants() do
-				if d:IsA('BasePart') or d:IsA('Model') then into[d.Name] = true end
+			for _, child in folder:GetChildren() do
+				if child:IsA('Folder') then
+					harvest(child, into)
+				elseif child:IsA('Model') or child:IsA('BasePart') then
+					into[child.Name] = true
+					if child:IsA('Model') then
+						for _, inner in child:GetChildren() do
+							if inner:IsA('Model') then into[inner.Name] = true end
+						end
+					end
+				end
 			end
-			for _, d in folder:GetChildren() do into[d.Name] = true end
 		end
 
 		harvest(replicatedStorage:FindFirstChild('projectiles'), ownNames)
@@ -994,34 +1016,88 @@ run(function()
 		'firstBossPlayerOnFire') would otherwise be a danger zone that follows you around
 		for ever - the farm would run from itself and never stop.
 	]]
-	local function ownedByCharacter(part)
-		local node = part
-		for _ = 1, 8 do
-			if not node or node == workspace then return false end
-			if node:FindFirstChildOfClass('Humanoid') then return true end
-			if playersService:GetPlayerFromCharacter(node) then return true end
-			node = node.Parent
-		end
-		return false
+	-- The damage volumes, by the names the game gives them inside every attack model.
+	local HITBOX_NAMES = {
+		hitBox = true, precast = true, preCast = true, damagePrecast = true,
+		innerHitbox = true, outerHitbox = true, leftHitbox = true, rightHitbox = true,
+		innerPrecast = true, outerPrecast = true, leftPrecast = true, rightPrecast = true,
+		circlePrecast = true, growingPrecast = true,
+	}
+
+	--[[
+		Somewhere to be, not somewhere to avoid.
+
+		The memory and safe-spot mechanics damage the whole arena EXCEPT these circles, and
+		they are built from the same parts as everything else - a precast, in a model called
+		thirdBossSafeSpot. Treated as danger, the dodge ran out of the one place the attack
+		could not reach, straight into the part that could.
+	]]
+	local safeZones = {}
+
+	local function isSafeName(name)
+		return string.lower(name):find('safe') ~= nil or name:find('Good') ~= nil
 	end
 
 	local function registerDanger(part)
 		if not part:IsA('BasePart') then return end
 
-		-- The part itself, or whatever it arrived inside: a lane's hitBox is called
-		-- 'hitBox' and only its model carries the attack's name.
-		local named = attackNames[part.Name]
-		if not named then
-			local node = part.Parent
-			for _ = 1, 4 do
-				if not node or node == workspace then break end
-				if attackNames[node.Name] then named = true break end
-				if ownNames[node.Name] then return end
-				node = node.Parent
+		local char = lplr.Character
+		if char and part:IsDescendantOf(char) then return end
+
+		local dungeon = workspace:FindFirstChild('dungeon')
+		local map = workspace:FindFirstChild('Map')
+
+		--[[
+			Walked all the way up, because where an attack is parented varies.
+
+			Most land at the top of the workspace, some inside a model that groups several,
+			some inside the enemy that cast them. Stopping four levels up missed the deeper
+			ones; skipping everything with a Humanoid above it missed the ones parented into
+			their caster.
+		]]
+		local container, safe, scenery = nil, false, false
+		local node = part
+		for _ = 1, 16 do
+			if not node or node == workspace or node == game then break end
+			-- Worn, not thrown: bosses wear gear from these very folders.
+			if node:IsA('Accessory') or node:IsA('Tool') then return end
+
+			local name = node.Name
+			if isSafeName(name) then safe = true end
+			if node == dungeon or node == map then scenery = true end
+
+			if node:IsA('Model') and node:FindFirstChildOfClass('Humanoid') then
+				if playersService:GetPlayerFromCharacter(node) then return end
+				-- An enemy's own body is not an attack; a model parented into it can be.
+				if not container or container == part then return end
+				break
 			end
+
+			if attackNames[name] and node ~= part then container = container or node end
+			if attackNames[name] and node == part then container = part end
+			node = node.Parent
 		end
-		if not named then return end
-		if ownedByCharacter(part) then return end
+
+		local volume = HITBOX_NAMES[part.Name]
+
+		if container then
+			-- A bare part matched only by its own name, sitting in the map, is scenery that
+			-- happens to share a name with an attack - a rock is a rock.
+			if container == part and scenery and not volume then return end
+		elseif volume then
+			-- A lone hitbox with no attack around it. Your own spells always arrive inside
+			-- a named model, so one on its own is the enemy's - unless it is on top of you.
+			if part.Parent ~= workspace then return end
+			local root = char and char:FindFirstChild('HumanoidRootPart')
+			if root and (part.Position - root.Position).Magnitude < 4 then return end
+		else
+			return
+		end
+
+		if safe then
+			if volume or part.Name:find('Precast') then table.insert(safeZones, part) end
+			return
+		end
 
 		table.insert(dangers, {
 			part = part,
@@ -1210,9 +1286,42 @@ run(function()
 		return true
 	end
 
-	local function anyDanger(pos, margin)
+	-- Standing in a live safe circle, which the arena-wide attacks cannot reach.
+	local function inSafeZone(pos)
+		for i = #safeZones, 1, -1 do
+			local part = safeZones[i]
+			if not part.Parent then
+				table.remove(safeZones, i)
+			else
+				local cf, size, shape = zoneShape(part)
+				if cf and (pointInZone(cf, size, shape, pos, 1)
+					or pointInZone(cf, size, shape, pos + Vector3.new(0, -2.6, 0), 1)) then
+					return true
+				end
+			end
+		end
+		return false
+	end
+
+	-- Arena-wide, and therefore the kind a safe circle protects you from.
+	local function hugeZone(d)
+		if d.part then
+			local size = d.part.Size
+			return math.max(size.X, size.Y, size.Z) >= 100
+		end
+		return (d.size and math.max(d.size.X, d.size.Z) >= 100) or ((d.radius or 0) >= 50)
+	end
+
+	local function zoneCounts(pos, d, margin, sheltered, ignore)
+		if ignore and ignore[d] then return false end
+		if sheltered and hugeZone(d) then return false end
+		return inDanger(pos, d, margin)
+	end
+
+	local function anyDanger(pos, margin, ignore)
+		local sheltered = #safeZones > 0 and inSafeZone(pos)
 		for _, d in dangers do
-			if inDanger(pos, d, margin) then return true end
+			if zoneCounts(pos, d, margin, sheltered, ignore) then return true end
 		end
 		return false
 	end
@@ -1221,9 +1330,10 @@ run(function()
 	-- overlapping attacks there is often nowhere fully clear, and the difference between
 	-- standing in one and standing in three is the difference between living and not.
 	local function dangerCount(pos, margin)
+		local sheltered = #safeZones > 0 and inSafeZone(pos)
 		local count = 0
 		for _, d in dangers do
-			if inDanger(pos, d, margin) then count += 1 end
+			if zoneCounts(pos, d, margin, sheltered) then count += 1 end
 		end
 		return count
 	end
@@ -1319,49 +1429,79 @@ run(function()
 			than the best. The least covered legal spot seen along the way is kept and used
 			only if nothing clean turns up.
 		]]
-		local fallback, fallbackCount = nil, dangerCount(pos, margin)
+		--[[
+			The zones we are already inside, which the way out has to cross.
 
-		for _, candidate in candidates do
-			local point = candidate.point
+			The path check used to reject any route that touched a zone at all - and every
+			route out starts inside the zone being escaped, so every single one failed. Worse,
+			a clean spot rejected that way was never kept as a fallback either, so the search
+			came back empty and the dodge did not move. That was the whole of "barely dodges".
+			Only zones we are not already in can make a path unsafe.
+		]]
+		local escaping = {}
+		for _, d in dangers do
+			if inDanger(pos, d, margin) then escaping[d] = true end
+		end
 
-			-- Cheapest tests first, and the raycast last: this runs on a loop that wants to
-			-- finish inside a frame, and ground is the only test here that costs a ray.
-			if not insideBarrier(point, 2) and not crossesBarrier(pos, point)
-				and inRoom(point, room, 6) then
+		--[[
+			Rules that forbid where you are already standing are wrong, not strict.
 
-				local covered = dangerCount(point, margin)
-				local clear = covered == 0 and not anyDanger(point, margin + 3)
+			Standing on or beside a border part made every candidate "inside a barrier" or
+			"crossing one", so nothing was ever legal. Likewise the room box: when the room
+			the game says is current is not the one you are in, every spot was outside it.
+			Both are only applied when you are properly inside what they describe.
+		]]
+		local respectBorders = not insideBarrier(pos, 0)
+		local respectRoom = room ~= nil and inRoom(pos, room, 6)
 
-				if clear or covered < fallbackCount then
-					local y = needFooting and groundAt(point, pos.Y) or point.Y
-					if y then
-						local grounded = Vector3.new(point.X, y, point.Z)
-						if clear then
-							--[[
-								Checked along the way, not only at the end.
+		local function search(useRoom)
+			local fallback, fallbackCount = nil, dangerCount(pos, margin)
+			local detour = nil
 
-								A spot clear of everything is no use if getting there crosses
-								the lane that is about to fire. Walking the path through the
-								zones costs four more tests and is the difference between a
-								dodge and a detour through the attack.
-							]]
-							local safePath = true
-							for step = 1, 4 do
-								if anyDanger(pos:Lerp(grounded, step / 4), margin) then
-									safePath = false
-									break
+			for _, candidate in candidates do
+				local point = candidate.point
+
+				-- Cheapest tests first, and the raycast last: ground is the only test here
+				-- that costs a ray.
+				if (not respectBorders or (not insideBarrier(point, 2) and not crossesBarrier(pos, point)))
+					and (not useRoom or inRoom(point, room, 6)) then
+
+					local covered = dangerCount(point, margin)
+					local clear = covered == 0 and not anyDanger(point, margin + 3)
+
+					if clear or covered < fallbackCount then
+						local y = needFooting and groundAt(point, pos.Y) or point.Y
+						if y then
+							local grounded = Vector3.new(point.X, y, point.Z)
+							if clear then
+								local safePath = true
+								for step = 1, 4 do
+									if anyDanger(pos:Lerp(grounded, step / 4), margin, escaping) then
+										safePath = false
+										break
+									end
 								end
+								if safePath then return grounded, true end
+								-- Clear at the end but not on the way: still far better than
+								-- staying, so it is kept rather than thrown away.
+								detour = detour or grounded
+							elseif covered < fallbackCount then
+								fallback, fallbackCount = grounded, covered
 							end
-							if safePath then return grounded end
-						elseif covered < fallbackCount then
-							fallback, fallbackCount = grounded, covered
 						end
 					end
 				end
 			end
+
+			return detour or fallback, false
 		end
 
-		return fallback
+		local spot, clean = search(respectRoom)
+		if not clean and respectRoom then
+			local wider, widerClean = search(false)
+			if widerClean or not spot then spot = wider end
+		end
+		return spot
 	end
 
 	-- storage items may store a field as a plain value or as {Value=x}.
@@ -1716,7 +1856,22 @@ run(function()
 		Height is taken from the ground under the destination rather than carried across,
 		so steps follow stairs and slopes instead of walking into them at knee height.
 	]]
-	local function stepTo(hrp, hum, goal)
+	local function stepTo(hrp, hum, goal, avoid)
+		--[[
+			Never walked back into what was just escaped.
+
+			The dodge stepped out, handed control back, and the farm's very next move was
+			straight back toward the enemy - through the zone - so it stood on the edge of
+			the attack and took it anyway. Ordinary movement now refuses a step that would
+			enter a live attack from outside one. The dodge itself passes no avoid, since
+			its path is already planned through the zones it is escaping.
+		]]
+		local function blocked(point)
+			if not avoid or #dangers == 0 then return false end
+			if anyDanger(hrp.Position, 1) then return false end
+			return anyDanger(point, 1)
+		end
+
 		local now = os.clock()
 		local dt = math.clamp(now - lastStep, 0, 0.3)
 		lastStep = now
@@ -1738,6 +1893,7 @@ run(function()
 
 			local speed = (hum.WalkSpeed > 0 and hum.WalkSpeed or 16)
 			local travel = math.min(range, speed * dt)
+			if blocked(hrp.Position + direct.Unit * travel) then return end
 			hrp.CFrame = CFrame.new(hrp.Position + direct.Unit * travel)
 				* (hrp.CFrame - hrp.CFrame.Position)
 			hrp.AssemblyLinearVelocity = Vector3.zero
@@ -1804,7 +1960,7 @@ run(function()
 			local aim = turn == 0 and direction or (CFrame.Angles(0, turn, 0) * direction)
 			local target = hrp.Position + aim * full
 			local y = groundAt(target, hrp.Position.Y)
-			if y then
+			if y and not blocked(Vector3.new(target.X, y, target.Z)) then
 				place(Vector3.new(target.X, y, target.Z))
 				return
 			end
@@ -1813,11 +1969,13 @@ run(function()
 		for _, fraction in {0.6, 0.3} do
 			local target = hrp.Position + direction * (full * fraction)
 			local y = groundAt(target, hrp.Position.Y)
-			if y then
+			if y and not blocked(Vector3.new(target.X, y, target.Z)) then
 				place(Vector3.new(target.X, y, target.Z))
 				return
 			end
 		end
+
+		if blocked(hrp.Position + direction * (full * 0.5)) then return end
 
 		--[[
 			Nothing underfoot anywhere along the way, so climb toward where we are going.
@@ -1895,7 +2053,14 @@ run(function()
 	local lastGoal, lastIssued = nil, 0
 
 	local function goTo(hum, hrp, goal)
-		if moving() then
+		-- While attacks are live, even Walk mode moves by steps: the humanoid walks
+		-- wherever it is sent with no idea what is on the floor, and stepping is the one
+		-- movement that can refuse a step into an attack.
+		if moving() or #dangers > 0 then
+			if not moving() and lastGoal then
+				hum:MoveTo(hrp.Position)
+				lastGoal = nil
+			end
 			moveGoal, moveSetAt = goal, os.clock()
 			return
 		end
@@ -1947,13 +2112,13 @@ run(function()
 
 		-- Flying needs no route, and short hops are not worth one.
 		if mode() == 'Fly' then
-			stepTo(hrp, hum, goal)
+			stepTo(hrp, hum, goal, true)
 			return
 		end
 
 		local function head(point)
-			if stepping then
-				stepTo(hrp, hum, point)
+			if stepping or #dangers > 0 then
+				stepTo(hrp, hum, point, true)
 			else
 				hum:MoveTo(point)
 			end
@@ -2140,6 +2305,16 @@ run(function()
 			moveGoal = nil
 			dodgeGoal = nil
 
+			-- Routes were recorded to disk by an older farm. Nothing reads them any more,
+			-- and deleting them means no old copy of the farm can ever replay one either.
+			pcall(function()
+				if isfolder and delfolder and isfolder('vain/profiles/dqroutes') then
+					delfolder('vain/profiles/dqroutes')
+				end
+			end)
+			-- In the console (F9), so which build is running is never a guess.
+			print('[Auto Farm] automatic pathing, no routes - dodge build 2')
+
 			--[[
 				Dodging runs on the frame, not on the farm tick.
 
@@ -2201,14 +2376,14 @@ run(function()
 					dodgeGoal = nil
 				end
 
-				if not moving() or not moveGoal then return end
+				if not moveGoal then return end
 				-- Nobody has renewed this in a while, so it is somewhere we used to want
 				-- to be rather than somewhere we are going.
 				if os.clock() - moveSetAt > 1 then
 					moveGoal = nil
 					return
 				end
-				stepTo(hrp, hum, moveGoal)
+				stepTo(hrp, hum, moveGoal, true)
 			end))
 
 			local weaponUsed = remote('weaponUsed')
