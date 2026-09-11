@@ -59,8 +59,9 @@ local tuning = {
 	leash = 40,
 	-- Never stand closer than this to an enemy, whatever else is true.
 	keepClear = 9,
-	-- How long an attack part stays dangerous once it stops moving.
-	stale = 3,
+	-- How long an attack part that has gone invisible and stopped changing is still
+	-- treated as dangerous. Visible or moving ones are kept alive regardless.
+	stale = 8,
 }
 
 -- What the farm is doing this instant, written out for diagnosis.
@@ -1654,19 +1655,32 @@ run(function()
 		end
 
 		--[[
-			Still moving means still coming; sitting still means it already happened.
+			Spent, or still burning: told apart by what the part is doing, not by a timer.
 
-			A warning lands, fires, and the part lingers - and the log shows the farm still
-			running from hitboxes five seconds old, dozens at a time, until most of the
-			arena reads as lethal and there is nowhere left to stand. A telegraph in this
-			game resolves in about a second, so a part that has sat motionless for a few is
-			spent, whatever it still looks like.
+			A flat three seconds was wrong in both directions. Lingering hazards - flame
+			walls, lava, the long sweeps - are still lethal well past it and were being
+			walked into as though they had finished; leftovers that had already fired stayed
+			"live" long enough to make the floor look impassable.
 
-			Anything actually travelling is the opposite case: a projectile crossing the
-			room is dangerous for as long as it is crossing it, so its clock keeps being
-			pushed back while it moves.
+			What actually separates them: something still happening keeps changing. It moves,
+			it grows, it is visible. A part that has sat perfectly still, invisible, for
+			several seconds has fired and been left behind - the game will clean it up, and
+			until then it is scenery.
 		]]
+		local size = d.part.Size
+		if not d.lastSize or (size - d.lastSize).Magnitude > 0.1 or (position - (d.lastPos or position)).Magnitude > 0.1 then
+			d.changedAt = now
+		end
+		d.lastSize, d.lastPos = size, position
+
+		local settled = now - (d.changedAt or now)
+		local unseen = d.part.Transparency >= 0.95
+
 		if d.velocity then
+			-- Crossing the room: dangerous for as long as it is crossing it.
+			d.expire = workspace:GetServerTimeNow() + 2
+		elseif not (unseen and settled > 4) then
+			-- Still visible, or still changing: still an attack.
 			d.expire = workspace:GetServerTimeNow() + 2
 		end
 
@@ -2946,10 +2960,53 @@ run(function()
 
 			local speed = (hum.WalkSpeed > 0 and hum.WalkSpeed or 16)
 			local travel = math.min(range, speed * dt)
-			if refused(hrp.Position + direct.Unit * travel) then return end
-			hrp.CFrame = CFrame.new(hrp.Position + direct.Unit * travel)
-				* (hrp.CFrame - hrp.CFrame.Position)
-			hrp.AssemblyLinearVelocity = Vector3.zero
+
+			--[[
+				Flying around what is in the way, rather than stopping at it.
+
+				This gave up the moment anything stood between here and the goal - and since
+				flying goes in a straight line, "anything" is every pillar, railing and
+				staircase on the route. Stopping dead in front of them is what being stuck on
+				obstacles is.
+
+				Air has one advantage a walk does not: up. So the direct line is tried first,
+				then the same heading lifted over the obstruction, then swung to either side.
+			]]
+			local heading = direct.Unit
+			local side = Vector3.new(-heading.Z, 0, heading.X)
+
+			--[[
+				Judged in three dimensions, because that is how flying moves.
+
+				The ordinary wall test is cast flat - it asks what stands between two columns
+				of air and ignores height entirely - so rising over a railing would have been
+				refused for the railing it had just cleared. In the air the honest question is
+				simply whether anything is on the line actually being travelled.
+			]]
+			local function flyRefused(step)
+				if blocked(step) or borderBlocked(step) then return true end
+				refreshSkip()
+				return workspace:Raycast(hrp.Position, step - hrp.Position, losParams) ~= nil
+			end
+
+			local detours = {
+				Vector3.zero,
+				Vector3.new(0, 4, 0), Vector3.new(0, 8, 0), Vector3.new(0, 14, 0),
+				side * 6, side * -6,
+				side * 6 + Vector3.new(0, 6, 0), side * -6 + Vector3.new(0, 6, 0),
+			}
+
+			for _, offset in detours do
+				local aim = (direct + offset)
+				if aim.Magnitude > 0.1 then
+					local step = hrp.Position + aim.Unit * travel
+					if not flyRefused(step) then
+						hrp.CFrame = CFrame.new(step) * (hrp.CFrame - hrp.CFrame.Position)
+						hrp.AssemblyLinearVelocity = Vector3.zero
+						return
+					end
+				end
+			end
 			return
 		end
 
@@ -3957,9 +4014,18 @@ run(function()
 							dodgeGoal = dodgeStalls < 3 and dodgeTarget(pos) or nil
 							if not dodgeGoal then
 								lastPlanFailed = os.clock()
-								-- Three spots in a row it could not reach: stop trying for a
-								-- moment instead of standing here doing this.
-								dodgeRestUntil = os.clock() + 0.7
+								--[[
+									Resting is for when nothing is happening to us.
+
+									Standing in an attack and deciding to stop dodging for
+									three quarters of a second is the worst moment to do it -
+									that is time spent being hit. The pause exists to stop a
+									pointless loop, so it only applies when we are not
+									actually in something.
+								]]
+								if not inDangerNow(pos, 0) then
+									dodgeRestUntil = os.clock() + 0.4
+								end
 								dodgeStalls = 0
 							end
 						end
