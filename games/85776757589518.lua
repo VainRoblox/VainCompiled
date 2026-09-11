@@ -1826,9 +1826,17 @@ run(function()
 
 		local keepClear = math.max(KeepDistance ~= nil and KeepDistance.Value or 0, 9)
 
-		-- Spots that were chosen and could not be reached, forgotten after a few seconds.
+		--[[
+			Forgotten quickly, and marked narrowly.
+
+			Each unreachable spot used to blacklist five studs of floor for four seconds,
+			and every failed attempt added another - so a few stalls in a crowded pattern
+			blanketed the only ground worth standing on, the search came back empty, and the
+			farm stood in the fire replanning. The marks have to be small and short enough
+			that they cannot become the reason nothing is found.
+		]]
 		for i = #badSpots, 1, -1 do
-			if os.clock() - badSpots[i].at > 4 then table.remove(badSpots, i) end
+			if os.clock() - badSpots[i].at > 2 then table.remove(badSpots, i) end
 		end
 
 		local function enemyGap(point)
@@ -1889,7 +1897,7 @@ run(function()
 
 				local stale = false
 				for _, bad in badSpots do
-					if (bad.pos - point).Magnitude < 5 then stale = true break end
+					if (bad.pos - point).Magnitude < 3 then stale = true break end
 				end
 
 				--[[
@@ -2059,12 +2067,14 @@ run(function()
 
 		-- Nothing fits the rules, so they come off: sight of the boss first, then the
 		-- leash, then the room itself.
-		local found, clean = search(respectRoom, 1.5, nil, false)
+		-- The last passes ask only to be out of the attack at all, not to be comfortable:
+		-- a stud past the edge of a lane beats standing inside it.
+		local found, clean = search(respectRoom, 0.75, nil, false)
 		if clean then return found end
 		spot = spot or found
 
 		if respectRoom then
-			local wider, widerClean = search(false, 1.5, nil, false)
+			local wider, widerClean = search(false, 0.75, nil, false)
 			if widerClean then return wider end
 			spot = spot or wider
 		end
@@ -2136,6 +2146,54 @@ run(function()
 			end
 		end
 		return false
+	end
+
+	--[[
+		The hop for when there is no plan at all.
+
+		The ordinary hop needs somewhere to be going. The case that kills you is the other
+		one: standing inside a pattern that covers everything the search will accept, so it
+		returns nothing, and the farm stands there replanning while the damage lands. That
+		is the Evil Scientist fan exactly.
+
+		This asks a much simpler question - of the ground within one hop, which is covered by
+		the fewest attacks - and takes it if it is any better than here. It does not need a
+		route, a sight line or a safe spot; it only needs to be less bad than standing still.
+	]]
+	local function panicHop(hrp, pos)
+		if not (EmergencyTP ~= nil and EmergencyTP.Enabled) then return false end
+		if os.clock() - lastBlink < 0.5 then return false end
+		if not anyDanger(pos, 0) then return false end
+
+		local hop = BlinkDistance ~= nil and BlinkDistance.Value or 4
+		local here = dangerCount(pos, 1)
+		local best, bestCount
+
+		for i = 0, 11 do
+			local angle = (i / 12) * math.pi * 2
+			local flat = Vector3.new(math.cos(angle), 0, math.sin(angle))
+			for _, reach in { hop, hop * 0.6 } do
+				local point = pos + flat * reach
+				local y = groundAt(point, pos.Y)
+				if y then
+					local landing = Vector3.new(point.X, y, point.Z)
+					if not insideBarrier(landing, 1) and clearLine(pos, landing, true) then
+						local covered = dangerCount(landing, 1)
+						if covered < here and (not bestCount or covered < bestCount) then
+							best, bestCount = landing, covered
+						end
+					end
+				end
+			end
+		end
+
+		if not best then return false end
+
+		hrp.CFrame = CFrame.new(best) * (hrp.CFrame - hrp.CFrame.Position)
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		lastBlink = os.clock()
+		say(string.format('last resort hop, %d attacks down to %d', here, bestCount))
+		return true
 	end
 
 	-- storage items may store a field as a plain value or as {Value=x}.
@@ -3597,7 +3655,19 @@ run(function()
 							if not dodgeGoal then dodgeStalls = 0 end
 							dodgeGoal = safe
 						else
-							if anyDanger(pos, 5) then lastPlanFailed = os.clock() end
+							--[[
+								No spot at all, which is the case that kills.
+
+								A pattern that covers everything the search will accept leaves
+								it with nothing to return, and the farm then stands in the
+								middle of it replanning until it dies. Something a few studs
+								away is covered by fewer of those attacks almost always, and
+								taking it beats standing here.
+							]]
+							if anyDanger(pos, 5) then
+								lastPlanFailed = os.clock()
+								panicHop(hrp, pos)
+							end
 							dodgeGoal = nil
 						end
 					end
@@ -3621,11 +3691,17 @@ run(function()
 							another is asked for; after a few of those the dodge gives up and
 							lets the farm act instead of freezing behind it.
 						]]
-						if not dodgeLastPos or (pos - dodgeLastPos).Magnitude > 0.6 then
-							dodgeLastPos, dodgeMovedAt = pos, os.clock()
+						-- Judged on getting nearer the spot, not on moving at all: sliding
+						-- along a wall or being shoved by a mob is not progress toward it.
+						local toSpot = (dodgeGoal - pos).Magnitude
+						if not dodgeLastPos or toSpot < dodgeLastPos - 1 then
+							dodgeLastPos, dodgeMovedAt = toSpot, os.clock()
 						elseif os.clock() - dodgeMovedAt > 0.5 then
-							dodgeLastPos, dodgeMovedAt = pos, os.clock()
+							dodgeLastPos, dodgeMovedAt = nil, os.clock()
 							table.insert(badSpots, {pos = dodgeGoal, at = os.clock()})
+							-- Not going anywhere and the attack is still on us: take the few
+							-- studs that are available rather than none.
+							panicHop(hrp, pos)
 							dodgeStalls += 1
 							dodgeGoal = dodgeStalls < 3 and dodgeTarget(pos) or nil
 							if not dodgeGoal then
