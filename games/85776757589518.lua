@@ -1612,7 +1612,7 @@ run(function()
 		local anchor = fightTarget and fightTarget.Parent and fightTarget.Position or nil
 		local band = keepClear + 4
 
-		local function search(useRoom, m)
+		local function search(useRoom, m, leash)
 			local escaping = escapingAt(m)
 			local fallback, fallbackCount = nil, dangerCount(pos, m)
 			local detour = nil
@@ -1637,6 +1637,18 @@ run(function()
 				local stale = false
 				for _, bad in badSpots do
 					if (bad.pos - point).Magnitude < 5 then stale = true break end
+				end
+
+				--[[
+					Still in the fight, not merely out of the fire.
+
+					Safety alone is maximised by leaving the arena, and on a boss that is
+					exactly what it did: the far corner is always the clearest ground on the
+					map. A dodge is a step within the fight, so spots are held to a radius of
+					what we are fighting; only the final, desperate pass drops the leash.
+				]]
+				if not stale and leash and anchor and (point - anchor).Magnitude > leash then
+					stale = true
 				end
 
 				-- Attacks first, because they are the cheapest test that rejects most
@@ -1737,16 +1749,20 @@ run(function()
 		]]
 		local spot
 		for _, m in { margin, 3, 1.5 } do
-			local found, clean = search(respectRoom, m)
+			local found, clean = search(respectRoom, m, 55)
 			if clean then return found end
 			spot = spot or found
 		end
 
-		-- Still nothing, so the room bounds are the last thing left to relax.
+		-- Still nothing, so the leash and then the room bounds are what is left to relax.
+		local found, clean = search(respectRoom, 1.5, nil)
+		if clean then return found end
+		spot = spot or found
+
 		if respectRoom then
-			local found, clean = search(false, 1.5)
-			if clean then return found end
-			spot = spot or found
+			local wider, widerClean = search(false, 1.5, nil)
+			if widerClean then return wider end
+			spot = spot or wider
 		end
 		return spot
 	end
@@ -1950,7 +1966,17 @@ run(function()
 		for _, entry in rooms do
 			if roomLocked(entry.room) then return entry.room end
 		end
-		return nil
+
+		--[[
+			Every room open means the boss room is the room.
+
+			Returning nothing here is why boss fights went wrong: with no room, the dodge had
+			no bounds at all, so the safest ground it could find was out through the doorway
+			and behind the wall - and having gone there it kept dodging the lanes that reach
+			outside instead of walking back in. The boss sat at full health while the farm
+			stood in a corridor.
+		]]
+		return dungeon:FindFirstChild('bossRoom')
 	end
 
 	--[[
