@@ -625,7 +625,26 @@ run(function()
 
 	local groundParams = RaycastParams.new()
 	groundParams.FilterType = Enum.RaycastFilterType.Exclude
+	groundParams.RespectCanCollide = true
 	local lastStep = os.clock()
+
+	--[[
+		Floor is whatever you could stand on, and nothing else.
+
+		Attack parts cannot be collided with, but a plain raycast hits them anyway - so a
+		step aimed under a tall hitBox "landed" on top of it, read as a climb far higher
+		than a step, and was refused. The stepper then fell back to a third of a step, over
+		and over, for as long as the attack lasted: that is the slowdown while dodging.
+		Respecting CanCollide means only real floor answers.
+
+		The filter is rebuilt twice a second rather than per ray: the dodge search casts a
+		ray for most of a few hundred candidates, and a fresh table of every enemy for each
+		one was a large part of what the search cost.
+	]]
+	local footParams = RaycastParams.new()
+	footParams.FilterType = Enum.RaycastFilterType.Exclude
+	footParams.RespectCanCollide = true
+	local footSkipAt = 0
 
 	--[[
 		The floor under a destination, and only the floor.
@@ -657,16 +676,55 @@ run(function()
 		Returning nothing rather than a guess lets the caller shorten the step and try
 		again, which is what edges along a walkway instead of stopping dead at it.
 	]]
-	local function groundAt(position, fallbackY)
+	local losParams = RaycastParams.new()
+	losParams.FilterType = Enum.RaycastFilterType.Exclude
+	losParams.RespectCanCollide = true
+
+	local function refreshSkip()
+		if os.clock() - footSkipAt < 0.5 then return end
+		footSkipAt = os.clock()
 		local skip = {lplr.Character}
 		for _, m in enemyCache do
-			if m and m.Parent then
-				table.insert(skip, m)
-			end
+			if m and m.Parent then table.insert(skip, m) end
 		end
-		groundParams.FilterDescendantsInstances = skip
+		footParams.FilterDescendantsInstances = skip
+		losParams.FilterDescendantsInstances = skip
+	end
 
-		local hit = workspace:Raycast(position + Vector3.new(0, 12, 0), Vector3.new(0, -80, 0), groundParams)
+	--[[
+		Whether a wall stands between two places.
+
+		Nothing in the movement ever asked. Stepping checked for a floor at the far end and
+		nothing in between, so a step aimed through a wall landed inside it - which is both
+		"running into walls" and exactly the kind of move the server pulls you back for.
+
+		Cast flat at root and chest height: low enough to catch a wall, high enough that a
+		stair or a slope is not mistaken for one. Bodies are skipped, so an enemy standing
+		in the way is not a wall; only collidable geometry counts.
+	]]
+	local function clearLine(from, to)
+		refreshSkip()
+		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
+		if flat.Magnitude < 0.05 then return true end
+		for _, lift in { 0, 1.5 } do
+			if workspace:Raycast(from + Vector3.new(0, lift, 0), flat, losParams) then return false end
+		end
+		return true
+	end
+
+	-- The same question for a single step, reaching a little past it so the body does not
+	-- end up with its shoulder inside the wall.
+	local function wallBetween(from, to)
+		refreshSkip()
+		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
+		if flat.Magnitude < 0.05 then return false end
+		return workspace:Raycast(from, flat.Unit * (flat.Magnitude + 1.5), losParams) ~= nil
+	end
+
+	local function groundAt(position, fallbackY)
+		refreshSkip()
+
+		local hit = workspace:Raycast(position + Vector3.new(0, 12, 0), Vector3.new(0, -80, 0), footParams)
 		if not hit then return nil end
 
 		local y = hit.Position.Y + 3
@@ -784,9 +842,11 @@ run(function()
 		barrierParts = found
 	end
 
-	local function insideBarrier(pos, margin)
+	-- Tested against a nearby subset when one is given: a room's worth of border parts
+	-- is small, the whole map's is not, and the dodge search asks this hundreds of times.
+	local function insideBarrier(pos, margin, parts)
 		margin = margin or 2
-		for _, part in barrierParts do
+		for _, part in (parts or barrierParts) do
 			if part.Parent then
 				local local_ = part.CFrame:PointToObjectSpace(pos)
 				local half = part.Size * 0.5
@@ -802,10 +862,10 @@ run(function()
 
 	-- Walked in a few steps rather than tested at the ends, since a wall between two clear
 	-- points is still a wall.
-	local function crossesBarrier(from, to)
-		if #barrierParts == 0 then return false end
+	local function crossesBarrier(from, to, parts)
+		if #(parts or barrierParts) == 0 then return false end
 		for i = 1, 6 do
-			if insideBarrier(from:Lerp(to, i / 6), 1) then return true end
+			if insideBarrier(from:Lerp(to, i / 6), 1, parts) then return true end
 		end
 		return false
 	end
@@ -822,6 +882,11 @@ run(function()
 	-- Where the dodge is currently heading, held across frames so a plan is followed rather
 	-- than recomputed into a different answer every frame.
 	local dodgeGoal = nil
+
+	-- When a search last came back empty while standing in an attack. Searching again
+	-- every single frame while there is nowhere to go only drops the frame rate, and a
+	-- lower frame rate is a slower dodge.
+	local lastPlanFailed = 0
 
 	--[[
 		Declared up here, defined with the rest of the room logic further down.
@@ -1451,49 +1516,116 @@ run(function()
 			the game says is current is not the one you are in, every spot was outside it.
 			Both are only applied when you are properly inside what they describe.
 		]]
-		local respectBorders = not insideBarrier(pos, 0)
+		-- Only the border parts that could matter to a dodge from here.
+		local nearBorders = {}
+		for _, part in barrierParts do
+			if part.Parent and (part.Position - pos).Magnitude - part.Size.Magnitude * 0.5 < 110 then
+				table.insert(nearBorders, part)
+			end
+		end
+
+		local respectBorders = not insideBarrier(pos, 0, nearBorders)
 		local respectRoom = room ~= nil and inRoom(pos, room, 6)
+
+		--[[
+			Out of the attack and out of reach, not out of the attack and into the pack.
+
+			The spot search knew about attacks and nothing else, so the nearest safe spot
+			was regularly beside - or behind - the melee enemies that were chasing you,
+			and the dodge delivered you straight to them. Enemies are a second kind of
+			danger here: a spot has to be clear of attacks AND at least keep-distance from
+			every enemy, and the way there must not carry you closer to one than you
+			already are.
+
+			When no spot manages both, the one with the most room from enemies wins among
+			those clear of attacks, weighed against how far it is to walk.
+		]]
+		local bodies = {}
+		for _, m in enemyCache do
+			local part = m and m.Parent and enemyPart(m)
+			local hum = part and m:FindFirstChildOfClass('Humanoid')
+			if hum and hum.Health > 0 and (part.Position - pos).Magnitude < 120 then
+				table.insert(bodies, part.Position)
+			end
+		end
+
+		local keepClear = math.max(KeepDistance ~= nil and KeepDistance.Value or 0, 14)
+
+		local function enemyGap(point)
+			local nearest = math.huge
+			for _, body in bodies do
+				local dx, dz = body.X - point.X, body.Z - point.Z
+				local gap = math.sqrt(dx * dx + dz * dz)
+				if gap < nearest then nearest = gap end
+			end
+			return nearest
+		end
+
+		local startGap = enemyGap(pos)
+		local pathGap = math.min(6, startGap)
 
 		local function search(useRoom)
 			local fallback, fallbackCount = nil, dangerCount(pos, margin)
 			local detour = nil
+			local roomy, roomyScore = nil, nil
 
 			for _, candidate in candidates do
 				local point = candidate.point
 
-				-- Cheapest tests first, and the raycast last: ground is the only test here
-				-- that costs a ray.
-				if (not respectBorders or (not insideBarrier(point, 2) and not crossesBarrier(pos, point)))
+				-- Attacks first, because they are the cheapest test that rejects most
+				-- candidates; borders, room and the ground ray only for what survives.
+				local covered = dangerCount(point, margin)
+				local clear = covered == 0 and not anyDanger(point, margin + 3)
+
+				if (clear or covered < fallbackCount)
+					and (not respectBorders or (not insideBarrier(point, 2, nearBorders)
+						and not crossesBarrier(pos, point, nearBorders)))
 					and (not useRoom or inRoom(point, room, 6)) then
 
-					local covered = dangerCount(point, margin)
-					local clear = covered == 0 and not anyDanger(point, margin + 3)
+					-- A spot with no floor under it is not a spot. This used to fall back
+					-- to the height it was sampled at, which accepted ledges and gaps.
+					local y
+					if needFooting then
+						y = groundAt(point, pos.Y)
+					else
+						y = point.Y
+					end
 
-					if clear or covered < fallbackCount then
-						local y = needFooting and groundAt(point, pos.Y) or point.Y
-						if y then
-							local grounded = Vector3.new(point.X, y, point.Z)
-							if clear then
-								local safePath = true
-								for step = 1, 4 do
-									if anyDanger(pos:Lerp(grounded, step / 4), margin, escaping) then
-										safePath = false
-										break
-									end
+					if y then
+						local grounded = Vector3.new(point.X, y, point.Z)
+						-- Behind a wall is not a spot: the step would clip into the wall, and
+						-- the server pulls you back for arriving somewhere you could not walk.
+						local reachable_ = clearLine(pos, grounded)
+						if clear and reachable_ then
+							local safePath = true
+							for step = 1, 4 do
+								local sample = pos:Lerp(grounded, step / 4)
+								if anyDanger(sample, margin, escaping) or enemyGap(sample) < pathGap then
+									safePath = false
+									break
 								end
-								if safePath then return grounded, true end
-								-- Clear at the end but not on the way: still far better than
-								-- staying, so it is kept rather than thrown away.
-								detour = detour or grounded
-							elseif covered < fallbackCount then
-								fallback, fallbackCount = grounded, covered
 							end
+
+							local gap = enemyGap(grounded)
+							if safePath and gap >= keepClear then return grounded, true end
+
+							if safePath then
+								local score = candidate.travel - math.min(gap, keepClear) * 3
+								if not roomyScore or score < roomyScore then
+									roomy, roomyScore = grounded, score
+								end
+							end
+							-- Clear at the end but not on the way: still far better than
+							-- staying, so it is kept rather than thrown away.
+							detour = detour or grounded
+						elseif not clear and reachable_ and covered < fallbackCount then
+							fallback, fallbackCount = grounded, covered
 						end
 					end
 				end
 			end
 
-			return detour or fallback, false
+			return roomy or detour or fallback, false
 		end
 
 		local spot, clean = search(respectRoom)
@@ -1682,7 +1814,7 @@ run(function()
 		both called room6, at different places and different orders. The order value and
 		the Instance are the identity.
 	]]
-	function currentRoom()
+	local function findCurrentRoom()
 		local dungeon = workspace:FindFirstChild('dungeon')
 		if not dungeon then return nil end
 
@@ -1701,17 +1833,47 @@ run(function()
 		return nil
 	end
 
-	-- Whether something is in this room, from the room's own bounds. Neighbouring rooms
-	-- overlap slightly at the doorway, which only matters for something standing in it.
+	--[[
+		Remembered briefly, because it is asked constantly.
+
+		Working out the room walks every room and every barrier part in each, and the
+		dodge and the farm both ask several times a second. A room opens once a fight at
+		most, so half a second stale costs nothing.
+	]]
+	local roomCache, roomCachedAt = nil, 0
+
+	function currentRoom()
+		if os.clock() - roomCachedAt > 0.5 or (roomCache and not roomCache.Parent) then
+			roomCache, roomCachedAt = findCurrentRoom(), os.clock()
+		end
+		return roomCache
+	end
+
+	--[[
+		Whether something is in this room, from the room's own bounds. Neighbouring rooms
+		overlap slightly at the doorway, which only matters for something standing in it.
+
+		The bounds are kept per room. Measuring a whole room model is expensive, and the
+		dodge search used to do it once for every candidate spot - a few hundred times per
+		dodge - which is a large part of why dodging dragged the frame rate down with it.
+	]]
+	local roomBoxes = setmetatable({}, {__mode = 'k'})
+
 	function inRoom(position, room, margin)
 		if not room then return true end
-		local ok, cf, size = pcall(function() return room:GetBoundingBox() end)
-		if not ok or not cf then return true end
+
+		local box = roomBoxes[room]
+		if not box or os.clock() - box.at > 5 then
+			local ok, cf, size = pcall(function() return room:GetBoundingBox() end)
+			if not ok or not cf then return true end
+			box = {cf = cf, size = size, at = os.clock()}
+			roomBoxes[room] = box
+		end
 
 		margin = margin or 0
-		local offset = cf:PointToObjectSpace(position)
-		return math.abs(offset.X) <= size.X * 0.5 + margin
-			and math.abs(offset.Z) <= size.Z * 0.5 + margin
+		local offset = box.cf:PointToObjectSpace(position)
+		return math.abs(offset.X) <= box.size.X * 0.5 + margin
+			and math.abs(offset.Z) <= box.size.Z * 0.5 + margin
 	end
 
 	--[[
@@ -1872,6 +2034,18 @@ run(function()
 			return anyDanger(point, 1)
 		end
 
+		-- A border is the anti-cheat's wall; walking onto one is being pulled back. Ignored
+		-- while already standing on one, since then every direction would be refused.
+		local function borderBlocked(point)
+			if #barrierParts == 0 then return false end
+			if insideBarrier(hrp.Position, 0) then return false end
+			return insideBarrier(point, 1)
+		end
+
+		local function refused(point)
+			return blocked(point) or wallBetween(hrp.Position, point) or borderBlocked(point)
+		end
+
 		local now = os.clock()
 		local dt = math.clamp(now - lastStep, 0, 0.3)
 		lastStep = now
@@ -1893,7 +2067,7 @@ run(function()
 
 			local speed = (hum.WalkSpeed > 0 and hum.WalkSpeed or 16)
 			local travel = math.min(range, speed * dt)
-			if blocked(hrp.Position + direct.Unit * travel) then return end
+			if refused(hrp.Position + direct.Unit * travel) then return end
 			hrp.CFrame = CFrame.new(hrp.Position + direct.Unit * travel)
 				* (hrp.CFrame - hrp.CFrame.Position)
 			hrp.AssemblyLinearVelocity = Vector3.zero
@@ -1960,7 +2134,7 @@ run(function()
 			local aim = turn == 0 and direction or (CFrame.Angles(0, turn, 0) * direction)
 			local target = hrp.Position + aim * full
 			local y = groundAt(target, hrp.Position.Y)
-			if y and not blocked(Vector3.new(target.X, y, target.Z)) then
+			if y and not refused(Vector3.new(target.X, y, target.Z)) then
 				place(Vector3.new(target.X, y, target.Z))
 				return
 			end
@@ -1969,13 +2143,13 @@ run(function()
 		for _, fraction in {0.6, 0.3} do
 			local target = hrp.Position + direction * (full * fraction)
 			local y = groundAt(target, hrp.Position.Y)
-			if y and not blocked(Vector3.new(target.X, y, target.Z)) then
+			if y and not refused(Vector3.new(target.X, y, target.Z)) then
 				place(Vector3.new(target.X, y, target.Z))
 				return
 			end
 		end
 
-		if blocked(hrp.Position + direction * (full * 0.5)) then return end
+		if refused(hrp.Position + direction * (full * 0.5)) then return end
 
 		--[[
 			Nothing underfoot anywhere along the way, so climb toward where we are going.
@@ -2073,26 +2247,76 @@ run(function()
 		end
 	end
 
-	local waypoints, waypointIndex, pathGoal, pathBuiltAt = nil, 1, nil, 0
+	--[[
+		The route, kept between uses.
+
+		It used to be built inline, which blocks: ComputeAsync yields, and the whole farm
+		waited on it - no fighting, no movement - every time. Being rebuilt every three
+		seconds, whenever the target moved, and thrown away whenever the farm strafed or
+		backed off, that wait came round constantly. That is the "randomly stopping".
+
+		Now it is worked out in the background while the old route keeps being followed,
+		and stepping aside no longer discards it.
+	]]
+	local nav = {
+		goal = nil, waypoints = nil, index = 1,
+		builtAt = 0, building = false, failedAt = 0,
+		lastPos = nil, movedAt = 0, calledAt = 0, resync = false,
+	}
 
 	local function clearPath()
-		waypoints, waypointIndex, pathGoal = nil, 1, nil
+		-- Kept, not discarded: stepping aside to strafe or dodge and carrying on to the
+		-- same place is the normal case. It is only re-found on the route when resumed.
+		nav.resync = true
 	end
 
-	local function buildPath(hrp, goal)
-		local path = pathfindingService:CreatePath({
-			AgentRadius = 3,
-			AgentHeight = 6,
-			AgentCanJump = true,
-			WaypointSpacing = 8
-		})
-		local ok = pcall(path.ComputeAsync, path, hrp.Position, goal)
-		if ok and path.Status == Enum.PathStatus.Success then
-			waypoints, waypointIndex, pathGoal, pathBuiltAt = path:GetWaypoints(), 2, goal, os.clock()
-			return true
-		end
-		clearPath()
-		return false
+	local function snapToFloor(point)
+		refreshSkip()
+		local hit = workspace:Raycast(point + Vector3.new(0, 8, 0), Vector3.new(0, -60, 0), footParams)
+		return hit and hit.Position or point
+	end
+
+	local function buildPath(from, goal)
+		if nav.building then return end
+		nav.building, nav.builtAt = true, os.clock()
+
+		task.spawn(function()
+			--[[
+				Sized for the doorways this game actually has.
+
+				A three-stud radius does not fit through plenty of them, so the route came
+				back as no route at all - and the fallback for that was to walk straight at
+				the goal, through whatever wall was in the way.
+			]]
+			local path = pathfindingService:CreatePath({
+				AgentRadius = 2,
+				AgentHeight = 5,
+				AgentCanJump = true,
+				AgentCanClimb = false,
+				WaypointSpacing = 6,
+			})
+
+			local function try(start, finish)
+				local ok = pcall(path.ComputeAsync, path, start, finish)
+				local points = ok and path:GetWaypoints() or {}
+				return #points >= 2 and points or nil
+			end
+
+			local target = snapToFloor(goal)
+			-- A goal on an enemy or a spawn marker can read as occupied, and a start inside
+			-- a slope as blocked; nudging up answers both. Failing that, half the way there
+			-- is still progress, and the rest is found from wherever that ends.
+			local points = try(from, target)
+				or try(from + Vector3.new(0, 2, 0), target)
+				or try(from, snapToFloor(from:Lerp(goal, 0.5)))
+
+			nav.building = false
+			if points then
+				nav.waypoints, nav.index, nav.goal, nav.failedAt = points, 2, goal, 0
+			else
+				nav.waypoints, nav.goal, nav.failedAt = nil, goal, os.clock()
+			end
+		end)
 	end
 
 	--[[
@@ -2107,56 +2331,99 @@ run(function()
 		So a route is built for walking and stepping alike, and the only difference is who
 		is handed the waypoint: the humanoid, or the stepper.
 	]]
-	local function walkTo(hum, hrp, goal, direct)
-		local stepping = mode() == 'Step TP'
+	local function walkTo(hum, hrp, goal)
+		local pos = hrp.Position
+		local now = os.clock()
+		refreshBarriers()
 
-		-- Flying needs no route, and short hops are not worth one.
-		if mode() == 'Fly' then
-			stepTo(hrp, hum, goal, true)
+		-- Progress, measured only while actually being asked to go somewhere: time spent
+		-- fighting or holding still is not being stuck.
+		if now - nav.calledAt > 0.5 or not nav.lastPos or (pos - nav.lastPos).Magnitude > 1.5 then
+			nav.lastPos, nav.movedAt = pos, now
+		end
+		nav.calledAt = now
+		local stuck = now - nav.movedAt > 1.2
+
+		local pathing = UsePathfinding == nil or UsePathfinding.Enabled
+		local open = clearLine(pos, goal)
+
+		--[[
+			Straight there only when straight there is actually open.
+
+			"Close enough to walk at" used to be judged by distance alone, so an enemy
+			twenty studs away on the other side of a wall was walked at, into the wall,
+			for as long as it lived. Line of sight is the question that matters.
+		]]
+		if (open and not stuck) or not pathing then
+			if stuck and not moving() then hum.Jump = true end
+			goTo(hum, hrp, goal)
 			return
 		end
 
-		local function head(point)
-			if stepping or #dangers > 0 then
-				stepTo(hrp, hum, point, true)
-			else
-				hum:MoveTo(point)
+		local wps = nav.waypoints
+		local goalMoved = not nav.goal or (nav.goal - goal).Magnitude > 10
+		local finished = wps ~= nil and nav.index > #wps
+		local wait = stuck and 0.4 or (nav.failedAt > 0 and 1.5 or 0.6)
+		if (not wps or goalMoved or finished or stuck) and now - nav.builtAt > wait then
+			buildPath(pos, goal)
+			-- A fresh route gets a fair chance before it too is called stuck.
+			if stuck then nav.movedAt = now end
+		end
+
+		wps = nav.waypoints
+		if wps then
+			-- Back on the route after stepping away from it, from the nearest point on it
+			-- rather than from wherever it was left.
+			if nav.resync then
+				nav.resync = false
+				local best, bestDist = nav.index, math.huge
+				for i, wp in wps do
+					local d = (wp.Position - pos).Magnitude
+					if d < bestDist then best, bestDist = i, d end
+				end
+				nav.index = math.min(best + 1, #wps + 1)
+			end
+
+			while nav.index <= #wps do
+				local wp = wps[nav.index].Position
+				local flat = Vector3.new(wp.X - pos.X, 0, wp.Z - pos.Z).Magnitude
+				if flat < 3.5 and math.abs(wp.Y - pos.Y) < 7 then
+					nav.index += 1
+				else
+					break
+				end
+			end
+
+			--[[
+				Corners the route does not need.
+
+				Waypoints six studs apart around every bend make a walk that visibly zig-zags,
+				and it is part of why routes looked like they went odd ways. A later waypoint
+				in plain sight, on floor, at about our height is walked at directly.
+			]]
+			for ahead = math.min(#wps, nav.index + 3), nav.index + 1, -1 do
+				local wp = wps[ahead].Position + Vector3.new(0, 3, 0)
+				if math.abs(wp.Y - pos.Y) < 3 and clearLine(pos, wp) and groundAt(pos:Lerp(wp, 0.5), pos.Y) then
+					nav.index = ahead
+					break
+				end
+			end
+
+			local wp = wps[nav.index]
+			if wp then
+				if wp.Action == Enum.PathWaypointAction.Jump and not moving() then hum.Jump = true end
+				goTo(hum, hrp, wp.Position + Vector3.new(0, 3, 0))
+				return
 			end
 		end
 
-		-- Straight there when it is close and the route is unlikely to matter.
-		if direct or not (UsePathfinding and UsePathfinding.Enabled) then
-			head(goal)
-			return
+		-- No route yet. Walking at the goal anyway is what put it into walls; if the way is
+		-- not open it waits the moment it takes for the route to arrive.
+		if open then
+			goTo(hum, hrp, goal)
+		elseif not moving() then
+			hum:MoveTo(pos)
 		end
-
-		local stale = not waypoints
-			or not pathGoal
-			or (pathGoal - goal).Magnitude > 12
-			or os.clock() - pathBuiltAt > 3
-			or waypointIndex > #waypoints
-
-		if stale and not buildPath(hrp, goal) then
-			-- No route found - walk at it anyway rather than standing still.
-			head(goal)
-			return
-		end
-
-		local wp = waypoints[waypointIndex]
-		if not wp then
-			clearPath()
-			head(goal)
-			return
-		end
-
-		if wp.Action == Enum.PathWaypointAction.Jump then
-			hum.Jump = true
-		end
-
-		if (Vector3.new(wp.Position.X, hrp.Position.Y, wp.Position.Z) - hrp.Position).Magnitude < 5 then
-			waypointIndex += 1
-		end
-		head(wp.Position)
 	end
 
 	--[[
@@ -2346,11 +2613,31 @@ run(function()
 						things that actually invalidate a plan, so those are what trigger
 						one.
 					]]
-					local stale = dangerAdded
-						or not dodgeGoal
-						or anyDanger(dodgeGoal, 5)
-						or (dodgeGoal - pos).Magnitude < 1.5
+					local fresh = dangerAdded
 					dangerAdded = false
+
+					local stale = not dodgeGoal
+						or (dodgeGoal - pos).Magnitude < 1.5
+						or anyDanger(dodgeGoal, 5)
+
+					--[[
+						A new part only changes the plan if it lands on the plan.
+
+						Every part that appeared anywhere forced a fresh search, and a
+						fresh search picks a slightly different spot - so with attacks
+						arriving several a second the dodge changed direction several times
+						a second, and zig-zagging on the spot covers far less ground than
+						walking one way. Now a new part replans only when it covers the
+						way there.
+					]]
+					if not stale and fresh then
+						local mid = pos:Lerp(dodgeGoal, 0.5)
+						stale = anyDanger(mid, 2) and not anyDanger(pos, 2)
+					end
+
+					if stale and not dodgeGoal and not fresh and os.clock() - lastPlanFailed < 0.15 then
+						stale = false
+					end
 
 					if stale then
 						local safe = dodgeTarget(pos) or projectileDodge(pos)
@@ -2364,6 +2651,7 @@ run(function()
 							end
 							dodgeGoal = safe
 						else
+							if anyDanger(pos, 5) then lastPlanFailed = os.clock() end
 							dodgeGoal = nil
 						end
 					end
@@ -2583,7 +2871,7 @@ run(function()
 							-- Close the gap. Pathfinding while far, straight in once near,
 							-- because a route recomputed around a moving enemy is worse
 							-- than walking at it.
-							walkTo(hum, hrp, part.Position, gap < 25)
+							walkTo(hum, hrp, part.Position)
 						elseif Strafe ~= nil and Strafe.Enabled then
 							clearPath()
 
@@ -2626,8 +2914,11 @@ run(function()
 						if goal then
 							walkTo(hum, hrp, goal)
 						else
+							-- Nowhere to go. Walking twenty studs in whatever direction we
+							-- happened to face was the old answer, and it is how the farm
+							-- wandered off into walls between rooms.
 							clearPath()
-							goTo(hum, hrp, hrp.Position + hrp.CFrame.LookVector * 20)
+							if not moving() then hum:MoveTo(hrp.Position) end
 						end
 					end
 				end)
