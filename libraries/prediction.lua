@@ -212,6 +212,60 @@ end
 ]]
 
 --[[
+	How fast something is really moving, measured rather than asked.
+
+	A replicated character's velocity property is the worst input this library gets: it
+	arrives in steps, so it reads zero between updates and spikes on knockback, and a single
+	sample of it decides where the whole shot goes. Differencing positions over a short
+	window instead gives the speed they are actually travelling at, which is what a lead
+	needs - jitter averages out and a knockback spike stops being the whole answer.
+
+	Keyed weakly so tracking a part never keeps it alive.
+]]
+local history = setmetatable({}, {__mode = 'k'})
+local WINDOW = 0.18
+
+function module.smoothVelocity(part, fallback)
+	if typeof(part) ~= 'Instance' then return fallback or Vector3.zero end
+
+	local now = os.clock()
+	local samples = history[part]
+	if not samples then
+		samples = {}
+		history[part] = samples
+	end
+
+	local position = part.Position
+	local last = samples[#samples]
+	if not last or now - last.at > 0.008 then
+		table.insert(samples, {at = now, pos = position})
+	end
+
+	-- Anything older than the window is no longer evidence about where they are going.
+	while #samples > 1 and now - samples[1].at > WINDOW do
+		table.remove(samples, 1)
+	end
+
+	local oldest = samples[1]
+	local span = now - oldest.at
+	if #samples < 2 or span < 0.03 then
+		return fallback or part.AssemblyLinearVelocity
+	end
+
+	local measured = (position - oldest.pos) / span
+
+	--[[
+		Vertical is taken from the engine, horizontal from the measurement.
+
+		A jump lasts less than this window, so averaging across it flattens the rise into
+		nothing - and being wrong about the vertical is exactly what makes a shot sail over
+		somebody's head. The engine's value is immediate there, which is what that needs.
+	]]
+	local instant = part.AssemblyLinearVelocity
+	return Vector3.new(measured.X, instant.Y, measured.Z)
+end
+
+--[[
 	The angle that puts a shot onto a fixed point.
 
 	For a speed and a gravity there are two arcs onto a point: the flat one and the lobbed
@@ -365,23 +419,44 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 		local flight = (targetPos - origin).Magnitude / projectileSpeed
 		local velocity, point
 
+		--[[
+			The best pass is kept, not the last one.
+
+			The loop usually settles, but where the prediction is piecewise - somebody
+			landing during the flight, a floor stepping down under them - it can end up
+			oscillating between two answers and return whichever it happened to stop on.
+			Scoring each pass by how far the shot actually lands from where they are
+			predicted to be costs nothing and means the answer returned is the best one
+			seen rather than the most recent.
+		]]
+		local best, bestFlight, bestMiss
+
 		for _ = 1, 6 do
 			point = predictAt(flight)
 			velocity = ballisticAim(origin, projectileSpeed, gravity, point, high)
-			if not velocity then return nil end
+			if not velocity then break end
 
 			local flat = Vector3.new(point.X - origin.X, 0, point.Z - origin.Z).Magnitude
 			local across = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
 			if across < 0.01 then break end
 
 			local settled = flat / across
+
+			-- Where this shot really is when it arrives, against where they really are.
+			local landing = origin + velocity * settled - Vector3.new(0, 0.5 * gravity * settled * settled, 0)
+			local miss = (landing - predictAt(settled)).Magnitude
+			if not bestMiss or miss < bestMiss then
+				best, bestFlight, bestMiss = velocity, settled, miss
+			end
+
 			local moved = math.abs(settled - flight)
 			flight = settled
 			if moved < 1e-3 then break end
 		end
 
-		if extra.lifetime and flight > extra.lifetime then return nil end
-		return velocity, flight
+		if not best then return nil end
+		if extra.lifetime and bestFlight > extra.lifetime then return nil end
+		return best, bestFlight
 	end
 
 	--[[

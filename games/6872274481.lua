@@ -5013,6 +5013,17 @@ run(function()
 		--
 		-- Skipped for telepearl, whose target velocity is deliberately ignored below.
 		local aimpos = target.Position
+		--[[
+			Measured, not asked for.
+	
+			A replicated character's velocity property arrives in steps: it reads zero between
+			updates and spikes on knockback, and one sample of it decided the whole lead. The
+			library differences positions over a short window instead, which is the speed they
+			are actually travelling at.
+		]]
+		local motion = projmeta.projectile == 'telepearl' and Vector3.zero
+			or prediction.smoothVelocity(target, target.Velocity)
+	
 		if projmeta.projectile ~= 'telepearl' then
 			local latency = 0
 			pcall(function()
@@ -5020,7 +5031,7 @@ run(function()
 			end)
 			-- Clamped: GetNetworkPing occasionally spikes, and a bad sample would otherwise
 			-- throw the aim a long way off for that shot.
-			aimpos += target.Velocity * math.clamp(latency, 0, 0.5)
+			aimpos += motion * math.clamp(latency, 0, 0.5)
 		end
 	
 		if HitChance.Value < 100 and math.random(1, 100) > HitChance.Value then
@@ -5040,13 +5051,68 @@ run(function()
 		-- happened when this was "corrected" to do that. Applying the same offset along the
 		-- aim direction lands on very nearly the muzzle the game will use, since the launch
 		-- direction and the aim direction differ only by the arc.
-		local newlook = CFrame.new(offsetpos, aimpos) * CFrame.new(projmeta.projectile == 'owl_projectile' and Vector3.zero or Vector3.new(bedwars.BowConstantsTable.RelX, bedwars.BowConstantsTable.RelY, bedwars.BowConstantsTable.RelZ))
-		local calc = prediction.SolveTrajectory(newlook.p, projSpeed, gravity, aimpos, projmeta.projectile == 'telepearl' and Vector3.zero or target.Velocity, playerGravity, plr.HipHeight, plr.Jumping and 42.6 or nil, rayCheck)
+		local muzzleOffset = projmeta.projectile == 'owl_projectile' and Vector3.zero
+			or Vector3.new(bedwars.BowConstantsTable.RelX, bedwars.BowConstantsTable.RelY, bedwars.BowConstantsTable.RelZ)
+	
+		local function muzzleAlong(direction)
+			return (CFrame.new(offsetpos, offsetpos + direction) * CFrame.new(muzzleOffset)).Position
+		end
+	
+		--[[
+			Their own jump, rather than a number that was true once.
+	
+			The jump speed was hardcoded, and kits, effects and the game's own tuning all change
+			it - and being wrong about it is wrong in the vertical, which is where a miss becomes
+			a shot sailing over somebody. Humanoids describe their jump either as a speed or as a
+			height, so both are read.
+		]]
+		local jumpSpeed
+		if plr.Jumping then
+			local hum = plr.Humanoid
+			if hum then
+				if hum.UseJumpPower then
+					jumpSpeed = hum.JumpPower
+				elseif hum.JumpHeight and hum.JumpHeight > 0 then
+					jumpSpeed = math.sqrt(2 * math.max(playerGravity, 1) * hum.JumpHeight)
+				end
+			end
+			jumpSpeed = jumpSpeed or 42.6
+		end
+	
+		local hints = {
+			rootPosition = plr.RootPart and plr.RootPart.Position or nil,
+			lifetime = lifetime,
+		}
+	
+		local aimDirection = (aimpos - offsetpos)
+		if aimDirection.Magnitude <= 0 then return nil end
+	
+		local launchFrom = muzzleAlong(aimDirection.Unit)
+		local calc, launchDir = prediction.SolveTrajectory(launchFrom, projSpeed, gravity, aimpos, motion, playerGravity, plr.HipHeight, jumpSpeed, rayCheck, hints)
 		if not calc then return nil end
+	
+		--[[
+			Solved again from where the shot will really leave.
+	
+			The game offsets the spawn along the LAUNCH direction, and the launch direction is
+			the aim direction bent upward by the arc - so offsetting along the aim direction puts
+			the assumed muzzle a little away from the real one, by more the higher the arc. One
+			more pass with the direction just solved removes that, and it is only paid for when
+			the two directions actually differ.
+		]]
+		if launchDir then
+			local corrected = muzzleAlong(launchDir)
+			if (corrected - launchFrom).Magnitude > 0.05 then
+				local refined = prediction.SolveTrajectory(corrected, projSpeed, gravity, aimpos, motion, playerGravity, plr.HipHeight, jumpSpeed, rayCheck, hints)
+				if refined then
+					calc, launchFrom = refined, corrected
+				end
+			end
+		end
 	
 		targetinfo.Targets[plr] = tick() + 1
 		return {
-			initialVelocity = CFrame.new(newlook.Position, calc).LookVector * projSpeed,
+			initialVelocity = CFrame.new(launchFrom, calc).LookVector * projSpeed,
 			positionFrom = offsetpos,
 			deltaT = lifetime,
 			gravitationalAcceleration = gravity,
@@ -5390,8 +5456,30 @@ run(function()
 										pcall(function()
 											latency = lplr:GetNetworkPing() * 2
 										end)
-										local aimAt = ent.RootPart.Position + (ent.RootPart.Velocity * math.clamp(latency, 0, 0.5))
-										local calc = prediction.SolveTrajectory(pos, projSpeed, gravity, aimAt, ent.RootPart.Velocity, workspace.Gravity, ent.HipHeight, ent.Jumping and 42.6 or nil, rayCheck)
+										-- Differenced over a short window rather than read off the
+										-- part, whose velocity reads zero between replication
+										-- updates and spikes on knockback.
+										local motion = prediction.smoothVelocity(ent.RootPart, ent.RootPart.Velocity)
+										local aimAt = ent.RootPart.Position + (motion * math.clamp(latency, 0, 0.5))
+	
+										-- Their own jump speed, however the humanoid describes it.
+										local jumpSpeed
+										if ent.Jumping then
+											local hum = ent.Humanoid
+											if hum then
+												if hum.UseJumpPower then
+													jumpSpeed = hum.JumpPower
+												elseif hum.JumpHeight and hum.JumpHeight > 0 then
+													jumpSpeed = math.sqrt(2 * math.max(workspace.Gravity, 1) * hum.JumpHeight)
+												end
+											end
+											jumpSpeed = jumpSpeed or 42.6
+										end
+	
+										local calc = prediction.SolveTrajectory(pos, projSpeed, gravity, aimAt, motion, workspace.Gravity, ent.HipHeight, jumpSpeed, rayCheck, {
+											rootPosition = ent.RootPart.Position,
+											lifetime = meta.lifetimeSec,
+										})
 										if calc then
 											targetinfo.Targets[ent] = tick() + 1
 											local switched = switchItem(item.tool)
