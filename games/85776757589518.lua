@@ -1069,6 +1069,10 @@ run(function()
 	]]
 	local settleUntil, dodgeRestUntil = 0, 0
 
+	-- While this is in the future, movement lifts over whatever it is caught on. Declared
+	-- up here because both the stepper and the navigator need it.
+	local climbUntil = 0
+
 
 	--[[
 		Spots the stepper would not actually go to.
@@ -3003,7 +3007,20 @@ run(function()
 			walk would have covered. The distance per second the server sees is unchanged;
 			only the need for ground beneath it goes away.
 		]]
-		if mode() == 'Fly' then
+		--[[
+			Over it, when going round it has failed.
+
+			Some geometry simply cannot be walked past: the underside of a staircase, a
+			corner behind a gear, a lip that every step refuses. Going round is tried first
+			and is usually right, but when it has been tried and we are still in the same
+			place, the way out is up - which is the one direction a walk never considers and
+			the one that always works.
+
+			It is the flying movement, borrowed for a second or two: the same walking pace,
+			the same per-frame budget, just without needing floor underfoot. Flying already
+			behaves on this server, so nothing new is being risked.
+		]]
+		if mode() == 'Fly' or os.clock() < climbUntil then
 			local direct = goal - hrp.Position
 			local range = direct.Magnitude
 			if range < 0.5 then return end
@@ -3404,6 +3421,23 @@ run(function()
 		if stuck and now < (nav.sidestepUntil or 0) and nav.sidestep then
 			goTo(hum, hrp, nav.sidestep)
 			return
+		end
+
+		--[[
+			Sidestepping did not free us either, so go over it.
+
+			A staircase's underside, a corner behind a gear, a lip the stepper will not take:
+			these have no sideways answer, and every rebuilt route begins with the same
+			refused step. Rather than keep trying, movement lifts for a moment - the flying
+			path, at walking pace - which clears the obstruction and lands on the far side.
+
+			Only after going round has actually been tried, so ordinary walking is never
+			replaced by this.
+		]]
+		if stuck and nav.sidestepAt and now - nav.sidestepAt > 1.5 and now > climbUntil + 3 then
+			climbUntil = now + 2
+			nav.movedAt = now
+			say('climbing over an obstruction')
 		end
 
 		if stuck and now - (nav.sidestepAt or 0) > 2 then
