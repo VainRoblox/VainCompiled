@@ -1693,18 +1693,31 @@ run(function()
 				move the part's extremity a few studs. On a short part that is most of a
 				turn; on a beam it is the small amount it truly sweeps in that moment.
 			]]
-			local lead = tuning.spinLead or 0.3
-			local turn = d.spin * lead
-			local travelled = math.abs(turn) * math.max(d.bound, 1)
-			local allowed = tuning.spinReach or 8
-			if travelled > allowed then
-				turn = (turn > 0 and 1 or -1) * (allowed / math.max(d.bound, 1))
+			--[[
+				Only when it is actually turning.
+
+				Losing this guard made every attack that merely travels reach for a turn rate
+				that was never measured - nil times a number, thrown inside the dodge, on
+				every frame. A dodge that throws does not degrade, it stops, which is why it
+				could not dodge anything at all.
+			]]
+			if d.spin then
+				local lead = tuning.spinLead or 0.3
+				local turn = d.spin * lead
+				local reach = math.max(d.bound or 1, 1)
+				local travelled = math.abs(turn) * reach
+				local allowed = tuning.spinReach or 8
+
+				if travelled > allowed then
+					turn = (turn > 0 and 1 or -1) * (allowed / reach)
+				end
+
+				table.insert(futures, CFrame.new(cf.Position)
+					* CFrame.Angles(0, turn, 0)
+					* (cf - cf.Position))
+				d.spread += math.min(travelled, allowed)
 			end
 
-			table.insert(futures, CFrame.new(cf.Position)
-				* CFrame.Angles(0, turn, 0)
-				* (cf - cf.Position))
-			d.spread += math.min(travelled, allowed)
 			d.futures = futures
 		end
 
@@ -3930,7 +3943,20 @@ run(function()
 				the only way the step budget produces a full walking pace rather than ten
 				coarse hops a second.
 			]]
-			AutoFarm:Clean(runService.Heartbeat:Connect(function()
+			--[[
+				A mistake in here must not take the dodge with it.
+
+				Everything else in the farm runs inside a pcall and reports what went wrong;
+				this did not, so a single bad line - a nil where a number was expected -
+				stopped every dodge from that moment on, silently, with the farm otherwise
+				behaving normally. From outside that is "it cannot dodge anything any more",
+				which is a miserable thing to diagnose from a screenshot.
+
+				Now it is caught and named once, and the rest of the farm carries on.
+			]]
+			local dodgeFaulted = false
+
+			local function dodgeStep()
 				local char = lplr.Character
 				local hrp = char and char:FindFirstChild('HumanoidRootPart')
 				local hum = char and char:FindFirstChildOfClass('Humanoid')
@@ -4150,6 +4176,17 @@ run(function()
 					return
 				end
 				stepTo(hrp, hum, moveGoal, true)
+			end
+
+			AutoFarm:Clean(runService.Heartbeat:Connect(function()
+				local ok, err = pcall(dodgeStep)
+				if not ok and not dodgeFaulted then
+					dodgeFaulted = true
+					warn('[Auto Farm] dodge error: ' .. tostring(err))
+					if vain and vain.CreateNotification then
+						vain:CreateNotification('Auto Farm', 'dodge error: ' .. tostring(err), 10, 'alert')
+					end
+				end
 			end))
 
 			local weaponUsed = remote('weaponUsed')
