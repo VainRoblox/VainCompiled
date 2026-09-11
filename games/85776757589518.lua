@@ -600,7 +600,7 @@ end)
 	attacks come from the precastHitbox telegraph the game sends for all of them.
 ]]
 run(function()
-	local AutoFarm, SafeHP, RecoverHP, AttackRange, AbilityRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, Movement, ShiftLock, Debug
+	local AutoFarm, SafeHP, RecoverHP, AttackRange, AbilityRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, Movement, ShiftLock, Debug, EmergencyTP, BlinkDistance
 
 	--[[
 		How the character gets about, as one choice rather than two toggles.
@@ -2070,6 +2070,68 @@ run(function()
 		return spot
 	end
 
+	--[[
+		The hop for when walking was never going to be enough.
+
+		Every other movement here is capped at walking pace on purpose, because arriving
+		somewhere you could not have walked to is what the server pulls you back for. But a
+		projectile crossing the room in half a second does not care: the spot is found, the
+		walk starts, and the attack lands on the way.
+
+		So this is kept for the one case that walking cannot answer - already standing
+		inside a live attack - and is deliberately small: a short hop onto ground at the
+		same height, no further than the setting allows, with a cooldown between hops. Short
+		and level is what keeps it looking like a step rather than a teleport, and the
+		height limits are the same ones every step obeys.
+	]]
+	local lastBlink = 0
+
+	local function emergencyBlink(hrp, pos, goal)
+		if not (EmergencyTP ~= nil and EmergencyTP.Enabled) then return false end
+		if not goal then return false end
+		if os.clock() - lastBlink < 1.2 then return false end
+
+		-- Only when it is already landing on us. Anything less is a walk.
+		if not anyDanger(pos, 0) then return false end
+
+		local hop = BlinkDistance ~= nil and BlinkDistance.Value or 14
+		local delta = (goal - pos) * Vector3.new(1, 0, 1)
+		if delta.Magnitude < 1 then return false end
+
+		local dir = delta.Unit
+		local side = Vector3.new(-dir.Z, 0, dir.X)
+
+		local tries = {}
+		if delta.Magnitude <= hop then table.insert(tries, goal) end
+		for _, fraction in { 1, 0.75, 0.5 } do
+			table.insert(tries, pos + dir * (hop * fraction))
+		end
+		-- Sideways as well: the way out of a lane is across it, and the planned spot may be
+		-- much further along than one hop reaches.
+		for _, offset in { side, -side } do
+			table.insert(tries, pos + offset * hop)
+			table.insert(tries, pos + offset * (hop * 0.6))
+		end
+
+		for _, point in tries do
+			local y = groundAt(point, pos.Y)
+			if y then
+				local landing = Vector3.new(point.X, y, point.Z)
+				if not anyDanger(landing, 3)
+					and not insideBarrier(landing, 1)
+					and clearLine(pos, landing, true) then
+
+					hrp.CFrame = CFrame.new(landing) * (hrp.CFrame - hrp.CFrame.Position)
+					hrp.AssemblyLinearVelocity = Vector3.zero
+					lastBlink = os.clock()
+					say(string.format('emergency hop %.0f studs', (landing - pos).Magnitude))
+					return true
+				end
+			end
+		end
+		return false
+	end
+
 	-- storage items may store a field as a plain value or as {Value=x}.
 	local function fv(item, key)
 		local v = item[key]
@@ -3475,6 +3537,14 @@ run(function()
 						end
 					end
 
+					-- Standing in it already: hop clear rather than start a walk that arrives
+					-- after the attack does.
+					if dodgeGoal and emergencyBlink(hrp, pos, dodgeGoal) then
+						dodgeGoal = nil
+						settleUntil = os.clock() + 0.25
+						return
+					end
+
 					if dodgeGoal then
 						--[[
 							A plan that is not moving us is not a plan.
@@ -3826,6 +3896,10 @@ run(function()
 		Tooltip = 'When low, if you own a heal spell: swap to best spell-power weapon and heals, heal to full while backing off, then restore your set' })
 	DodgeAttacks = AutoFarm:CreateToggle({ Name = 'Dodge Attacks', Default = true,
 		Tooltip = "Steps you out of every enemy attack part the game spawns, reading their names from the game's own attack list" })
+	EmergencyTP = AutoFarm:CreateToggle({ Name = 'Emergency TP', Default = true,
+		Tooltip = 'When an attack is already on you and walking out would be too slow, hop clear in one move instead. Level ground only, once a second at most' })
+	BlinkDistance = AutoFarm:CreateSlider({ Name = 'Emergency TP Distance', Min = 5, Max = 30, Default = 14, Suffix = ' studs',
+		Tooltip = 'How far one emergency hop may go. Longer clears more, and looks less like a step (default 14)' })
 end)
 
 
