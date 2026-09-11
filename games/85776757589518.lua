@@ -75,6 +75,10 @@ local tuning = {
 -- What the farm is doing this instant, written out for diagnosis.
 local status = {}
 
+-- When an ability was last actually cast. Nothing else in the farm is as good a sign that
+-- it is still working: casts happen constantly in a fight and the moment one is in range.
+local lastAbilityAt = 0
+
 -- Guarded remote lookup so a missing/renamed remote can never error a module.
 local remotesFolder = replicatedStorage:FindFirstChild('remotes')
 if not remotesFolder then
@@ -633,7 +637,7 @@ end)
 	attacks come from the precastHitbox telegraph the game sends for all of them.
 ]]
 run(function()
-	local AutoFarm, SafeHP, RecoverHP, AttackRange, AbilityRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, Movement, ShiftLock, Debug, EmergencyTP, BlinkDistance, AlignAttacks
+	local AutoFarm, SafeHP, RecoverHP, AttackRange, AbilityRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, Movement, ShiftLock, Debug, EmergencyTP, BlinkDistance, AlignAttacks, StuckReset, ResetAfter
 
 	--[[
 		How the character gets about, as one choice rather than two toggles.
@@ -2600,6 +2604,8 @@ run(function()
 						local le = child:FindFirstChild('localEvent')
 						if le then le:Fire() end
 						if abilityUsed then abilityUsed:FireServer(slot, child) end
+						-- The one act that proves the farm is still getting things done.
+						lastAbilityAt = os.clock()
 					end
 					break
 				end
@@ -3962,6 +3968,9 @@ run(function()
 			clearPath()
 			moveGoal = nil
 			dodgeGoal = nil
+			-- Started now, so a farm that is wedged from its first second still resets
+			-- rather than waiting for a cast that never comes.
+			lastAbilityAt = os.clock()
 
 			-- Routes were recorded to disk by an older farm. Nothing reads them any more,
 			-- and deleting them means no old copy of the farm can ever replay one either.
@@ -4293,6 +4302,35 @@ run(function()
 					local started = workspace:FindFirstChild('dungeonStarted')
 					if started and started:IsA('BoolValue') and started.Value ~= true then return end
 
+					--[[
+						Nothing cast in a long time means stuck, so start again.
+
+						A fight produces casts constantly and travelling between rooms ends in
+						one, so a stretch with none is not a quiet patch - it is the farm
+						wedged somewhere, or holding a plan it cannot carry out. Dying is a
+						cheap way out of all of those: the dungeon puts you back on your feet
+						and the farm carries on, which beats standing in a corner until the
+						run times out.
+
+						The clock is pushed forward on reset as well, so a respawn that takes
+						a moment cannot trigger a second one.
+					]]
+					if StuckReset ~= nil and StuckReset.Enabled and lastAbilityAt > 0 then
+						local idle = os.clock() - lastAbilityAt
+						if idle > (ResetAfter and ResetAfter.Value or 30) then
+							lastAbilityAt = os.clock()
+							say(string.format('nothing cast in %.0fs, resetting', idle))
+
+							-- Health is the server's to give, so this asks in every way a
+							-- client is allowed to: the humanoid's own state, then its
+							-- health, then the joints. Whichever the game honours, it works.
+							pcall(function() hum:ChangeState(Enum.HumanoidStateType.Dead) end)
+							pcall(function() hum.Health = 0 end)
+							pcall(function() char:BreakJoints() end)
+							return
+						end
+					end
+
 					-- Before anything else: being in the air outranks every plan that
 					-- assumes standing on something.
 					if mode() == 'Step TP' and keepGrounded(hrp, hum) then
@@ -4566,6 +4604,10 @@ run(function()
 		Tooltip = 'When an attack is already on you and walking out would be too slow, hop clear in one move instead. Level ground only, once a second at most' })
 	BlinkDistance = AutoFarm:CreateSlider({ Name = 'Emergency TP Distance', Min = 2, Max = 5, Default = 4, Suffix = ' studs',
 		Tooltip = 'How far one emergency teleport goes. Kept tiny on purpose - further than this and the server pulls you back (default 4)' })
+	StuckReset = AutoFarm:CreateToggle({ Name = 'Reset when stuck', Default = true,
+		Tooltip = 'If no ability has been cast for a while the farm is wedged somewhere, so reset and let the dungeon put you back on your feet' })
+	ResetAfter = AutoFarm:CreateSlider({ Name = 'Reset after', Min = 10, Max = 120, Default = 30, Suffix = 's',
+		Tooltip = 'How long without casting anything counts as stuck (default 30)' })
 	AlignAttacks = AutoFarm:CreateToggle({ Name = 'Align to Attacks', Default = true,
 		Tooltip = 'Turn side-on to whatever is coming, so a lane clips one stud of you instead of two. Needs Shift Lock on to hold while moving' })
 end)
