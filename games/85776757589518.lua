@@ -1488,11 +1488,18 @@ run(function()
 			end
 		end
 
-		-- Wide enough to escape the big ground slams, which reach 40 studs across, without
-		-- making every dodge a trip across the room: nearest-first ordering means the far
-		-- rings are only ever reached when everything closer is taken.
-		for _, radius in { 7, 11, 16, 22, 29, 38, 48, 60, 75, 92 } do
-			local samples = radius <= 16 and 16 or 24
+		--[[
+			Sampled finely enough to find the gaps, not just the way out.
+
+			The patterns that matter most - a fan of long lanes, a ring of circles, a
+			checkerboard - are mostly safe ground, in gaps a few studs wide between the
+			parts. Sixteen directions on a ring steps over gaps like that entirely, and the
+			only spots it does find are out past the whole pattern, which is the far side
+			from whatever is casting. Closer rings and more directions per ring mean the gap
+			between two lanes is offered as a candidate at all.
+		]]
+		for _, radius in { 6, 9, 12, 16, 20, 25, 31, 38, 47, 58, 72, 92 } do
+			local samples = radius <= 12 and 16 or (radius <= 31 and 28 or 32)
 			for i = 0, samples - 1 do
 				local angle = (i / samples) * math.pi * 2
 				offer(pos + Vector3.new(math.cos(angle), 0, math.sin(angle)) * radius)
@@ -1607,13 +1614,21 @@ run(function()
 			local detour = nil
 			local roomy, roomyScore = nil, nil
 			local best, bestScore, firstClear = nil, nil, nil
+			local rays = 0
 
 			for _, candidate in candidates do
 				local point = candidate.point
 
-				-- A safe spot is already in hand and everything left is a longer walk than
-				-- it is worth comparing against.
-				if best and candidate.travel > firstClear + 16 then break end
+				--[[
+					A safe spot is in hand; how much further to keep looking.
+
+					Sixteen studs was too tight whenever there was something to fight. The
+					gap that keeps you on the boss is regularly on the far side of the lane
+					you are standing in - a longer walk than the step backwards out of it,
+					and the better move by a wide margin. With nothing to fight there is
+					nothing to weigh against distance, so the tight window stands.
+				]]
+				if best and candidate.travel > firstClear + (anchor and 42 or 16) then break end
 
 				local stale = false
 				for _, bad in badSpots do
@@ -1634,6 +1649,11 @@ run(function()
 					-- to the height it was sampled at, which accepted ledges and gaps.
 					local y
 					if needFooting then
+						-- Rays are the one expensive thing in here. Once a safe spot is in
+						-- hand, stop paying for more of them; without one, keep looking,
+						-- since an answer matters more than the frame it costs.
+						if rays >= 80 and best then break end
+						rays += 1
 						y = groundAt(point, pos.Y)
 					else
 						y = point.Y
