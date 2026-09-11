@@ -1361,13 +1361,30 @@ run(function()
 			The recent travel is carried forward a little so the danger is the path rather
 			than the snapshot.
 		]]
-		local lead = d.velocity
+		-- Where it will be shortly, by travel and by turn, worked out once for all three
+		-- heights rather than per height.
+		local futures
+		if d.velocity or d.spin then
+			futures = {}
+			for _, ahead in { 0.35, 0.7 } do
+				local future = cf
+				if d.velocity then future += d.velocity * ahead end
+				if d.spin then
+					future = CFrame.new(future.Position)
+						* CFrame.Angles(0, d.spin * ahead, 0)
+						* (future - future.Position)
+				end
+				table.insert(futures, future)
+			end
+		end
+
 		for _, height in { 0, -2.6, 1.6 } do
 			local point = pos + Vector3.new(0, height, 0)
 			if pointInZone(cf, size, shape, point, margin) then return true end
-			if lead then
-				if pointInZone(cf + lead * 0.35, size, shape, point, margin) then return true end
-				if pointInZone(cf + lead * 0.7, size, shape, point, margin) then return true end
+			if futures then
+				for _, future in futures do
+					if pointInZone(future, size, shape, point, margin) then return true end
+				end
 			end
 		end
 		return false
@@ -1412,6 +1429,8 @@ run(function()
 
 		local now = os.clock()
 		local position = d.part.Position
+		local cf = d.part.CFrame
+
 		if d.pos then
 			local elapsed = now - (d.at or now)
 			if elapsed > 0.01 then
@@ -1420,8 +1439,31 @@ run(function()
 				-- projectile, and leading it would push the dodge off a zone that is
 				-- standing still.
 				d.velocity = travel.Magnitude > 12 and travel or nil
+
+				--[[
+					Sweeping counts as moving, even when nothing moves.
+
+					A beam that pivots about its caster hardly shifts its own centre - the
+					far end crosses the room while the middle barely stirs - so measuring
+					travel alone calls it stationary and the dodge steps neatly into where
+					it is about to be. Turn rate is the honest measure for those, and the
+					Evil Scientist's sweeps are exactly this shape.
+				]]
+				local facing = cf.LookVector
+				if d.facing then
+					local turn = math.atan2(facing.X, facing.Z) - math.atan2(d.facing.X, d.facing.Z)
+					-- Round the short way, so passing north does not read as a full circle.
+					if turn > math.pi then turn -= math.pi * 2 end
+					if turn < -math.pi then turn += math.pi * 2 end
+					local rate = turn / elapsed
+					d.spin = math.abs(rate) > 0.15 and rate or nil
+				end
+				d.facing = facing
 			end
+		else
+			d.facing = cf.LookVector
 		end
+
 		d.pos, d.at = position, now
 		return true
 	end
@@ -1473,13 +1515,21 @@ run(function()
 		return y and Vector3.new(best.X, y, best.Z) or best
 	end
 
-	-- Arena-wide, and therefore the kind a safe circle protects you from.
+	--[[
+		Arena-wide, and therefore the kind a safe circle protects you from.
+
+		A hundred studs was far too low a bar. The long sweeping lanes are two hundred studs
+		end to end and are emphatically not covered by standing in a circle - but they were
+		being written off as "the attack the safe zone saves you from" whenever anything
+		with safe in its name was about, which is a dodge stepping calmly into a beam. Only
+		the patterns that genuinely paint the whole floor qualify.
+	]]
 	local function hugeZone(d)
 		if d.part then
 			local size = d.part.Size
-			return math.max(size.X, size.Y, size.Z) >= 100
+			return math.min(size.X, size.Z) >= 120 or math.max(size.X, size.Y, size.Z) >= 250
 		end
-		return (d.size and math.max(d.size.X, d.size.Z) >= 100) or ((d.radius or 0) >= 50)
+		return (d.size and math.min(d.size.X, d.size.Z) >= 120) or ((d.radius or 0) >= 110)
 	end
 
 	local function zoneCounts(pos, d, margin, sheltered, ignore)
@@ -1826,9 +1876,20 @@ run(function()
 						end
 
 						if clear and reachable_ then
+							--[[
+								Sampled by distance, not in quarters.
+
+								Four samples over a forty stud dodge is one test every ten
+								studs, and a lane six studs wide fits between two of them
+								without being noticed - so the route was declared clear and
+								walked straight through the attack. Every few studs closes
+								that, and short dodges cost no more than before.
+							]]
+							local span = (grounded - pos).Magnitude
+							local steps = math.clamp(math.floor(span / 3), 3, 14)
 							local safePath = true
-							for step = 1, 4 do
-								local sample = pos:Lerp(grounded, step / 4)
+							for step = 1, steps do
+								local sample = pos:Lerp(grounded, step / steps)
 								if anyDanger(sample, m, escaping) or enemyGap(sample) < pathGap then
 									safePath = false
 									break
@@ -3240,7 +3301,11 @@ run(function()
 						stale = false
 					end
 
-					if stale and os.clock() - lastPlanAt < 0.06 then
+					-- Standing in the answer already: an attack landing on the spot we are
+					-- walking to outranks the rate limit, which is there for comfort.
+					local urgent = dodgeGoal ~= nil and anyDanger(dodgeGoal, 5)
+
+					if stale and not urgent and os.clock() - lastPlanAt < 0.06 then
 						stale = false
 					end
 
