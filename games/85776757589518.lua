@@ -237,7 +237,9 @@ run(function()
 		Tooltip = 'Automatically swings your equipped weapon while in a dungeon.',
 		Function = function(callback)
 			if not callback then return end
-			setupDodge()
+			-- No dodging here on purpose: setupDodge is a local of the Auto Farm block, so
+			-- calling it from out here was a nil call that killed this module the moment it
+			-- was switched on. Auto Attack swings; Auto Farm is what dodges.
 			local weaponUsed = remote('weaponUsed')
 			repeat
 				pcall(function()
@@ -555,7 +557,7 @@ end)
 	attacks come from the precastHitbox telegraph the game sends for all of them.
 ]]
 run(function()
-	local AutoFarm, SafeHP, RecoverHP, AttackRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, Movement, ShiftLock, Debug
+	local AutoFarm, SafeHP, RecoverHP, AttackRange, AbilityRange, KeepDistance, KeepAway, FarmDelay, HealSwap, DodgeAttacks, UsePathfinding, Strafe, Movement, ShiftLock, Debug
 
 	--[[
 		How the character gets about, as one choice rather than two toggles.
@@ -718,30 +720,68 @@ run(function()
 	--[[
 		The invisible walls, and staying inside them.
 
-		The room is fenced by a Barriers folder full of parts, and a dodge that chose a spot
-		on the far side of one could never get there: the step refused it, the search offered
-		it again next tick, and the farm stood announcing a dodge it would never take. That
-		is the stall.
+		The playable area is fenced by parts, and a dodge that chose a spot on the far side
+		of one could never get there: the step refused it, the search offered it again next
+		tick, and the farm stood announcing a dodge it would never take. That is the stall.
+		Worse, a Step TP that crosses one is exactly what the server pulls you back for.
+
+		Two folders matter and only one was ever read. 'Barriers' exists, but in this place
+		it lives inside bossRoom - so looking for it under workspace found nothing at all,
+		every run, and the walls have never actually been respected. The one that fences the
+		rooms is 'borders', built at runtime, which is why it is searched for rather than
+		resolved once.
 
 		Tested by geometry rather than by raycast, because these are exactly the sort of part
 		that is built unqueryable - a ray would pass straight through the very wall we are
 		trying to respect. Each part becomes a box in its own space, which is cheap enough
-		for the dozen or so a room has, and correct whatever their query flags say.
+		for the dozens a room has, and correct whatever their query flags say.
 	]]
 	local barrierParts, barrierScan = {}, 0
+
+	local function collectBorders(root, out, depth)
+		if not root or depth > 3 then return end
+		for _, child in root:GetChildren() do
+			local name = child.Name
+			if name == 'borders' or name == 'Barriers' then
+				for _, d in child:GetDescendants() do
+					if d:IsA('BasePart') then table.insert(out, d) end
+				end
+			elseif child:IsA('Folder') or child:IsA('Model') then
+				collectBorders(child, out, depth + 1)
+			end
+		end
+	end
 
 	local function refreshBarriers()
 		if os.clock() - barrierScan < 3 and #barrierParts > 0 then return end
 		barrierScan = os.clock()
 
-		barrierParts = {}
-		local folder = workspace:FindFirstChild('Barriers')
-		if not folder then return end
-		for _, d in folder:GetDescendants() do
-			if d:IsA('BasePart') then
-				table.insert(barrierParts, d)
+		local found = {}
+		-- Walked from the few places a dungeon keeps them rather than over the whole
+		-- workspace, which is tens of thousands of instances and is not something to do
+		-- every three seconds.
+		collectBorders(workspace:FindFirstChild('dungeon'), found, 1)
+		collectBorders(workspace:FindFirstChild('Map'), found, 1)
+		for _, child in workspace:GetChildren() do
+			if child.Name == 'borders' or child.Name == 'Barriers' then
+				for _, d in child:GetDescendants() do
+					if d:IsA('BasePart') then table.insert(found, d) end
+				end
 			end
 		end
+
+		-- Nothing anywhere obvious, so pay for the deep search once rather than give up on
+		-- the walls entirely.
+		if #found == 0 then
+			local folder = workspace:FindFirstChild('borders', true) or workspace:FindFirstChild('Barriers', true)
+			if folder then
+				for _, d in folder:GetDescendants() do
+					if d:IsA('BasePart') then table.insert(found, d) end
+				end
+			end
+		end
+
+		barrierParts = found
 	end
 
 	local function insideBarrier(pos, margin)
@@ -773,6 +813,25 @@ run(function()
 	local dangers = {}
 	local dodgeReady = false
 	local seenZones = 0
+
+	-- Set the instant a new attack part is registered, so the dodge replans on the frame it
+	-- appears instead of waiting for the next farm tick. A tenth of a second is most of the
+	-- warning on a fast attack, and it is the difference between stepping out and being hit.
+	local dangerAdded = false
+
+	-- Where the dodge is currently heading, held across frames so a plan is followed rather
+	-- than recomputed into a different answer every frame.
+	local dodgeGoal = nil
+
+	--[[
+		Declared up here, defined with the rest of the room logic further down.
+
+		The dodge has to keep its chosen spot inside the room being fought, and the room
+		helpers live several hundred lines below it. A local defined later in the same block
+		is a nil GLOBAL to everything above it - it does not error at load, it simply reads
+		as nil and throws when called - which is exactly how this file has broken before.
+	]]
+	local currentRoom, inRoom
 
 	--[[
 		The telegraph taken at its source.
@@ -840,99 +899,145 @@ run(function()
 	end
 
 	--[[
-		Attack models, every part of them.
+		How long a telegraph is worth avoiding for.
 
-		These arrive as whole models dropped into the workspace - npcMageSpikes from a Dark
-		Mage, bigMageBeam from the demon - and rather than trying to work out which part
-		inside is the dangerous one, every part is treated as dangerous. Naming has already
-		proved a dead end twice: precast only exists in one dungeon, and matching words in
-		the model's name needs a list that is only ever as complete as what has been seen.
+		This was simply missing. Every call to it sat INSIDE the wrapper installed over the
+		game's own Cube and Circle, so the nil call threw before the original ran - killing
+		our registration and the game's own warning drawing with it, on every single
+		telegraph. Both halves of the dodge looked installed and neither ever worked.
 
-		The one guard kept is that nothing counts unless there is something to fight. That
-		is what stops a repeat of the lobby, where scenery arriving in an empty world was
-		read as an attack and the farm stood dodging decorations before the match began.
+		The lead time is when it lands; a little past that is when it is over.
 	]]
-	local function watchAttackModels()
-		--[[
-			Descendants, not children.
+	local function windowFor(delay)
+		return workspace:GetServerTimeNow() + (tonumber(delay) or 1) + 0.6
+	end
 
-			These do not all land at the top of the workspace: some are parented into the
-			dungeon or a room, and watching only direct children missed those entirely
-			while appearing to work perfectly on the ones that did.
+	--[[
+		Knowing an attack by name, from the game's own list of them.
 
-			Nested models are NOT skipped. That filter was added to avoid registering the
-			same parts twice and it threw away real attacks instead - the spikes that
-			arrive inside another model were exactly the case it dropped. Registering a
-			part twice costs nothing, since both copies expire together and standing
-			outside a zone twice is the same as standing outside it once.
-		]]
+		Every enemy attack in this game is a clone of something under
+		ReplicatedStorage.enemyProjectiles - and the per-enemy attack models under
+		enemyAssets - so the set of names in those two folders IS the set of things that
+		can hurt you. Reading it at runtime means an update that adds a boss is covered
+		without touching this file, which the old "every part of every model" guess never
+		managed: it dodged loot, gibs and scenery, and that is a large part of why dodging
+		looked like it never worked.
+
+		A clone keeps its name and loses every other link to where it came from, so the
+		name is what there is to match on.
+
+		Your own spells are the one trap. They are cloned from ReplicatedStorage.projectiles
+		and use the very same part names - hitBox above all - so matching names alone makes
+		the farm flee from its own casts. Anything whose name also exists in that folder is
+		therefore dropped, which costs only the handful of names the two share.
+	]]
+	local attackNames, ownNames = {}, {}
+
+	local function learnNames()
+		if next(attackNames) then return end
+
+		local function harvest(folder, into)
+			if not folder then return end
+			for _, d in folder:GetDescendants() do
+				if d:IsA('BasePart') or d:IsA('Model') then into[d.Name] = true end
+			end
+			for _, d in folder:GetChildren() do into[d.Name] = true end
+		end
+
+		harvest(replicatedStorage:FindFirstChild('projectiles'), ownNames)
+
+		local enemy = {}
+		harvest(replicatedStorage:FindFirstChild('enemyProjectiles'), enemy)
+		harvest(replicatedStorage:FindFirstChild('enemyAssets'), enemy)
+
+		-- Names so generic that matching them would catch the map itself. 'Part' is what
+		-- the telegraph module calls its own hitboxes AND what every border part is
+		-- called, so it can only ever come from the bridge hook, never from a name.
+		local generic = {
+			Part = true, Model = true, Folder = true, Union = true, MeshPart = true,
+			Handle = true, PrimaryPart = true, primaryPart = true, Head = true,
+			HumanoidRootPart = true, Torso = true, Attachment = true, Sound = true,
+		}
+
+		for name in enemy do
+			if not generic[name] and not ownNames[name] then attackNames[name] = true end
+		end
+	end
+
+	--[[
+		What a part actually is, rather than what a box would say it is.
+
+		A circle attack's hitBox is a sphere and its warning is a cylinder lying on its
+		side; a lane is a block. Measuring all three as axis-aligned boxes is why dodges
+		stepped to spots that were still inside the attack, and why some attacks read as
+		far bigger than they are - the corners of a box around a 40-stud sphere stick out
+		eight studs past it in every diagonal.
+
+		Read fresh on every test, because these are tweened into place while the warning
+		plays: where a zone was when it appeared is not where it lands.
+	]]
+	local function zoneShape(part)
+		if not (part and part.Parent) then return nil end
+		local shape = part:IsA('Part') and part.Shape or Enum.PartType.Block
+		return part.CFrame, part.Size, shape
+	end
+
+	--[[
+		The parts that can hurt you, watched from the instant they exist.
+
+		Registered on sight rather than scanned for on a timer: an attack that is only
+		dangerous for a second is one a tenth-of-a-second poll can miss entirely, and the
+		whole point is to be moving before it lands.
+
+		Anything worn by, or attached to, a character is skipped. Bosses wear their gear
+		from these same folders, and a mark stuck to your own root ('lastBossCharMark',
+		'firstBossPlayerOnFire') would otherwise be a danger zone that follows you around
+		for ever - the farm would run from itself and never stop.
+	]]
+	local function ownedByCharacter(part)
+		local node = part
+		for _ = 1, 8 do
+			if not node or node == workspace then return false end
+			if node:FindFirstChildOfClass('Humanoid') then return true end
+			if playersService:GetPlayerFromCharacter(node) then return true end
+			node = node.Parent
+		end
+		return false
+	end
+
+	local function registerDanger(part)
+		if not part:IsA('BasePart') then return end
+
+		-- The part itself, or whatever it arrived inside: a lane's hitBox is called
+		-- 'hitBox' and only its model carries the attack's name.
+		local named = attackNames[part.Name]
+		if not named then
+			local node = part.Parent
+			for _ = 1, 4 do
+				if not node or node == workspace then break end
+				if attackNames[node.Name] then named = true break end
+				if ownNames[node.Name] then return end
+				node = node.Parent
+			end
+		end
+		if not named then return end
+		if ownedByCharacter(part) then return end
+
+		table.insert(dangers, {
+			part = part,
+			expire = workspace:GetServerTimeNow() + 14,
+			born = os.clock(),
+			pos = part.Position,
+		})
+		seenZones += 1
+		dangerAdded = true
+	end
+
+	local function watchAttackParts()
+		learnNames()
+
 		workspace.DescendantAdded:Connect(function(object)
-			if not object:IsA('Model') then return end
-			if object:FindFirstChildOfClass('Humanoid') then return end
-			if playersService:GetPlayerFromCharacter(object) then return end
-
-			-- Nothing casts anything when there is nothing alive to cast it.
-			if #enemyCache == 0 then return end
-
-			local expire = workspace:GetServerTimeNow() + 12
-			local added = 0
-
-			-- BasePart rather than Part on purpose: plenty of these are built from meshes,
-			-- and a MeshPart hurts exactly as much as a brick does.
-			for _, part in object:GetDescendants() do
-				if part:IsA('BasePart') then
-					-- Shape only exists on a plain Part; anything else is treated as a box.
-					local circle = part:IsA('Part') and part.Shape == Enum.PartType.Cylinder
-					table.insert(dangers, {
-						kind = circle and 'circle' or 'cube',
-						part = part,
-						cf = part.CFrame,
-						pos = part.Position,
-						size = part.Size,
-						radius = part.Size.Y * 0.5,
-						expire = expire,
-					})
-					added += 1
-				end
-			end
-
-			--[[
-				Parts that turn up after the model does.
-
-				A model is not always full when it is parented - the game builds some of
-				these in place, and streaming can deliver the pieces a frame or two behind
-				the container. Reading its descendants once, at that instant, then sees an
-				empty model and registers nothing, and the attack goes completely unwatched
-				while everything looks like it is working.
-
-				So the model is watched for a few seconds afterwards and anything that
-				lands in it is registered too.
-			]]
-			local late
-			late = object.DescendantAdded:Connect(function(part)
-				if not part:IsA('BasePart') then return end
-				if workspace:GetServerTimeNow() > expire then
-					late:Disconnect()
-					return
-				end
-				local circle = part:IsA('Part') and part.Shape == Enum.PartType.Cylinder
-				table.insert(dangers, {
-					kind = circle and 'circle' or 'cube',
-					part = part,
-					cf = part.CFrame,
-					pos = part.Position,
-					size = part.Size,
-					radius = part.Size.Y * 0.5,
-					expire = expire,
-				})
-				seenZones += 1
-			end)
-			task.delay(5, function() late:Disconnect() end)
-
-			if added > 0 then
-				seenZones += added
-				say(string.format('attack %s: %d parts', object.Name, added))
-			end
+			registerDanger(object)
 		end)
 	end
 
@@ -940,7 +1045,7 @@ run(function()
 		if dodgeReady then return end
 		dodgeReady = true
 
-		local watched, watchErr = pcall(watchAttackModels)
+		local watched, watchErr = pcall(watchAttackParts)
 		announce(watched and 'attack watcher installed' or ('attack watcher FAILED: ' .. tostring(watchErr)))
 
 
@@ -982,53 +1087,74 @@ run(function()
 		return fb ~= nil and fb:IsA('BoolValue') and fb.Value == true
 	end
 
+	--[[
+		Standing in it, tested against the shape the part actually is.
+
+		The character is a column, not a point. A lane's warning is a stud thick and lies on
+		the floor, so testing your root - three studs up - against it says you are clear
+		while your feet are standing in it. Three samples up the body settles that without
+		pretending a capsule test is cheap enough to run four hundred times a frame.
+	]]
+	local CHARACTER_RADIUS = 2
+
+	local function pointInZone(cf, size, shape, point, margin)
+		local lp = cf:PointToObjectSpace(point)
+		local h = size * 0.5
+
+		if shape == Enum.PartType.Ball then
+			local radius = math.min(size.X, size.Y, size.Z) * 0.5
+			return lp.Magnitude <= radius + margin
+		elseif shape == Enum.PartType.Cylinder then
+			-- Roblox lays a cylinder along its X axis: X is the height of the disc, and
+			-- the circular face is the Y/Z plane.
+			local radius = math.min(size.Y, size.Z) * 0.5
+			local flat = math.sqrt(lp.Y * lp.Y + lp.Z * lp.Z)
+			return math.abs(lp.X) <= h.X + margin and flat <= radius + margin
+		end
+
+		return math.abs(lp.X) <= h.X + margin
+			and math.abs(lp.Y) <= h.Y + margin
+			and math.abs(lp.Z) <= h.Z + margin
+	end
+
 	local function inDanger(pos, d, margin)
-		if d.kind == 'circle' then
-			-- Height matters for these too: a ring cast on the floor below is not one we
-			-- are standing in, and treating it as one kept the dodge running with nowhere
-			-- sensible to go.
-			if math.abs(pos.Y - d.pos.Y) > 25 then return false end
-			local dx, dz = pos.X - d.pos.X, pos.Z - d.pos.Z
-			return (dx * dx + dz * dz) <= (d.radius + margin) ^ 2
-		else
+		margin = (margin or 0) + CHARACTER_RADIUS
+
+		-- A telegraph from the bridge has no part behind it, only the numbers the game was
+		-- about to draw with.
+		if not d.part then
+			if d.kind == 'circle' then
+				if math.abs(pos.Y - d.pos.Y) > 25 then return false end
+				local dx, dz = pos.X - d.pos.X, pos.Z - d.pos.Z
+				return (dx * dx + dz * dz) <= (d.radius + margin) ^ 2
+			end
 			local lp = d.cf:PointToObjectSpace(pos)
 			local h = d.size * 0.5
 			return math.abs(lp.X) <= h.X + margin and math.abs(lp.Z) <= h.Z + margin
 				and math.abs(lp.Y) <= h.Y + 8
 		end
-	end
 
-	local function safeSpot(pos, d, margin)
-		if d.kind == 'circle' then
-			--[[
-				Cast on your feet, a ring leaves no direction to run: the vector from its
-				centre to you is nothing, and normalising nothing is what sent the dodge
-				somewhere useless. Facing decides it instead - sideways, so it steps out of
-				the ring rather than backing away from whatever is in front of it.
-			]]
-			local dir = Vector3.new(pos.X - d.pos.X, 0, pos.Z - d.pos.Z)
-			if dir.Magnitude <= 0.1 then
-				local hrp = lplr.Character and lplr.Character:FindFirstChild('HumanoidRootPart')
-				local look = hrp and hrp.CFrame.LookVector or Vector3.new(0, 0, 1)
-				dir = Vector3.new(-look.Z, 0, look.X)
-				dir = dir.Magnitude > 0.1 and dir.Unit or Vector3.new(1, 0, 0)
-			else
-				dir = dir.Unit
+		local cf, size, shape = zoneShape(d.part)
+		if not cf then return false end
+
+		--[[
+			Where it is going, not only where it is.
+
+			Thrown attacks - orbs, rocks, bombs, the shuriken - are tweened across the room,
+			and a part tested where it stands this frame is one you step into next frame.
+			The recent travel is carried forward a little so the danger is the path rather
+			than the snapshot.
+		]]
+		local lead = d.velocity
+		for _, height in { 0, -2.6, 1.6 } do
+			local point = pos + Vector3.new(0, height, 0)
+			if pointInZone(cf, size, shape, point, margin) then return true end
+			if lead then
+				if pointInZone(cf + lead * 0.35, size, shape, point, margin) then return true end
+				if pointInZone(cf + lead * 0.7, size, shape, point, margin) then return true end
 			end
-			return Vector3.new(d.pos.X, pos.Y, d.pos.Z) + dir * (d.radius + margin)
-		else
-			local lp = d.cf:PointToObjectSpace(pos)
-			local h = d.size * 0.5
-			local exitX = (h.X + margin) - math.abs(lp.X)
-			local exitZ = (h.Z + margin) - math.abs(lp.Z)
-			local nlp
-			if exitX <= exitZ then
-				nlp = Vector3.new((h.X + margin) * (lp.X >= 0 and 1 or -1), lp.Y, lp.Z)
-			else
-				nlp = Vector3.new(lp.X, lp.Y, (h.Z + margin) * (lp.Z >= 0 and 1 or -1))
-			end
-			return d.cf:PointToWorldSpace(nlp)
 		end
+		return false
 	end
 
 	--[[
@@ -1055,26 +1181,32 @@ run(function()
 		than the nearest of sixteen. Both make the dodge read as a sidestep instead of a
 		trip across the room.
 	]]
-	-- Reaching further than before, because giving up and standing in the fire is worse
-	-- than a long walk: with the walls now respected there is always somewhere legal, and
-	-- this keeps widening until it finds it.
-	local DODGE_RINGS = {8, 13, 19, 27, 38, 50, 64, 80}
-	local DODGE_SAMPLES = 24
+	--[[
+		Still a threat, and how fast it is travelling.
 
-	-- A zone backed by a model is measured from it each pass and is over when it goes.
+		A zone backed by a part is over the moment the part goes, which is most of how these
+		expire: the game removes them on impact. The rest is measuring travel, because the
+		thrown attacks are moved with TweenService and a tweened part reports a velocity of
+		zero however fast it is crossing the room. Two positions a frame apart give the real
+		answer whatever moved it.
+	]]
 	local function liveZone(d)
 		if not d.part then return true end
 		if not d.part.Parent then return false end
 
-		-- Re-read every pass: these are tweened into place while the warning plays, so
-		-- where the zone was when it appeared is not where it lands.
-		if d.kind == 'circle' then
-			d.pos = d.part.Position
-			d.radius = d.part.Size.Y * 0.5
-		else
-			d.cf = d.part.CFrame
-			d.size = d.part.Size
+		local now = os.clock()
+		local position = d.part.Position
+		if d.pos then
+			local elapsed = now - (d.at or now)
+			if elapsed > 0.01 then
+				local travel = (position - d.pos) / elapsed
+				-- Ignored below a walking pace: a warning settling into place is not a
+				-- projectile, and leading it would push the dodge off a zone that is
+				-- standing still.
+				d.velocity = travel.Magnitude > 12 and travel or nil
+			end
 		end
+		d.pos, d.at = position, now
 		return true
 	end
 
@@ -1096,7 +1228,7 @@ run(function()
 		return count
 	end
 
-	local function dodgeTarget(pos, anchor, ideal)
+	local function dodgeTarget(pos)
 		local now = workspace:GetServerTimeNow()
 		for i = #dangers, 1, -1 do
 			local d = dangers[i]
@@ -1113,119 +1245,120 @@ run(function()
 		-- was thrown out for having nothing underneath it, which is the normal state of
 		-- affairs when you are in the air.
 		local needFooting = mode() ~= 'Fly'
+		local room = currentRoom()
 
 		--[[
-			Straight out first, before sweeping for somewhere nice.
+			The nearest spot that is safe from everything, found by looking nearest first.
 
-			Rings only offer points on a circle, and the shortest way out of a long lane is
-			rarely on one - it will happily pick a spot the same distance away that runs
-			along the lane rather than across it. The way out of a box is perpendicular to
-			its nearest face, and out of a ring is directly outward, which is the shortest
-			escape that exists and therefore the only one that beats a timer.
+			Asking each zone where its own edge is answers the wrong question when several
+			parts land at once: the way out of the first lane is usually well inside the
+			second, so the dodge stepped from one attack into another and looked like it was
+			not dodging at all. That is the case this is built for, since a pack of mages
+			casting together is the normal state of a room rather than an edge case.
 
-			Each zone we are standing in is asked where its edge is, and the nearest answer
-			that is legal wins. Only if none of them are does the sweep below run, which is
-			for the awkward case where every direct exit is blocked or inside another zone.
+			So the whole question is "which reachable spot, clear of EVERY live part, is
+			closest?" - and it is answered by generating candidates, sorting them by how far
+			they are, and taking the first that survives. Sorted by distance means the first
+			answer found is the best answer, so the search stops there rather than scoring a
+			few hundred spots it will not use.
+
+			Candidates are rings, plus the straight-out exit from each zone we are standing
+			in: the shortest way out of a long lane is perpendicular to it and that direction
+			is rarely on a ring.
 		]]
-		local quickest, quickestDist
+		local candidates = {}
+
+		local function offer(point)
+			table.insert(candidates, {point = point, travel = (point - pos).Magnitude})
+		end
+
 		for _, d in dangers do
 			if inDanger(pos, d, margin) then
-				local exit = safeSpot(pos, d, margin + 3)
-				local travel = (exit - pos).Magnitude
-				if (not quickestDist or travel < quickestDist)
-					and (not needFooting or groundAt(exit, pos.Y))
-					and not anyDanger(exit, margin + 3)
-					and not insideBarrier(exit, 2)
-					and not crossesBarrier(pos, exit) then
-					quickest, quickestDist = exit, travel
+				local cf, size, shape = nil, nil, nil
+				if d.part then cf, size, shape = zoneShape(d.part) end
+
+				if cf then
+					-- Straight out of the nearest face, or straight away from the centre of
+					-- a round one.
+					local lp = cf:PointToObjectSpace(pos)
+					local h = size * 0.5
+					if shape == Enum.PartType.Block then
+						local outX = (h.X + margin + CHARACTER_RADIUS + 2) * (lp.X >= 0 and 1 or -1)
+						local outZ = (h.Z + margin + CHARACTER_RADIUS + 2) * (lp.Z >= 0 and 1 or -1)
+						offer(cf:PointToWorldSpace(Vector3.new(outX, lp.Y, lp.Z)))
+						offer(cf:PointToWorldSpace(Vector3.new(lp.X, lp.Y, outZ)))
+					else
+						local flat = Vector3.new(pos.X - cf.Position.X, 0, pos.Z - cf.Position.Z)
+						local radius = math.max(size.X, size.Y, size.Z) * 0.5
+						local away = flat.Magnitude > 0.1 and flat.Unit or Vector3.new(1, 0, 0)
+						offer(Vector3.new(cf.Position.X, pos.Y, cf.Position.Z)
+							+ away * (radius + margin + CHARACTER_RADIUS + 2))
+					end
 				end
 			end
 		end
-		if quickest then return quickest end
+
+		-- Wide enough to escape the big ground slams, which reach 40 studs across, without
+		-- making every dodge a trip across the room: nearest-first ordering means the far
+		-- rings are only ever reached when everything closer is taken.
+		for _, radius in { 7, 11, 16, 22, 29, 38, 48, 60, 75, 92 } do
+			local samples = radius <= 16 and 16 or 24
+			for i = 0, samples - 1 do
+				local angle = (i / samples) * math.pi * 2
+				offer(pos + Vector3.new(math.cos(angle), 0, math.sin(angle)) * radius)
+			end
+		end
+
+		table.sort(candidates, function(a, b) return a.travel < b.travel end)
 
 		--[[
 			Somewhere less bad, when there is nowhere good.
 
-			Every candidate had to be clear of every zone, and when several attacks overlap
-			there is frequently no such spot - so the search returned nothing, the farm
-			carried on fighting, and it ate the attack standing still. Which is the worst
-			of the available options rather than the best.
-
-			The least covered spot found along the way is kept, and used only if nothing
-			fully clear turns up. Standing in one attack having tried is better than
-			standing in three having not.
+			Several overlapping attacks frequently leave nowhere fully clear, and returning
+			nothing means standing still in all of them - the worst of the options rather
+			than the best. The least covered legal spot seen along the way is kept and used
+			only if nothing clean turns up.
 		]]
 		local fallback, fallbackCount = nil, dangerCount(pos, margin)
 
-		for _, radius in DODGE_RINGS do
-			local best, bestScore
-			for i = 0, DODGE_SAMPLES - 1 do
-				local angle = (i / DODGE_SAMPLES) * math.pi * 2
-				local candidate = pos + Vector3.new(math.cos(angle), 0, math.sin(angle)) * radius
+		for _, candidate in candidates do
+			local point = candidate.point
 
-				-- Somewhere there is actually floor, and reachable without crossing a
-				-- barrier. Without this the search happily returned spots over a ledge or
-				-- inside geometry, the step refused them every tick, and the farm stood
-				-- still announcing a dodge it could not take - which is exactly what
-				-- standing still while logging looked like.
-				--
-				-- Worked out once: groundAt is a raycast, and this runs for every sample
-				-- of every ring on a loop that wants to finish inside a tenth of a second.
-				local legal = (not needFooting or groundAt(candidate, pos.Y))
-					and not insideBarrier(candidate, 2)
-					and not crossesBarrier(pos, candidate)
+			-- Cheapest tests first, and the raycast last: this runs on a loop that wants to
+			-- finish inside a frame, and ground is the only test here that costs a ray.
+			if not insideBarrier(point, 2) and not crossesBarrier(pos, point)
+				and inRoom(point, room, 6) then
 
-				if legal then
-					local covered = dangerCount(candidate, margin)
-					if covered < fallbackCount then
-						fallback, fallbackCount = candidate, covered
-					end
-				end
+				local covered = dangerCount(point, margin)
+				local clear = covered == 0 and not anyDanger(point, margin + 3)
 
-				if legal and not anyDanger(candidate, margin + 3) then
-					--[[
-						Scored on staying in the fight, not on getting away from it.
+				if clear or covered < fallbackCount then
+					local y = needFooting and groundAt(point, pos.Y) or point.Y
+					if y then
+						local grounded = Vector3.new(point.X, y, point.Z)
+						if clear then
+							--[[
+								Checked along the way, not only at the end.
 
-						Picking whichever safe spot was furthest from every enemy meant
-						every dodge was a retreat: it would leave the fight, walk back, and
-						lose more time to the walking than the attack would ever have cost.
-
-						So the spot that best keeps the target at fighting range wins, and
-						crowding is a penalty rather than the whole score - enough to stop
-						it stepping into the middle of a pack, not enough to send it to the
-						far side of the room.
-					]]
-					--[[
-						Weighted so that closing is cheap and backing off is expensive.
-
-						Scoring purely on how near the ideal range a spot is treats a step
-						back and a step in as equally good, and the ring behind is always
-						the emptier one - so it drifted away from the fight every time.
-						Overshooting inward costs a third of what falling back does, which
-						turns a dodge into an approach whenever the geometry allows it.
-					]]
-					-- How long it takes to get there comes first: a spot that is perfect and
-					-- unreachable in time is worth nothing.
-					local score = (candidate - pos).Magnitude * 1.5
-
-					if anchor then
-						local gap = (candidate - anchor).Magnitude
-						local want = ideal or 12
-						score += gap > want and (gap - want) * 1.5 or (want - gap) * 0.5
-					end
-
-					for _, m in enemyCache do
-						local part = m and m.Parent and enemyPart(m)
-						if part then
-							local gap = (part.Position - candidate).Magnitude
-							if gap < 12 then score += (12 - gap) * 2 end
+								A spot clear of everything is no use if getting there crosses
+								the lane that is about to fire. Walking the path through the
+								zones costs four more tests and is the difference between a
+								dodge and a detour through the attack.
+							]]
+							local safePath = true
+							for step = 1, 4 do
+								if anyDanger(pos:Lerp(grounded, step / 4), margin) then
+									safePath = false
+									break
+								end
+							end
+							if safePath then return grounded end
+						elseif covered < fallbackCount then
+							fallback, fallbackCount = grounded, covered
 						end
 					end
-
-					if not bestScore or score < bestScore then best, bestScore = candidate, score end
 				end
 			end
-			if best then return best end
 		end
 
 		return fallback
@@ -1250,6 +1383,41 @@ run(function()
 		if rem then rem:FireServer() end
 		if weaponUsed then weaponUsed:FireServer() end
 	end
+	--[[
+		Whether there is anything to cast at all.
+
+		The farm holds its distance and fights with abilities, so "is one off cooldown"
+		decides whether standing back is fighting or just standing. Asked before closing to
+		weapon range rather than after, which is the whole point of the rework.
+	]]
+	local function abilityReady()
+		for _, child in lplr.Backpack:GetChildren() do
+			local slot = child:FindFirstChild('abilitySlot')
+			if slot and (slot.Value == 'q' or slot.Value == 'e') then
+				local cd = child:FindFirstChild('cooldown')
+				if not (cd and cd.Value > 0) then return true end
+			end
+		end
+		return false
+	end
+
+	--[[
+		Pointed at what is being fought, rather than at whatever is nearest.
+
+		Swings and abilities both fire along the character's look vector, and the nearest
+		body is regularly not the one being fought - the farm holds its distance now, so
+		something else wandering closer would have taken every cast with it.
+
+		Horizontal only: a Humanoid is force-kept upright, so pitching the root just makes
+		it fight our CFrame every frame.
+	]]
+	local function faceTarget(hrp, part)
+		if not (hrp and part) then return end
+		local flat = Vector3.new(part.Position.X, hrp.Position.Y, part.Position.Z)
+		if (flat - hrp.Position).Magnitude < 0.5 then return end
+		hrp.CFrame = CFrame.lookAt(hrp.Position, flat)
+	end
+
 	local function castAbilities(abilityUsed)
 		--[[
 			The game's own ability scripts reach for Character.Humanoid by name and without
@@ -1374,7 +1542,7 @@ run(function()
 		both called room6, at different places and different orders. The order value and
 		the Instance are the identity.
 	]]
-	local function currentRoom()
+	function currentRoom()
 		local dungeon = workspace:FindFirstChild('dungeon')
 		if not dungeon then return nil end
 
@@ -1395,7 +1563,7 @@ run(function()
 
 	-- Whether something is in this room, from the room's own bounds. Neighbouring rooms
 	-- overlap slightly at the doorway, which only matters for something standing in it.
-	local function inRoom(position, room, margin)
+	function inRoom(position, room, margin)
 		if not room then return true end
 		local ok, cf, size = pcall(function() return room:GetBoundingBox() end)
 		if not ok or not cf then return true end
@@ -1762,17 +1930,38 @@ run(function()
 		return false
 	end
 
+	--[[
+		Walking a route, whichever way the feet are moving.
+
+		Stepping used to skip pathfinding entirely and head straight at the goal, which is
+		why Step TP walked into walls: told to reach an enemy in the next room it aimed
+		through the wall between, the step refused every candidate against solid geometry,
+		and it ground along the wall for as long as that enemy lived. Flying is the one mode
+		that genuinely does not need a route, since nothing is in its way.
+
+		So a route is built for walking and stepping alike, and the only difference is who
+		is handed the waypoint: the humanoid, or the stepper.
+	]]
 	local function walkTo(hum, hrp, goal, direct)
-		-- Stepping and flying go where they are pointed, so they follow the route
-		-- themselves rather than handing the humanoid a waypoint and hoping.
-		if moving() then
+		local stepping = mode() == 'Step TP'
+
+		-- Flying needs no route, and short hops are not worth one.
+		if mode() == 'Fly' then
 			stepTo(hrp, hum, goal)
 			return
 		end
 
+		local function head(point)
+			if stepping then
+				stepTo(hrp, hum, point)
+			else
+				hum:MoveTo(point)
+			end
+		end
+
 		-- Straight there when it is close and the route is unlikely to matter.
 		if direct or not (UsePathfinding and UsePathfinding.Enabled) then
-			hum:MoveTo(goal)
+			head(goal)
 			return
 		end
 
@@ -1784,14 +1973,14 @@ run(function()
 
 		if stale and not buildPath(hrp, goal) then
 			-- No route found - walk at it anyway rather than standing still.
-			hum:MoveTo(goal)
+			head(goal)
 			return
 		end
 
 		local wp = waypoints[waypointIndex]
 		if not wp then
 			clearPath()
-			hum:MoveTo(goal)
+			head(goal)
 			return
 		end
 
@@ -1802,7 +1991,7 @@ run(function()
 		if (Vector3.new(wp.Position.X, hrp.Position.Y, wp.Position.Z) - hrp.Position).Magnitude < 5 then
 			waypointIndex += 1
 		end
-		hum:MoveTo(wp.Position)
+		head(wp.Position)
 	end
 
 	--[[
@@ -1932,103 +2121,6 @@ run(function()
 		return true
 	end
 
-	--[[
-		A route walked once by hand, then followed.
-
-		The hard part of this farm was never the fighting, it was deciding where to walk.
-		Working that out from the geometry means barriers, drops, doorways and dead ends,
-		and when it ran out of ideas the fallback was to head twenty studs forward - which
-		is how it ended up facing a wall.
-
-		Recording sidesteps all of it. Walk the dungeon once with Record Route on and the
-		positions are kept; from then on the farm follows them, so every step is one a
-		person already proved walkable. Routes are stored per dungeon, so each map is
-		recorded once and reused. Nothing else changes: fighting, dodging and retreating
-		are untouched, and the route only answers "where next" when there is nothing left
-		to kill.
-	]]
-	local ROUTE_FOLDER = 'vain/profiles/dqroutes'
-	local RecordRoute, FollowRoute
-	local routePoints, routeIndex, routeMovedAt, lastRecorded = {}, 1, 0, nil
-
-	local function dungeonKey()
-		local value = workspace:FindFirstChild('dungeonName')
-		local name = value and value:IsA('StringValue') and value.Value
-		if not name or name == '' then name = 'Unknown' end
-		return (name:gsub('[^%w]+', '_'))
-	end
-
-	local function routeFile()
-		return ROUTE_FOLDER .. '/' .. dungeonKey() .. '.json'
-	end
-
-	local function saveRoute()
-		if #routePoints == 0 then return false end
-		local raw = {}
-		for _, point in routePoints do
-			table.insert(raw, {X = point.X, Y = point.Y, Z = point.Z})
-		end
-		local ok = pcall(function()
-			if makefolder and isfolder and not isfolder(ROUTE_FOLDER) then
-				makefolder(ROUTE_FOLDER)
-			end
-			writefile(routeFile(), httpService:JSONEncode(raw))
-		end)
-		return ok
-	end
-
-	local function loadRoute()
-		routePoints, routeIndex = {}, 1
-		pcall(function()
-			if not (isfile and isfile(routeFile())) then return end
-			for _, point in httpService:JSONDecode(readfile(routeFile())) do
-				table.insert(routePoints, Vector3.new(point.X, point.Y, point.Z))
-			end
-		end)
-		return #routePoints > 0
-	end
-
-	-- Rejoined wherever we are standing rather than at its start: after dying, or after
-	-- breaking off to fight something, the nearest point is the one that carries on.
-	local function nearestRouteIndex(position)
-		local best, bestDist = 1, math.huge
-		for i, point in routePoints do
-			local d = (point - position).Magnitude
-			if d < bestDist then best, bestDist = i, d end
-		end
-		return best
-	end
-
-	local function recordStep(position)
-		-- Only where you actually went. Sampling every pass would store hundreds of
-		-- points a metre apart and make the replay crawl between them.
-		if lastRecorded and (position - lastRecorded).Magnitude < 6 then return end
-		lastRecorded = position
-		table.insert(routePoints, position)
-	end
-
-	local function routeGoal(hrp)
-		if #routePoints == 0 or routeIndex > #routePoints then return nil end
-
-		-- Far from the point we were heading for means something moved us - a death, or a
-		-- fight that went somewhere else - so pick the route up again from here.
-		if (routePoints[routeIndex] - hrp.Position).Magnitude > 40 then
-			routeIndex = nearestRouteIndex(hrp.Position)
-			routeMovedAt = os.clock()
-		end
-
-		local point = routePoints[routeIndex]
-		-- Moved on once reached, or after a while regardless, so a single point that
-		-- cannot be stood on exactly does not hold up the rest of the route.
-		if (point - hrp.Position).Magnitude <= 8 or os.clock() - routeMovedAt > 4 then
-			routeIndex += 1
-			routeMovedAt = os.clock()
-			if routeIndex > #routePoints then return nil end
-			point = routePoints[routeIndex]
-		end
-		return point
-	end
-
 	AutoFarm = vain.Categories.Blatant:CreateModule({
 		Name = 'Auto Farm',
 		Tooltip = 'Clears the dungeon: fights every enemy with your weapon and Q/E, dodges telegraphed attacks, and backs off to recover when hurt',
@@ -2046,17 +2138,69 @@ run(function()
 			setupDodge()
 			clearPath()
 			moveGoal = nil
+			dodgeGoal = nil
 
-			if FollowRoute and FollowRoute.Enabled then
-				loadRoute()
-				local hrp = lplr.Character and lplr.Character:FindFirstChild('HumanoidRootPart')
-				if hrp and #routePoints > 0 then
-					routeIndex = nearestRouteIndex(hrp.Position)
-				end
-			end
-			routeMovedAt = os.clock()
+			--[[
+				Dodging runs on the frame, not on the farm tick.
 
+				The tick is a tenth of a second and every part of a dodge was tied to it:
+				noticing the attack, choosing the spot, and taking the step. On an attack
+				that lands in under a second that is most of the warning spent waiting, and
+				it is the largest single reason dodging "always failed".
+
+				So this owns the whole dodge. It replans the instant a part appears, holds
+				its plan while the plan is still good, and steps every frame - which is also
+				the only way the step budget produces a full walking pace rather than ten
+				coarse hops a second.
+			]]
 			AutoFarm:Clean(runService.Heartbeat:Connect(function()
+				local char = lplr.Character
+				local hrp = char and char:FindFirstChild('HumanoidRootPart')
+				local hum = char and char:FindFirstChildOfClass('Humanoid')
+				if not (hrp and hum) then return end
+
+				if DodgeAttacks ~= nil and DodgeAttacks.Enabled then
+					local pos = hrp.Position
+
+					--[[
+						Replanned only when the answer could have changed.
+
+						Every frame is too often - the search is a few hundred geometry
+						tests - and only on the farm tick is too rare. A new part landing,
+						the chosen spot no longer being safe, or arriving are the three
+						things that actually invalidate a plan, so those are what trigger
+						one.
+					]]
+					local stale = dangerAdded
+						or not dodgeGoal
+						or anyDanger(dodgeGoal, 5)
+						or (dodgeGoal - pos).Magnitude < 1.5
+					dangerAdded = false
+
+					if stale then
+						local safe = dodgeTarget(pos) or projectileDodge(pos)
+						if safe then
+							if not dodgeGoal then
+								clearPath()
+								-- A humanoid mid-walk will keep walking while we step, and
+								-- the two fight each other. Stop it once, here.
+								if not moving() then hum:MoveTo(pos) end
+								say(string.format('dodging to %.0f studs away', (safe - pos).Magnitude))
+							end
+							dodgeGoal = safe
+						else
+							dodgeGoal = nil
+						end
+					end
+
+					if dodgeGoal then
+						stepTo(hrp, hum, dodgeGoal)
+						return
+					end
+				else
+					dodgeGoal = nil
+				end
+
 				if not moving() or not moveGoal then return end
 				-- Nobody has renewed this in a while, so it is somewhere we used to want
 				-- to be rather than somewhere we are going.
@@ -2064,12 +2208,7 @@ run(function()
 					moveGoal = nil
 					return
 				end
-				local char = lplr.Character
-				local hrp = char and char:FindFirstChild('HumanoidRootPart')
-				local hum = char and char:FindFirstChildOfClass('Humanoid')
-				if hrp and hum then
-					stepTo(hrp, hum, moveGoal)
-				end
+				stepTo(hrp, hum, moveGoal)
 			end))
 
 			local weaponUsed = remote('weaponUsed')
@@ -2160,19 +2299,13 @@ run(function()
 					local room = currentRoom()
 					local target, part, dist = nearestEnemy(hrp.Position, room)
 
-					-- DODGE first: standing in a telegraphed attack costs more than a turn
-					-- spent fighting, so this outranks everything below it.
+					-- DODGE first: standing in an attack costs more than a turn spent
+					-- fighting, so a dodge in progress outranks everything below it. The
+					-- stepping itself belongs to the heartbeat above; this only keeps the
+					-- farm from issuing a walk that would fight it.
 					if DodgeAttacks.Enabled then
 						watchProjectiles()
-						local band = (math.min(KeepDistance.Value, AttackRange.Value - 2) + AttackRange.Value) * 0.5
-						local safe = dodgeTarget(hrp.Position, part and part.Position or nil, band)
-							or projectileDodge(hrp.Position)
-						if safe then
-							clearPath()
-							say(string.format('dodging to %.0f studs away', (safe - hrp.Position).Magnitude))
-							goTo(hum, hrp, safe)
-							return
-						end
+						if dodgeGoal then return end
 					end
 
 					local hpFrac = hum.MaxHealth > 0 and hum.Health / hum.MaxHealth or 1
@@ -2208,23 +2341,43 @@ run(function()
 					if target and part then
 						local busy = char:FindFirstChild('busyCasting')
 						local reach = AttackRange.Value
+						local spellReach = AbilityRange ~= nil and AbilityRange.Value or 35
 
 						--[[
-							Fight from a band, not from a spot.
+							Fought at range, with the weapon as the short-range option.
 
-							Walking to attack range and standing there is what was getting
-							us killed: melee enemies close the last few studs themselves
-							and then simply hit us until the HP threshold noticed, by which
-							point a pack had already surrounded us.
+							Melee enemies have no answer to distance: their hitboxes are
+							built onto the swing and reach about seven studs, so anything
+							beyond that simply cannot be hit by them. Abilities reach far
+							further than any weapon and cost nothing to throw from back
+							there, which makes standing off the correct way to fight rather
+							than a cautious one.
 
-							So there is a near edge as well as a far one. Inside it, back
-							off - while still swinging, since anything already in reach
-							stays in reach as we give ground. Held below the far edge so
-							the two can never cross and leave nowhere to stand.
+							So the distance held is whichever is larger - what the settings
+							ask for, or what keeps melee out of reach - and it closes to
+							weapon range only when there is nothing to cast.
 						]]
-						local keep = math.min(KeepDistance.Value, reach - 2)
+						local MELEE_REACH = 14
+						local keep = math.max(KeepDistance.Value, MELEE_REACH)
 						local away = (hrp.Position - part.Position) * Vector3.new(1, 0, 1)
 						away = away.Magnitude > 0.1 and away.Unit or hrp.CFrame.LookVector
+
+						local ready = abilityReady()
+						local gap = dist or math.huge
+
+						--[[
+							Cast the moment it is in range, before anything else is decided.
+
+							This used to be the last thing in the tick and gated behind
+							weapon reach, so every ability in the game was held until we had
+							walked into melee distance to use it - the one place the farm
+							should not be. Range is the ability's, so it fires from where it
+							is standing.
+						]]
+						if ready and gap <= spellReach and not (busy and busy.Value ~= false) then
+							faceTarget(hrp, part)
+							castAbilities(abilityUsed)
+						end
 
 						local push, crowded = crowding(hrp.Position, keep)
 
@@ -2234,18 +2387,32 @@ run(function()
 							clearPath()
 							local out = push.Magnitude > 0.1 and push.Unit or away
 							goTo(hum, hrp, hrp.Position + out * (keep + 10))
-						elseif (dist or 0) < keep then
+						elseif gap < keep then
 							clearPath()
-							goTo(hum, hrp, hrp.Position + away * ((keep - (dist or 0)) + 8))
-						elseif (dist or math.huge) > reach then
+							goTo(hum, hrp, hrp.Position + away * ((keep - gap) + 8))
+						elseif ready and gap <= spellReach then
+							-- In range of what we are actually fighting with, so there is
+							-- nowhere to be: hold the distance and keep casting.
+							clearPath()
+							if Strafe ~= nil and Strafe.Enabled then
+								local tangent = Vector3.new(-away.Z, 0, away.X)
+								if os.clock() > strafeUntil then
+									strafeDir = clearestTangent(hrp.Position, part.Position, tangent, keep)
+									strafeUntil = os.clock() + 2
+								end
+								goTo(hum, hrp, part.Position + (away * keep) + (tangent * strafeDir * 14))
+							else
+								hum:MoveTo(hrp.Position)
+							end
+						elseif gap > math.max(reach, ready and spellReach or 0) then
 							-- Close the gap. Pathfinding while far, straight in once near,
 							-- because a route recomputed around a moving enemy is worse
 							-- than walking at it.
-							walkTo(hum, hrp, part.Position, (dist or 0) < 25)
+							walkTo(hum, hrp, part.Position, gap < 25)
 						elseif Strafe ~= nil and Strafe.Enabled then
 							clearPath()
 
-							local ideal = (keep + reach) * 0.5
+							local ideal = math.max(keep, (keep + reach) * 0.5)
 							local tangent = Vector3.new(-away.Z, 0, away.X)
 
 							-- Reconsidered on a timer rather than every tick, but chosen by
@@ -2265,7 +2432,7 @@ run(function()
 						--[[
 							Turned only to attack, never while walking.
 
-							faceNearest writes the root part's CFrame, and doing that every
+							faceTarget writes the root part's CFrame, and doing that every
 							tick resets the humanoid's physics state - which cancels the
 							walk MoveTo had just started. The character turned to face its
 							target and then stood there, every time. Harmless in the old
@@ -2275,18 +2442,12 @@ run(function()
 							One write immediately before the swing is enough to aim, and
 							far too rare to interfere with getting anywhere.
 						]]
-						if (dist or math.huge) <= reach and not (busy and busy.Value ~= false) then
-							faceNearest()
+						if gap <= reach and not (busy and busy.Value ~= false) then
+							faceTarget(hrp, part)
 							swing(char, weaponUsed)
-							castAbilities(abilityUsed)
 						end
 					else
-						-- Room clear. The recorded route knows where the next one is; the
-						-- old guesswork stays as the fallback for a dungeon never walked.
-						local goal = (FollowRoute and FollowRoute.Enabled) and routeGoal(hrp) or nil
-						if not goal then
-							goal = nextRoomGoal(hrp)
-						end
+						local goal = nextRoomGoal(hrp)
 						if goal then
 							walkTo(hum, hrp, goal)
 						else
@@ -2310,6 +2471,8 @@ run(function()
 		Tooltip = 'How far to put between you and the nearest enemy while recovering (default 70)' })
 	AttackRange = AutoFarm:CreateSlider({ Name = 'Attack Range', Min = 4, Max = 60, Default = 12, Suffix = ' studs',
 		Tooltip = 'How close to get before swinging. Melee wants this low, a staff can sit further back (default 12)' })
+	AbilityRange = AutoFarm:CreateSlider({ Name = 'Ability Range', Min = 10, Max = 120, Default = 40, Suffix = ' studs',
+		Tooltip = 'How far your Q/E reach. Anything inside this is cast at from where you stand, without closing to weapon range (default 40)' })
 	FarmDelay = AutoFarm:CreateSlider({ Name = 'Loop Delay', Min = 0, Max = 0.5, Default = 0.1, Decimal = 100, Suffix = 's',
 		Tooltip = 'Time between farm ticks' })
 	Debug = AutoFarm:CreateToggle({ Name = 'Debug', Default = false,
@@ -2333,44 +2496,8 @@ run(function()
 		Tooltip = "Follows the game's own navigation around corners and up stairs instead of walking into walls. Turn off only if it gets stuck" })
 	HealSwap = AutoFarm:CreateToggle({ Name = 'Heal Swap when low', Default = true,
 		Tooltip = 'When low, if you own a heal spell: swap to best spell-power weapon and heals, heal to full while backing off, then restore your set' })
-	RecordRoute = AutoFarm:CreateToggle({ Name = 'Record Route', Default = false,
-		Tooltip = 'Remembers where you walk, so the farm can follow it later',
-		Function = function(callback)
-			if not callback then
-				if saveRoute() then
-					say(#routePoints .. ' points saved for ' .. dungeonKey():gsub('_', ' '))
-				end
-				return
-			end
-
-			routePoints, routeIndex, lastRecorded = {}, 1, nil
-			say('Recording. Walk the dungeon through once, then switch this off')
-
-			--[[
-				On its own loop rather than the farm's.
-
-				Recording is something you do by walking the dungeon yourself, so tying it
-				to the farm's loop meant the farm had to be running to record - and it
-				would then be steering while you were trying to walk the route.
-			]]
-			task.spawn(function()
-				repeat
-					local char = lplr.Character
-					local hrp = char and char:FindFirstChild('HumanoidRootPart')
-					if hrp then recordStep(hrp.Position) end
-					task.wait(0.2)
-				until not RecordRoute.Enabled
-			end)
-		end })
-	FollowRoute = AutoFarm:CreateToggle({ Name = 'Follow Route', Default = true,
-		Tooltip = 'Walks the recorded route between fights instead of working the way out itself',
-		Function = function(callback)
-			if callback and not loadRoute() then
-				say('No route recorded for this dungeon yet')
-			end
-		end })
 	DodgeAttacks = AutoFarm:CreateToggle({ Name = 'Dodge Attacks', Default = true,
-		Tooltip = "Reads the game's own attack telegraphs and walks you out before they land. Works on every boss, no per-boss setup" })
+		Tooltip = "Steps you out of every enemy attack part the game spawns, reading their names from the game's own attack list" })
 end)
 
 
