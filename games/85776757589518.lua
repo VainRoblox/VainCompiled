@@ -1381,41 +1381,34 @@ run(function()
 				and math.abs(lp.Y) <= h.Y + 8
 		end
 
-		local cf, size, shape = zoneShape(d.part)
-		if not cf then return false end
-
 		--[[
-			Where it is going, not only where it is.
+			The measurements taken on the last pass, or taken now if it is brand new.
 
-			Thrown attacks - orbs, rocks, bombs, the shuriken - are tweened across the room,
-			and a part tested where it stands this frame is one you step into next frame.
-			The recent travel is carried forward a little so the danger is the path rather
-			than the snapshot.
+			Where it is going is part of where it is: thrown attacks are tweened across the
+			room, and a part tested where it stands this frame is one you step into next.
+			Travel is carried two steps forward, a sweep a third of a second - far enough to
+			matter, not so far that a turning beam paints the whole arena as lethal.
 		]]
-		-- Where it will be shortly, by travel and by turn, worked out once for all three
-		-- heights rather than per height.
-		--[[
-			Looked ahead, but not so far that everything is dangerous.
-
-			A sweep projected a full turn ahead paints an arc across most of the arena, and
-			a dodge that treats all of it as live has nowhere to stand and simply runs - so
-			the turn is read a third of a second forward and no further, while travel, which
-			is much better behaved, keeps its two steps.
-		]]
-		local futures
-		if d.velocity or d.spin then
-			futures = {}
-			for _, ahead in { 0.35, 0.7 } do
-				if d.velocity then
-					table.insert(futures, cf + d.velocity * ahead)
-				end
-			end
-			if d.spin then
-				table.insert(futures, CFrame.new(cf.Position)
-					* CFrame.Angles(0, d.spin * 0.3, 0)
-					* (cf - cf.Position))
-			end
+		local cf, size, shape = d.cf, d.size, d.shape
+		local futures = d.futures
+		if not cf then
+			cf, size, shape = zoneShape(d.part)
+			if not cf then return false end
+			futures = nil
 		end
+
+		--[[
+			One distance compare before any real work.
+
+			Nearly every attack on screen is nowhere near the spot being considered, and
+			proving that with a full shape test - three heights, each against every
+			predicted position - is most of what a dodge spends its time on. A sphere around
+			the part answers it in three subtractions.
+		]]
+		local centre = cf.Position
+		local dx, dy, dz = pos.X - centre.X, pos.Y - centre.Y, pos.Z - centre.Z
+		local reach = (d.bound or size.Magnitude * 0.5) + margin + (d.spread or 0) + 4
+		if dx * dx + dy * dy + dz * dz > reach * reach then return false end
 
 		for _, height in { 0, -2.6, 1.6 } do
 			local point = pos + Vector3.new(0, height, 0)
@@ -1501,6 +1494,40 @@ run(function()
 			end
 		else
 			d.facing = cf.LookVector
+		end
+
+		--[[
+			Measured once here, not once per question asked about it.
+
+			Every test of "is this spot inside this attack" used to read the part's CFrame,
+			size and shape afresh and build its prediction table again - and a dodge asks
+			that question a few hundred times per attack. With a barrage of projectiles in
+			the air that is tens of thousands of property reads and table allocations for a
+			single dodge, which is the lag that arrives exactly when the screen fills with
+			attacks and the farm can least afford it.
+
+			The geometry only changes when the part moves, so it is worked out on this pass
+			and read from here afterwards.
+		]]
+		d.cf, d.size = cf, d.part.Size
+		d.shape = d.part:IsA('Part') and d.part.Shape or Enum.PartType.Block
+		d.bound = d.size.Magnitude * 0.5
+		d.futures, d.spread = nil, 0
+
+		if d.velocity or d.spin then
+			local futures = {}
+			if d.velocity then
+				table.insert(futures, cf + d.velocity * 0.35)
+				table.insert(futures, cf + d.velocity * 0.7)
+				d.spread += d.velocity.Magnitude * 0.7
+			end
+			if d.spin then
+				table.insert(futures, CFrame.new(cf.Position)
+					* CFrame.Angles(0, d.spin * 0.3, 0)
+					* (cf - cf.Position))
+				d.spread += math.abs(d.spin) * 0.3 * d.bound
+			end
+			d.futures = futures
 		end
 
 		d.pos, d.at = position, now
@@ -1604,6 +1631,30 @@ run(function()
 			if now > d.expire or not liveZone(d) then table.remove(dangers, i) end
 		end
 		if #dangers == 0 then return nil end
+
+		--[[
+			A barrage is mostly irrelevant to where we are standing.
+
+			Some attacks fill the room with dozens of parts at once - the siege bot's green
+			volley is the worst of them - and every one of those multiplies the cost of
+			every spot considered. The ones far enough away to be no part of this decision
+			are set aside for this pass rather than paid for; they are still tracked, and
+			come back the moment they are near enough to matter.
+		]]
+		if #dangers > 45 then
+			local ranked = {}
+			for _, d in dangers do
+				local centre = (d.cf and d.cf.Position) or d.pos or pos
+				table.insert(ranked, { zone = d, gap = (centre - pos).Magnitude - (d.bound or 0) })
+			end
+			table.sort(ranked, function(a, b) return a.gap < b.gap end)
+
+			local near = {}
+			for index = 1, math.min(45, #ranked) do
+				table.insert(near, ranked[index].zone)
+			end
+			dangers = near
+		end
 
 		local margin = 5
 		if not anyDanger(pos, margin) then return nil end
@@ -3649,12 +3700,17 @@ run(function()
 						]]
 						local push, crowded = crowding(hrp.Position, keep - 2)
 
-						if os.clock() < settleUntil then
-							-- Just dodged. Hold this ground for a moment: walking back in now
-							-- is walking into what we stepped out of.
-							clearPath()
-							if not moving() then hum:MoveTo(hrp.Position) end
-						elseif crowded > 0 then
+						--[[
+							Settling holds the ground taken; it never stands and takes a hit.
+
+							Holding position outright after every dodge is a free swing for
+							anything already in reach - which is what "randomly stops for a
+							moment and gets hit" is. Giving ground to something too close
+							outranks it, so only the walk back toward the target waits.
+						]]
+						local settling = os.clock() < settleUntil
+
+						if crowded > 0 then
 							-- Something is inside the distance we hold: give up just enough
 							-- ground to be outside it again, not a retreat across the room.
 							clearPath()
@@ -3663,6 +3719,11 @@ run(function()
 						elseif gap < keep - 1.5 then
 							clearPath()
 							goTo(hum, hrp, hrp.Position + away * ((keep - gap) + 2))
+						elseif settling then
+							-- Nothing in reach, so the ground just taken is worth keeping for
+							-- a moment rather than walking straight back into the attack.
+							clearPath()
+							if not moving() then hum:MoveTo(hrp.Position) end
 						elseif gap > band + 1.5 then
 							--[[
 								Walked to where we want to stand, not into the enemy.
