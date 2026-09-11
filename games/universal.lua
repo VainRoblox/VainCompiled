@@ -4247,6 +4247,7 @@ end)
 run(function()
 	local CustomCursor
 	local Source
+	local Preset
 	local ImageId
 	local File
 	local Mode
@@ -4260,6 +4261,21 @@ run(function()
 	local oldEnabled
 	
 	--[[
+		The icons the old client shipped with, kept so there is something to use straight away.
+	
+		Carried over rather than reinvented: these are the ones people already know by name, and
+		Arrow is the one it defaulted to.
+	]]
+	local PRESETS = {
+		['Arrow'] = 'rbxassetid://14790316561',
+		['Triangle'] = 'rbxassetid://14790304072',
+		['CS:GO'] = 'rbxassetid://14789879068',
+		['Old Roblox Mouse'] = 'rbxassetid://13546344315',
+		['dx9ware'] = 'rbxassetid://12233942144',
+		['Aimbot'] = 'rbxassetid://8680062686',
+	}
+	
+	--[[
 		Where the picture comes from.
 	
 		Two ways to name an image and they are not interchangeable: a Roblox asset is fetched by
@@ -4269,7 +4285,11 @@ run(function()
 		silently as a cursor that never changes.
 	]]
 	local function chosenImage()
-		if not (Source and ImageId and File) then return nil end
+		if not (Source and Preset and ImageId and File) then return nil end
+	
+		if Source.Value == 'Preset' then
+			return PRESETS[Preset.Value] or PRESETS.Arrow
+		end
 	
 		if Source.Value == 'File' then
 			local path = File.Value
@@ -4390,13 +4410,21 @@ run(function()
 	})
 	Source = CustomCursor:CreateDropdown({
 		Name = 'Source',
-		List = {'Image ID', 'File'},
-		Default = 'Image ID',
+		List = {'Preset', 'Image ID', 'File'},
+		Default = 'Preset',
 		Tooltip = 'Where the image comes from',
 		ItemTooltips = {
+			Preset = 'One of the icons the client ships with, for when you have none of your own',
 			['Image ID'] = 'A Roblox asset, by id',
 			File = 'An image in your executor folder, loaded from disk',
 		},
+		Function = apply
+	})
+	Preset = CustomCursor:CreateDropdown({
+		Name = 'Preset',
+		List = {'Arrow', 'Triangle', 'CS:GO', 'Old Roblox Mouse', 'dx9ware', 'Aimbot'},
+		Default = 'Arrow',
+		Tooltip = 'Which shipped icon to use',
 		Function = apply
 	})
 	ImageId = CustomCursor:CreateTextBox({
