@@ -2602,11 +2602,68 @@ run(function()
 		return tonumber(tostring(key):sub(#prefix + 2))
 	end
 
+	--[[
+		How long before anything equipped can be swapped out.
+
+		The server refuses to equip over an ability that is still cooling, so a swap made
+		straight after a cast is simply denied - and the denial is silent, which is a swap
+		that looks like it did nothing at all. Both halves of the swap hit this: going in,
+		whatever was just cast in the fight; coming back, the heals we have this moment
+		finished casting.
+	]]
+	local function abilityCooldown()
+		local worst = 0
+		for _, child in lplr.Backpack:GetChildren() do
+			local slot = child:FindFirstChild('abilitySlot')
+			if slot and table.find(ABILITY_SLOTS, slot.Value) then
+				local cd = child:FindFirstChild('cooldown')
+				local left = cd and tonumber(cd.Value) or 0
+				if left and left > worst then worst = left end
+			end
+		end
+		return worst
+	end
+
+	-- Waited out rather than pushed through, while still giving ground: standing in the
+	-- fight waiting for a cooldown is how the retreat gets you killed anyway.
+	local function waitForCooldowns(limit)
+		local started = os.clock()
+		while AutoFarm.Enabled and os.clock() - started < (limit or 10) do
+			local left = abilityCooldown()
+			if left <= 0 then return true end
+
+			local char = lplr.Character
+			local hrp = char and char:FindFirstChild('HumanoidRootPart')
+			local hum = char and char:FindFirstChildOfClass('Humanoid')
+			if hrp and hum then
+				local _, part = nearestEnemy(hrp.Position, currentRoom())
+				if part then
+					local away = (hrp.Position - part.Position) * Vector3.new(1, 0, 1)
+					away = away.Magnitude > 0.1 and away.Unit or hrp.CFrame.LookVector
+					goTo(hum, hrp, hrp.Position + away * KeepAway.Value)
+				end
+			end
+
+			task.wait(math.clamp(left, 0.1, 0.5))
+		end
+		return abilityCooldown() <= 0
+	end
+
 	local function healSwap()
 		local getStorage, equip, abilityUsed = remote('reloadInvy'), remote('equipItem'), remote('abilityUsed')
 		if not (getStorage and equip and abilityUsed) then
 			say('heal swap: a remote is missing (reloadInvy/equipItem/abilityUsed)')
 			return false
+		end
+
+		-- Asked before the inventory is even read, so a wait costs nothing but time.
+		local cooling = abilityCooldown()
+		if cooling > 0 then
+			say(string.format('heal swap: waiting %.0fs for abilities to come off cooldown', cooling))
+			if not waitForCooldowns(12) then
+				say('heal swap: abilities still cooling, trying again shortly')
+				return false
+			end
 		end
 
 		local ok, storage = pcall(function() return getStorage:InvokeServer() end)
@@ -2659,8 +2716,15 @@ run(function()
 		-- the swap simply did nothing.
 		local function equipItem(kind, num, slot)
 			if not num then return false end
-			local sent, answer = pcall(function() return equip:InvokeServer(kind, num, slot) end)
-			return sent and answer ~= false
+			-- Tried more than once: a cooldown that ended a moment ago, or a slot the
+			-- server was still settling, is a refusal that answers differently a breath
+			-- later. Anything still refused after this is a real no.
+			for attempt = 1, 3 do
+				local sent, answer = pcall(function() return equip:InvokeServer(kind, num, slot) end)
+				if sent and answer ~= false then return true end
+				if attempt < 3 then task.wait(0.35) end
+			end
+			return false
 		end
 
 		if bestW then equipItem('weapon', bestW) end
@@ -2708,13 +2772,30 @@ run(function()
 			task.wait(0.2)
 		end
 
+		--[[
+			The heals we just finished casting are the thing now on cooldown.
+
+			Restoring immediately is therefore the swap most likely to be refused, and being
+			refused here is the expensive one: it leaves you holding heals and a staff for
+			the rest of the run instead of your own loadout.
+		]]
+		local settled = waitForCooldowns(12)
+
 		if savedWeapon then
-			pcall(function() equip:InvokeServer('weapon', savedWeapon) end)
+			equipItem('weapon', savedWeapon)
 		end
+
+		local restored, wanted = 0, 0
 		for _, slot in ABILITY_SLOTS do
 			if saved[slot] then
-				pcall(function() equip:InvokeServer('ability', saved[slot], slot) end)
+				wanted += 1
+				if equipItem('ability', saved[slot], slot) then restored += 1 end
 			end
+		end
+
+		if restored < wanted then
+			say(string.format('heal swap: healed, but %d of %d abilities would not go back on%s',
+				wanted - restored, wanted, settled and '' or ' (still cooling)'))
 		end
 		return true
 	end
