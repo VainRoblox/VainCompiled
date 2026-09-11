@@ -187,31 +187,36 @@ function module.solveQuartic(c0, c1, c2, c3, c4)
 end
 
 --[[
-	Aiming a thrown thing, the way it is actually done.
+	Aiming a thrown thing.
 
-	The intercept quartic this used to solve is the elegant answer and the wrong tool. It
-	asks for the flight time of a shot at a moving target in one equation, and at range
-	that equation stops having a positive root: the flight time grows, the target's own
-	velocity comes to dominate it, and it returns nothing rather than a long shot. Nothing
-	aimed and nothing fired, which is why it worked up close and not further out.
+	Two separate questions, and the whole job is not letting them contaminate each other.
 
-	The two halves are separated instead, which is what the clients that work do. Guess
-	how long the shot is in the air, work out where the target will be by then, and solve
-	the plain ballistic angle onto that fixed point. Then do it again with the flight time
-	the solution actually implies. Two or three passes and it stops moving.
+	Where will the target be? That is their own physics: they carry on at the speed they
+	are moving, they fall at their own gravity if they are off the ground, and they stop
+	when they reach the floor - the floor under where they are going, not the one they left.
 
-	Every part of that has an answer whenever the shot is physically possible, and the one
-	place it can fail - the point being further than the projectile can reach at all - is
-	a real no rather than a solver giving up.
+	How do I throw at a point? That is textbook ballistics. For a launch speed and a gravity
+	there are two arcs onto any reachable point, and the flatter one arrives soonest, which
+	leaves the target the least time to walk out of it.
+
+	They are coupled only through the flight time, so they are solved by passing that back
+	and forth: guess it, predict where they will be, solve the arc onto that point, take the
+	flight time that arc really implies, repeat. It settles in two or three passes, and every
+	step has an answer whenever the shot is possible at all.
+
+	The projectile model is the game's own, taken from its projectile controller:
+
+	    x(t) = vx*t + x0      y(t) = -0.5*g*t^2 + vy*t + y0      z(t) = vz*t + z0
+
+	which is plain ballistics with no drag, so nothing here is an approximation of it.
 ]]
 
 --[[
 	The angle that puts a shot onto a fixed point.
 
-	Textbook ballistics: for a speed and a gravity there are two arcs onto a point, the
-	flat one and the lobbed one. Flat is preferred everywhere - it arrives soonest, which
-	leaves the target the least time to walk out of it - and lobbed is what clears a wall.
-	Nothing under the root means the point cannot be reached at that speed at all.
+	For a speed and a gravity there are two arcs onto a point: the flat one and the lobbed
+	one. Nothing under the root means the point cannot be reached at that speed at all,
+	which is a real answer and not a failure to converge.
 ]]
 local function launchAngle(speed, gravity, flat, rise, high)
 	local v2 = speed * speed
@@ -235,52 +240,124 @@ local function ballisticAim(origin, speed, gravity, point, high)
 	return CFrame.fromAxisAngle(axis.Unit, angle) * (flatVec.Unit * speed)
 end
 
-function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, targetVelocity, playerGravity, playerHeight, playerJump, params)
+--[[
+	origin, projectileSpeed, gravity  - the shot, from the game's own projectile meta.
+	targetPos                         - the point being aimed at, whichever part that is.
+	targetVelocity                    - how they are moving right now.
+	playerGravity                     - the gravity THEY fall at, which is not always the
+	                                    world's: balloons, the void kit and an owl grab all
+	                                    change it.
+	playerHeight                      - their root's height above the floor when standing.
+	playerJump                        - non-nil when they are known to be jumping, carrying
+	                                    the jump speed, since a fresh jump is often not in
+	                                    the sampled velocity yet.
+	params                            - raycast filter for the map, used for the floor and
+	                                    for checking the arc is clear.
+	extra                             - optional: { rootPosition, lifetime }.
+]]
+function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, targetVelocity, playerGravity, playerHeight, playerJump, params, extra)
+	if not (origin and targetPos) then return nil end
+	if not projectileSpeed or projectileSpeed <= 0 then return nil end
+
+	gravity = gravity or 0
+	targetVelocity = targetVelocity or Vector3.zero
+	extra = extra or {}
+
 	--[[
-		Two different questions about the floor, asked separately.
+		Their gravity, sanity checked.
 
-		"Are they standing on something" wants the ground under their feet, so it stays a
-		short ray - lengthening it would call somebody at the top of a jump grounded, since
-		their vertical velocity passes through zero there, and the shot would be aimed at
-		the apex rather than where they fall to.
-
-		"Where will they land" needs to see much further, and answering it with that same
-		short ray meant anyone actually falling returned nothing, the clamp never fired,
-		and they were predicted tens of studs underground.
+		Callers work this out from the game - balloons lighten you, the owl carries you,
+		some kits float - and the arithmetic can produce zero or a negative number. Predicting
+		a target that accelerates upward for ever is how an aimbot ends up pointing at the
+		sky, so anything that is not a real downward pull means "they do not fall".
 	]]
-	local groundHit = workspace:Raycast(targetPos, Vector3.new(0, -playerHeight - 0.5, 0), params)
-	local grounded = groundHit ~= nil and math.abs(targetVelocity.Y) <= 0.1
-	local applyGravity = (not grounded) and playerGravity and playerGravity > 0
+	local fall = playerGravity or 0
+	if fall ~= fall or fall < 0 then fall = 0 end
 
-	local FLOOR_REACH = 512
-	local function floorUnder(position)
-		local hit = workspace:Raycast(position, Vector3.new(0, -FLOOR_REACH, 0), params)
+	local FLOOR_REACH = 600
+	local function floorUnder(x, y, z)
+		local hit = workspace:Raycast(Vector3.new(x, y, z), Vector3.new(0, -FLOOR_REACH, 0), params)
 		return hit and hit.Position.Y or nil
 	end
 
-	-- Where they will be after this long, carried by their own motion and their own fall,
-	-- and stopped at the floor they are heading for rather than the one they left.
+	--[[
+		How high the aimed-at point sits above the floor when they are standing on it.
+
+		Everything about the vertical prediction hangs off this, and it is the part that was
+		wrong before: the floor was found and the prediction clamped to the floor ITSELF, so
+		a target who jumped was predicted to land with the aimed-at part at ground level -
+		the shot went to their feet, or into the floor.
+
+		It also cannot be assumed to be the root's height, because the caller chooses what to
+		aim at and it is frequently the head. Given the root, the offset between the two is
+		exact; without it, what they are standing at right now is a good measurement, and the
+		root height is the last resort.
+	]]
+	local groundNow = floorUnder(targetPos.X, targetPos.Y + 2, targetPos.Z)
+	local aboveFloor = groundNow and (targetPos.Y - groundNow) or nil
+
+	local vy = targetVelocity.Y
+	-- A jump that has just started is often not in the sampled velocity yet, and missing it
+	-- means predicting somebody who is about to rise six studs as standing still.
+	if playerJump and playerJump > 0 and vy < 1 then vy = playerJump end
+
+	local rootHeight = (playerHeight and playerHeight > 0) and playerHeight or 3
+	local airborne = math.abs(vy) > 1
+		or (aboveFloor ~= nil and aboveFloor > rootHeight + 2.5)
+
+	local standHeight
+	if extra.rootPosition then
+		standHeight = rootHeight + (targetPos.Y - extra.rootPosition.Y)
+	elseif aboveFloor and not airborne then
+		standHeight = aboveFloor
+	else
+		standHeight = rootHeight
+	end
+
+	local driftX, driftZ = targetVelocity.X, targetVelocity.Z
+
+	--[[
+		Where they will be, by their own physics.
+
+		Airborne, they follow their jump or their fall and stop when they reach the floor
+		they are heading for. On foot they keep their height above the ground rather than
+		their height in the world, so somebody running down a slope or off a bridge is
+		predicted going down with it - and they fall no faster than gravity allows, so
+		running off a ledge is not predicted as dropping instantly.
+	]]
 	local function predictAt(flight)
-		local predicted = targetPos + targetVelocity * flight
-		if applyGravity then
-			predicted -= Vector3.new(0, 0.5 * playerGravity * flight * flight, 0)
+		local x = targetPos.X + driftX * flight
+		local z = targetPos.Z + driftZ * flight
+
+		local y
+		if airborne then
+			y = targetPos.Y + vy * flight - 0.5 * fall * flight * flight
+		else
+			y = targetPos.Y - 0.5 * fall * flight * flight
 		end
 
-		local floor = floorUnder(Vector3.new(predicted.X, targetPos.Y, predicted.Z))
-		if floor and predicted.Y < floor then
-			predicted = Vector3.new(predicted.X, floor, predicted.Z)
+		local floor = floorUnder(x, math.max(targetPos.Y, y) + 2, z)
+		if floor then
+			local resting = floor + standHeight
+			if y < resting then
+				y = resting
+			elseif not airborne and y > resting then
+				-- Following the ground upward: a walk up a slope or a stair.
+				y = resting
+			end
 		end
-		return predicted
+
+		return Vector3.new(x, y, z)
 	end
 
 	--[[
 		Guess, aim, and let the answer correct the guess.
 
-		The first flight time is the straight distance over the projectile's speed, which
-		is close but always short - an arc is longer than the line it spans. Solving gives
-		a launch velocity, and its horizontal part over the horizontal distance is the
-		flight time that shot really takes. Feeding that back moves the predicted point,
-		and after a pass or two neither changes.
+		The first guess is the straight distance over the speed, which is always a little
+		short because an arc is longer than the line it spans. Solving gives a launch
+		velocity whose horizontal part, over the horizontal distance, is the flight time that
+		shot really takes; feeding that back moves the predicted point, and after a couple of
+		passes neither moves.
 	]]
 	local function solveArc(high)
 		if gravity <= 0 or projectileSpeed <= 0 then return nil end
@@ -288,7 +365,7 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 		local flight = (targetPos - origin).Magnitude / projectileSpeed
 		local velocity, point
 
-		for _ = 1, 4 do
+		for _ = 1, 6 do
 			point = predictAt(flight)
 			velocity = ballisticAim(origin, projectileSpeed, gravity, point, high)
 			if not velocity then return nil end
@@ -298,13 +375,12 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 			if across < 0.01 then break end
 
 			local settled = flat / across
-			if math.abs(settled - flight) < 1e-3 then
-				flight = settled
-				break
-			end
+			local moved = math.abs(settled - flight)
 			flight = settled
+			if moved < 1e-3 then break end
 		end
 
+		if extra.lifetime and flight > extra.lifetime then return nil end
 		return velocity, flight
 	end
 
@@ -313,8 +389,7 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 
 		A straight line is not the path an arrow takes: it calls a target behind a low wall
 		unreachable when an arc clears it, and one under an overhang reachable when the arc
-		buries itself in the ceiling. Only the map is in the filter the caller passes down,
-		so the target's own body cannot count as an obstruction.
+		buries itself in the ceiling.
 	]]
 	local function arcClear(velocity, flight)
 		local previous, steps = origin, 8
@@ -327,33 +402,50 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 		return true
 	end
 
-	local velocity, flight = solveArc(false)
-	if velocity then
-		-- Over it, when going through it is not an option. Only taken when the flat shot
-		-- is known blocked and the lobbed one is known clear, so a shot that lands today
-		-- still lands.
-		if params then
-			local blocked = workspace:Raycast(origin, targetPos - origin, params)
-			if blocked and not arcClear(velocity, flight) then
-				local lobbed, lobbedFlight = solveArc(true)
-				if lobbed and arcClear(lobbed, lobbedFlight) then
-					return origin + lobbed, lobbed.Unit, lobbedFlight
+	if gravity > 0 then
+		local velocity, flight = solveArc(false)
+		if velocity then
+			-- Over it, when through it is not an option. Only when the flat shot is known
+			-- blocked and the lobbed one is known clear, so a shot that lands today still
+			-- lands.
+			if params then
+				local blocked = workspace:Raycast(origin, targetPos - origin, params)
+				if blocked and not arcClear(velocity, flight) then
+					local lobbed, lobbedFlight = solveArc(true)
+					if lobbed and arcClear(lobbed, lobbedFlight) then
+						return origin + lobbed, lobbed.Unit, lobbedFlight
+					end
 				end
 			end
+
+			return origin + velocity, velocity.Unit, flight
 		end
-
-		return origin + velocity, velocity.Unit, flight
+		return nil
 	end
 
-	if gravity == 0 then
-		-- Straight line for anything that does not fall.
-		local flight = (targetPos - origin).Magnitude / projectileSpeed
-		if flight <= 0 then return nil end
-		local point = targetPos + targetVelocity * flight
-		local direction = (point - origin)
-		if direction.Magnitude <= 0 then return nil end
-		return origin + direction.Unit * projectileSpeed, direction.Unit, flight
+	--[[
+		Nothing that falls, so it is a straight line - but still a moving target.
+
+		The lead is iterated for the same reason the arc is: leading to where they are now
+		gives a flight time, which gives a better lead, which gives a better flight time.
+	]]
+	local flight = (targetPos - origin).Magnitude / projectileSpeed
+	local point
+	for _ = 1, 4 do
+		point = predictAt(flight)
+		local span = (point - origin).Magnitude
+		if span <= 0 then return nil end
+		local settled = span / projectileSpeed
+		local moved = math.abs(settled - flight)
+		flight = settled
+		if moved < 1e-3 then break end
 	end
+
+	if extra.lifetime and flight > extra.lifetime then return nil end
+
+	local direction = point - origin
+	if direction.Magnitude <= 0 then return nil end
+	return origin + direction.Unit * projectileSpeed, direction.Unit, flight
 end
 
 return module
