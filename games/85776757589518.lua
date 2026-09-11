@@ -1285,6 +1285,23 @@ run(function()
 		end
 
 		--[[
+			The hitbox is the attack; the rest of the model is decoration.
+
+			An attack model carries its damage volume in a part named hitBox or precast, and
+			around it an invisible PrimaryPart anchor, an orb, a glow, a decal. Treating
+			every one of those as its own danger zone triples the count for nothing and
+			inflates how much floor the attack appears to cover - the log showed a dodge
+			running from a model's PrimaryPart and its ball alongside the real hitbox.
+
+			So when a model says where its damage is, that is the only part of it believed.
+		]]
+		if container and container ~= part and not volume then
+			for _, marker in { 'hitBox', 'precast', 'preCast' } do
+				if container:FindFirstChild(marker) then return end
+			end
+		end
+
+		--[[
 			Dangerous for a few seconds, not for a quarter of a minute.
 
 			Most of these resolve within a second or two and the game clears them up, so the
@@ -1294,7 +1311,7 @@ run(function()
 		]]
 		table.insert(dangers, {
 			part = part,
-			expire = workspace:GetServerTimeNow() + 6,
+			expire = workspace:GetServerTimeNow() + 3,
 			born = os.clock(),
 			pos = part.Position,
 		})
@@ -1550,6 +1567,23 @@ run(function()
 				d.spread += math.abs(d.spin) * 0.3 * d.bound
 			end
 			d.futures = futures
+		end
+
+		--[[
+			Still moving means still coming; sitting still means it already happened.
+
+			A warning lands, fires, and the part lingers - and the log shows the farm still
+			running from hitboxes five seconds old, dozens at a time, until most of the
+			arena reads as lethal and there is nowhere left to stand. A telegraph in this
+			game resolves in about a second, so a part that has sat motionless for a few is
+			spent, whatever it still looks like.
+
+			Anything actually travelling is the opposite case: a projectile crossing the
+			room is dangerous for as long as it is crossing it, so its clock keeps being
+			pushed back while it moves.
+		]]
+		if d.velocity then
+			d.expire = workspace:GetServerTimeNow() + 2
 		end
 
 		d.pos, d.at = position, now
@@ -1897,7 +1931,7 @@ run(function()
 
 		-- How much height a spot may differ by and still count as somewhere to stand. The
 		-- first passes keep it tight; the later ones take a spot up a step over no spot.
-		local function search(useRoom, m, leash, needSight, rise, drop)
+		local function search(useRoom, m, leash, needSight, rise, drop, maxTravel)
 			local escaping = escapingAt(m)
 			local fallback, fallbackCount = nil, dangerCount(pos, m)
 			local detour = nil
@@ -1917,6 +1951,18 @@ run(function()
 					nothing to weigh against distance, so the tight window stands.
 				]]
 				if best and candidate.travel > firstClear + (anchor and 42 or 16) then break end
+
+				--[[
+					A dodge has to arrive before the attack does.
+
+					Walking is sixteen studs a second, so the fifty-two stud sidesteps in the
+					log were three seconds of crossing the arena - during which everything
+					else lands, and from outside it looks like the farm wandering off mid
+					fight. A spot that cannot be reached in about a second is not a dodge,
+					whatever else is right about it, so the early passes will not consider
+					one. The desperate passes still may: a slow escape beats none.
+				]]
+				if maxTravel and candidate.travel > maxTravel then break end
 
 				local stale = false
 				for _, bad in badSpots do
@@ -2083,7 +2129,7 @@ run(function()
 		]]
 		local spot
 		for _, m in { margin, 2 } do
-			local found, clean = search(respectRoom, m, 40, true)
+			local found, clean = search(respectRoom, m, 40, true, nil, nil, 22)
 			if clean then return found end
 			spot = spot or found
 		end
@@ -2091,7 +2137,7 @@ run(function()
 		-- Same rules, but a spot on a step or a tier now counts as floor. This alone is
 		-- most of why walking failed where flying worked.
 		do
-			local found, clean = search(respectRoom, 2, 40, true, 14, 40)
+			local found, clean = search(respectRoom, 2, 40, true, 14, 40, 32)
 			if clean then return found end
 			spot = spot or found
 		end
