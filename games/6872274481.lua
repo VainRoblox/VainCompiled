@@ -6317,9 +6317,15 @@ run(function()
 	local Tracers
 	local Background
 	local Color
+	local EldertreeHealth
+	local HealthRange
 	local Reference = {}
 	local Folder = Instance.new('Folder')
 	Folder.Parent = vain.gui
+	-- Kept apart from Folder, which is emptied every time your own kit changes.
+	local HealthTags, seenTags = {}, {}
+	local HealthFolder = Instance.new('Folder')
+	HealthFolder.Parent = vain.gui
 	
 	-- Settings are created after CreateModule returns, so they can still be nil while this
 	-- file is executing - and the module can be switched on inside that window when the GUI
@@ -6538,6 +6544,96 @@ run(function()
 		end
 	end
 	
+	--[[
+		How much health an Eldertree has left.
+	
+		Eldertree grows its max health with every orb it collects, so what it has left is the
+		thing worth knowing about one. This is about other players rather than your own kit, so
+		it runs whatever you have equipped, and only shows within the distances of the range.
+	]]
+	local function isEldertree(player)
+		for _, attribute in {'PlayingAsKits', 'PlayingAsKit'} do
+			local kit = player:GetAttribute(attribute)
+			if type(kit) == 'string' and kit:find('bigman', 1, true) then
+				return true
+			end
+		end
+		return false
+	end
+	
+	local function clearHealthTags()
+		for ent, tag in HealthTags do
+			tag:Destroy()
+			HealthTags[ent] = nil
+		end
+	end
+	
+	local function healthTag(ent)
+		local tag = HealthTags[ent]
+		if tag and tag.Parent then return tag end
+	
+		local billboard = Instance.new('BillboardGui')
+		billboard.Name = 'EldertreeHealth'
+		billboard.Size = UDim2.fromOffset(96, 22)
+		billboard.StudsOffsetWorldSpace = Vector3.new(0, 3, 0)
+		billboard.AlwaysOnTop = true
+		billboard.ClipsDescendants = false
+		billboard.Parent = HealthFolder
+		local blur = addBlur(billboard)
+		blur.Visible = on(Background)
+		local label = Instance.new('TextLabel')
+		label.Name = 'Label'
+		label.Size = UDim2.fromScale(1, 1)
+		label.BorderSizePixel = 0
+		label.BackgroundColor3 = backgroundColor()
+		label.BackgroundTransparency = 1 - (on(Background) and (Color and Color.Opacity or 0.5) or 0)
+		label.Font = Enum.Font.GothamBold
+		label.TextSize = 13
+		label.TextStrokeTransparency = 0.5
+		label.Parent = billboard
+		local uicorner = Instance.new('UICorner')
+		uicorner.CornerRadius = UDim.new(0, 4)
+		uicorner.Parent = label
+		HealthTags[ent] = billboard
+		return billboard
+	end
+	
+	local function updateHealthTags()
+		if not on(EldertreeHealth) or not entitylib.isAlive then
+			for _, tag in HealthTags do
+				tag.Enabled = false
+			end
+			return
+		end
+	
+		local here = entitylib.character.RootPart.Position
+		local nearest = HealthRange and HealthRange.ValueMin or 0
+		local farthest = HealthRange and HealthRange.ValueMax or math.huge
+		table.clear(seenTags)
+		for _, ent in entitylib.List do
+			local root = ent.RootPart
+			if ent.Player and root and isEldertree(ent.Player) then
+				seenTags[ent] = true
+				local tag = healthTag(ent)
+				tag.Adornee = ent.Head or root
+				local distance = (root.Position - here).Magnitude
+				tag.Enabled = distance >= nearest and distance <= farthest
+				if tag.Enabled then
+					local health, max = ent.Health or 0, math.max(ent.MaxHealth or 100, 1)
+					tag.Label.Text = math.floor(health + 0.5) .. ' / ' .. math.floor(max + 0.5) .. ' HP'
+					tag.Label.TextColor3 = Color3.fromHSV(math.clamp(health / max, 0, 1) / 2.5, 0.89, 0.75)
+				end
+			end
+		end
+	
+		for ent, tag in HealthTags do
+			if not seenTags[ent] then
+				tag:Destroy()
+				HealthTags[ent] = nil
+			end
+		end
+	end
+	
 	KitESP = vain.Categories.Render:CreateModule({
 		Name = 'KitESP',
 		Function = function(callback)
@@ -6546,7 +6642,10 @@ run(function()
 				table.clear(Reference)
 	
 				if TracerConn then TracerConn:Disconnect() end
-				TracerConn = runService.RenderStepped:Connect(updateTracers)
+				TracerConn = runService.RenderStepped:Connect(function()
+					updateTracers()
+					updateHealthTags()
+				end)
 	
 				--[[
 					Polled rather than driven off a signal.
@@ -6593,6 +6692,7 @@ run(function()
 					TracerConn = nil
 				end
 				clearTracers()
+				clearHealthTags()
 			end
 		end,
 		Tooltip = 'ESP for the objects your equipped kit collects'
@@ -6608,6 +6708,29 @@ run(function()
 			if not callback then clearTracers() end
 		end
 	})
+	EldertreeHealth = KitESP:CreateToggle({
+		Name = 'Eldertree Health',
+		Tooltip = "Shows Eldertree players' health",
+		Function = function(callback)
+			if HealthRange and HealthRange.Object then
+				HealthRange.Object.Visible = callback
+			end
+			if not callback then
+				clearHealthTags()
+			end
+		end
+	})
+	HealthRange = KitESP:CreateTwoSlider({
+		Name = 'Health Range',
+		Tooltip = 'Distance in studs the health shows within',
+		Min = 0,
+		Max = 500,
+		DefaultMin = 0,
+		DefaultMax = 150,
+		Darker = true,
+		Visible = false
+	})
+	HealthRange.Object.Visible = EldertreeHealth.Enabled
 	Background = KitESP:CreateToggle({
 		Name = 'Background',
 		Tooltip = 'Draws a background behind the icon',
@@ -6616,6 +6739,10 @@ run(function()
 			for _, v in Reference do
 				v.ImageLabel.BackgroundTransparency = 1 - (callback and (Color.Opacity or 0.5) or 0)
 				v.Blur.Visible = callback
+			end
+			for _, tag in HealthTags do
+				tag.Label.BackgroundTransparency = 1 - (callback and (Color and Color.Opacity or 0.5) or 0)
+				tag.Blur.Visible = callback
 			end
 		end,
 		Default = true
@@ -6629,6 +6756,10 @@ run(function()
 			for _, v in Reference do
 				v.ImageLabel.BackgroundColor3 = Color3.fromHSV(hue, sat, val)
 				v.ImageLabel.BackgroundTransparency = 1 - opacity
+			end
+			for _, tag in HealthTags do
+				tag.Label.BackgroundColor3 = Color3.fromHSV(hue, sat, val)
+				tag.Label.BackgroundTransparency = on(Background) and 1 - opacity or 1
 			end
 		end,
 		Darker = true
