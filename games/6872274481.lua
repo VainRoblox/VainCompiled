@@ -5128,11 +5128,34 @@ run(function()
 			end
 	
 			if callback then
-				ProjectileAimbot:Clean(runService.RenderStepped:Connect(function()
+				--[[
+					Moved the moment the mouse does, not a frame later.
+	
+					RenderStepped runs after the frame's input has already been read, so a circle
+					updated only there was always drawn at last frame's mouse position - the
+					trailing delay. Two things close it: the position is set straight from the
+					input event as the mouse moves, and again at the very front of the render
+					step, ahead of everything else that frame, for anything the event missed.
+				]]
+				local function placeCircle()
 					if CircleObject then
 						CircleObject.Position = mousePosition()
 					end
+				end
+	
+				ProjectileAimbot:Clean(inputService.InputChanged:Connect(function(input)
+					if input.UserInputType == Enum.UserInputType.MouseMovement then
+						placeCircle()
+					end
 				end))
+	
+				local bindName = 'VainProjectileAimbotFOV'
+				pcall(function()
+					runService:BindToRenderStep(bindName, Enum.RenderPriority.First.Value, placeCircle)
+				end)
+				ProjectileAimbot:Clean(function()
+					pcall(function() runService:UnbindFromRenderStep(bindName) end)
+				end)
 	
 				old = bedwars.ProjectileController.calculateImportantLaunchValues
 				--[[
@@ -7845,6 +7868,7 @@ run(function()
 	local Color = {}
 	local ShowAmount
 	local ShowAll
+	local ShowOwn
 	local Reference = {}
 	local Folder = Instance.new('Folder')
 	Folder.Parent = vain.gui
@@ -7854,6 +7878,38 @@ run(function()
 	-- when the GUI restores a saved config. Reading .Enabled straight off them threw.
 	local function on(setting)
 		return setting ~= nil and setting.Enabled
+	end
+	
+	--[[
+		Your own team's crate, found the way ChestSteal and the game's own getTeamCrate find it.
+	
+		The Team attribute sits on a holder with the block underneath it, so it is looked for up
+		a few parents rather than only on the tagged instance, and compared as text because the
+		id comes back as a string in some places and a number in others.
+	]]
+	local function teamOf(inst)
+		local team = inst:GetAttribute('Team')
+		if team == nil then team = inst:GetAttribute('GeneratorTeam') end
+		return team ~= nil and tostring(team) or nil
+	end
+	
+	local function ownTeamChest(block)
+		local mine = lplr:GetAttribute('Team')
+		if mine == nil or not block then return false end
+		mine = tostring(mine)
+	
+		local node = block
+		for _ = 1, 3 do
+			if not node then break end
+			if teamOf(node) == mine then return true end
+			node = node.Parent
+		end
+		return false
+	end
+	
+	-- Hidden unless asked for: what is in your own crate is something you already know.
+	local function hiddenAsOwn(block)
+		return not on(ShowOwn) and ownTeamChest(block)
 	end
 	
 	local function nearStorageItem(item)
@@ -7949,6 +8005,7 @@ run(function()
 	local function Added(v)
 		local chest = v:WaitForChild('ChestFolderValue', 3)
 		if not (chest and StorageESP.Enabled) then return end
+		if hiddenAsOwn(v) then return end
 		chest = chest.Value
 		local billboard = Instance.new('BillboardGui')
 		billboard.Parent = Folder
@@ -8069,6 +8126,17 @@ run(function()
 		Function = function()
 			for _, v in Reference do
 				task.spawn(refreshAdornee, v)
+			end
+		end
+	})
+	ShowOwn = StorageESP:CreateToggle({
+		Name = 'Show Own',
+		Tooltip = "Also shows your own team's chest",
+		Function = function()
+			-- Which chests exist changes, not just what they show, so they are rebuilt.
+			if StorageESP.Enabled then
+				StorageESP:Toggle()
+				StorageESP:Toggle()
 			end
 		end
 	})
@@ -9074,6 +9142,7 @@ end)
 run(function()
 	local AutoVoidDrop
 	local OwlCheck
+	local Delay
 	
 	AutoVoidDrop = vain.Categories.Utility:CreateModule({
 		Name = 'AutoVoidDrop',
@@ -9095,17 +9164,32 @@ run(function()
 						local root = entitylib.character.RootPart
 						if root.Position.Y < lowestpoint and (lplr.Character:GetAttribute('InflatedBalloons') or 0) <= 0 and not getItem('balloon') then
 							if not OwlCheck.Enabled or not root:FindFirstChild('OwlLiftForce') then
+								local dropped = false
 								for _, item in {'iron', 'diamond', 'emerald', 'gold'} do
 									item = getItem(item)
 									if item then
-										item = bedwars.Client:Get(remotes.DropItem):CallServer({
+										--[[
+											A pause between kinds, not between stacks.
+	
+											Only paid once something has actually gone out, and only
+											before the next kind - so a void fall with just iron on
+											you drops immediately, and one carrying iron and gold
+											waits the delay in between.
+										]]
+										if dropped and Delay and Delay.Value > 0 then
+											task.wait(Delay.Value)
+											if not (AutoVoidDrop.Enabled and entitylib.isAlive) then break end
+										end
+	
+										local result = bedwars.Client:Get(remotes.DropItem):CallServer({
 											item = item.tool,
 											amount = item.amount
 										})
 	
-										if item then
-											item:SetAttribute('ClientDropTime', tick() + 100)
+										if result then
+											result:SetAttribute('ClientDropTime', tick() + 100)
 										end
+										dropped = true
 									end
 								end
 							end
@@ -9122,6 +9206,15 @@ run(function()
 		Name = 'Owl check',
 		Default = true,
 		Tooltip = 'Refuses to drop items if being picked up by an owl'
+	})
+	Delay = AutoVoidDrop:CreateSlider({
+		Name = 'Delay',
+		Min = 0,
+		Max = 3,
+		Default = 0,
+		Decimal = 10,
+		Suffix = 's',
+		Tooltip = 'Wait this long between dropping each kind of item, e.g. iron then gold'
 	})
 end)
 
@@ -23731,8 +23824,17 @@ run(function()
 	local Visualizer
 	local effects, util = {}, {}
 	
+	--[[
+		Named apart from the universal FPS Boost on purpose.
+	
+		Creating a module removes any existing module with the same name, and this file loads
+		after the universal one - so while both were called FPS Boost, joining a match quietly
+		deleted the real FPS Boost from Utility and put this smaller effects toggle in the Legit
+		window in its place. That is why FPS Boost only ever appeared in the lobby: the lobby is
+		the one place this file does not load.
+	]]
 	FPSBoost = vain.Legit:CreateModule({
-		Name = 'FPS Boost',
+		Name = 'Effect Remover',
 		Function = function(callback)
 			if callback then
 				if Kill.Enabled then
@@ -23779,7 +23881,7 @@ run(function()
 				table.clear(util)
 			end
 		end,
-		Tooltip = 'Improves the framerate by turning off certain effects'
+		Tooltip = 'Turns off kill effects, the audio visualizer and match nametags for framerate'
 	})
 	Kill = FPSBoost:CreateToggle({
 		Name = 'Kill Effects',
