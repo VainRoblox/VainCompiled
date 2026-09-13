@@ -4973,10 +4973,19 @@ run(function()
 		local lifetime = (worldmeta
 			and ((overrides and overrides.predictionLifetimeOverride) or meta.predictionLifetimeSec)
 			or ((overrides and overrides.lifetimeOverride) or meta.lifetimeSec)) or 3
-		local gravity = (meta.gravitationalAcceleration or 196.2) * projmeta.gravityMultiplier
-		-- velocityMultiplier is how far the bow is drawn. It was being left out while its
-		-- sibling gravityMultiplier was applied, so every partly charged shot was solved at
-		-- full power and fell short.
+		--[[
+			The gravity the arrow really falls at.
+	
+			The fired projectile is a physics body: the game gives it a BodyForce cancelling world
+			gravity down to the projectile meta's own, and applies the launch velocity as an
+			impulse. gravityMultiplier never reaches it - launchProjectileWithValues discards the
+			gravity this function returns - so solving with meta times multiplier aimed for a fall
+			the arrow never has.
+		]]
+		local gravity = meta.gravitationalAcceleration or 196.2
+		-- velocityMultiplier is how far the bow is drawn, and unlike gravity it does reach the
+		-- arrow - it scales the launch velocity that becomes the impulse - so a partly charged
+		-- shot has to be solved at the speed it will actually leave at.
 		local projSpeed = ((overrides and overrides.launchVelocityOverride) or meta.launchVelocity or 100) * projmeta.velocityMultiplier
 		local offsetpos = pos + (projmeta.projectile == 'owl_projectile' and Vector3.zero or projmeta.fromPositionOffset)
 		local balloons = character:GetAttribute('InflatedBalloons')
@@ -5004,14 +5013,6 @@ run(function()
 	
 		refreshMapFilter()
 	
-		-- The position replicated for a target is already about one trip old by the time it
-		-- reaches you, and the shot needs another trip before the server acts on it. The
-		-- solver accounts for how far they move during the projectile's flight but knows
-		-- nothing about that, so the shot lands where they were rather than where they are -
-		-- an error that scales directly with ping, and the reason this misses worst on a bad
-		-- connection. Aim a round trip ahead of what is on screen.
-		--
-		-- Skipped for telepearl, whose target velocity is deliberately ignored below.
 		local aimpos = target.Position
 		--[[
 			Measured, not asked for.
@@ -5024,15 +5025,20 @@ run(function()
 		local motion = projmeta.projectile == 'telepearl' and Vector3.zero
 			or prediction.smoothVelocity(target, target.Velocity)
 	
-		if projmeta.projectile ~= 'telepearl' then
-			local latency = 0
-			pcall(function()
-				latency = lplr:GetNetworkPing() * 2
-			end)
-			-- Clamped: GetNetworkPing occasionally spikes, and a bad sample would otherwise
-			-- throw the aim a long way off for that shot.
-			aimpos += motion * math.clamp(latency, 0, 0.5)
-		end
+		--[[
+			No latency lead: the server already compensates for it.
+	
+			The shot is stamped with GetServerTimeNow() when it is fired, and the server re-runs
+			its flight with LagCompensationService:pushToPointInTime(serverTime + elapsed) -
+			every player rewound to where the shooter saw them, plus the flight time - before
+			testing the hit. The position on screen, carried forward by the flight time, is
+			therefore exactly where to aim.
+	
+			Leading a further round trip on top compensated for delay that had already been
+			compensated for, and pushed every shot ahead of its target by ping times their speed:
+			a few studs on an ordinary connection, which is the whole width of a body. That is
+			the shot that "could easily have been hit".
+		]]
 	
 		if HitChance.Value < 100 and math.random(1, 100) > HitChance.Value then
 			aimpos = applySpread(aimpos, offsetpos)
@@ -5051,8 +5057,25 @@ run(function()
 		-- happened when this was "corrected" to do that. Applying the same offset along the
 		-- aim direction lands on very nearly the muzzle the game will use, since the launch
 		-- direction and the aim direction differ only by the arc.
-		local muzzleOffset = projmeta.projectile == 'owl_projectile' and Vector3.zero
-			or Vector3.new(bedwars.BowConstantsTable.RelX, bedwars.BowConstantsTable.RelY, bedwars.BowConstantsTable.RelZ)
+		--[[
+			The spawn offset this tool actually uses.
+	
+			fireProjectile places the arrow at positionFrom, offset along the launch direction by
+			the projectile source's relativeOverride when it has one and by the bow constants
+			otherwise. Assuming the constants for every tool put the solved muzzle a stud or more
+			away from the real one on anything that overrides it.
+		]]
+		local muzzleOffset = Vector3.zero
+		if projmeta.projectile ~= 'owl_projectile' then
+			local tool = store.hand and store.hand.tool
+			local itemMeta = tool and bedwars.ItemMeta[tool.Name]
+			local relative = itemMeta and itemMeta.projectileSource and itemMeta.projectileSource.relativeOverride
+			if relative and relative.relX then
+				muzzleOffset = Vector3.new(relative.relX, relative.relY or 0, relative.relZ or 0)
+			else
+				muzzleOffset = Vector3.new(bedwars.BowConstantsTable.RelX, bedwars.BowConstantsTable.RelY, bedwars.BowConstantsTable.RelZ)
+			end
+		end
 	
 		local function muzzleAlong(direction)
 			return (CFrame.new(offsetpos, offsetpos + direction) * CFrame.new(muzzleOffset)).Position
@@ -5469,21 +5492,15 @@ run(function()
 										local projSpeed = meta and meta.launchVelocity
 										if not projSpeed then continue end
 										local gravity = meta.gravitationalAcceleration or 196.2
-										-- Aimed a round trip ahead of where the target appears, for the
-										-- same reason ProjectileAimbot does: their replicated position
-										-- is already about one trip old and the shot needs another
-										-- before the server acts on it. The solver covers movement
-										-- during flight but not that, so without it the miss grows
-										-- with ping. Clamped because the ping reading can spike.
-										local latency = 0
-										pcall(function()
-											latency = lplr:GetNetworkPing() * 2
-										end)
+										-- No latency lead. The server re-runs the shot with lag
+										-- compensation, rewinding targets to where you saw them, so
+										-- leading a round trip on top pushed every shot ahead of its
+										-- target by ping times their speed.
 										-- Differenced over a short window rather than read off the
 										-- part, whose velocity reads zero between replication
 										-- updates and spikes on knockback.
 										local motion = prediction.smoothVelocity(ent.RootPart, ent.RootPart.Velocity)
-										local aimAt = ent.RootPart.Position + (motion * math.clamp(latency, 0, 0.5))
+										local aimAt = ent.RootPart.Position
 	
 										-- Their own jump speed, however the humanoid describes it.
 										local jumpSpeed
