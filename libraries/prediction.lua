@@ -189,109 +189,501 @@ end
 --[[
 	Aiming a thrown thing.
 
-	Two separate questions, and the whole job is not letting them contaminate each other.
+	Two questions, kept apart. Where will the target be at time t - their own motion, which
+	is everything from the tracker down. And can a shot be there at t - which is exact rather
+	than iterated. Launched at speed s under gravity g, reaching a point P at time t takes the
+	velocity
 
-	Where will the target be? That is their own physics: they carry on at the speed they
-	are moving, they fall at their own gravity if they are off the ground, and they stop
-	when they reach the floor - the floor under where they are going, not the one they left.
+	    v(t) = (P(t) - origin + 0.5*g*t^2*up) / t
 
-	How do I throw at a point? That is textbook ballistics. For a launch speed and a gravity
-	there are two arcs onto any reachable point, and the flatter one arrives soonest, which
-	leaves the target the least time to walk out of it.
+	and the shot exists when |v(t)| is s. So the flight time is the root of
 
-	They are coupled only through the flight time, so they are solved by passing that back
-	and forth: guess it, predict where they will be, solve the arc onto that point, take the
-	flight time that arc really implies, repeat. It settles in two or three passes, and every
-	step has an answer whenever the shot is possible at all.
+	    f(t) = |P(t) - origin + 0.5*g*t^2*up|^2 - (s*t)^2
 
-	The projectile model is the game's own, taken from its projectile controller:
+	whose first root is the flat arc and whose second is the lobbed one. That holds for any
+	motion at all - landing mid-flight, stepping off a ledge, turning round mid-strafe - where
+	guessing a flight time and passing it back and forth settled on the wrong answer whenever
+	the motion was not a straight line.
 
-	    x(t) = vx*t + x0      y(t) = -0.5*g*t^2 + vy*t + y0      z(t) = vz*t + z0
-
-	which is plain ballistics with no drag, so nothing here is an approximation of it.
+	The projectile model is the game's own: no drag, falling at the meta's gravity.
 ]]
 
---[[
-	How fast something is really moving, measured rather than asked.
+local STEP = 1 / 60
+local MAX_STATES = math.ceil(8 / STEP) + 2
+local FLOOR_EVERY = 0.1
+local HISTORY = 1.6
+local FOOTPRINT = Vector3.new(2, 0.1, 2)
+local horizontal = Vector3.new(1, 0, 1)
 
-	A replicated character's velocity property is the worst input this library gets: it
-	arrives in steps, so it reads zero between updates and spikes on knockback, and a single
-	sample of it decides where the whole shot goes. Differencing positions over a short
-	window instead gives the speed they are actually travelling at, which is what a lead
-	needs - jitter averages out and a knockback spike stops being the whole answer.
+local function sampleBefore(samples, time)
+	for i = #samples, 1, -1 do
+		if samples[i].at <= time then
+			return samples[i]
+		end
+	end
+	return nil
+end
+
+--[[
+	Following a target between shots.
+
+	One velocity reading cannot say whether somebody is strafing back and forth, hopping, or
+	flying from a hit, and that is most of what decides where they are half a second later.
+	So roots are sampled every frame while an aimbot is on, and the history is read when a
+	shot is solved.
+
+	The velocity itself comes from the engine. A replicated character carries the velocity it
+	was sent with and it changes the frame they change direction, where an average of
+	positions trails every reversal by half its window - which aimed at the side of a strafe
+	they had already left. Positions are still kept to check it against: a rig moved without
+	physics has no velocity at all, and a spoofed one disagrees with where they really go.
 
 	Keyed weakly so tracking a part never keeps it alive.
 ]]
-local history = setmetatable({}, {__mode = 'k'})
-local WINDOW = 0.18
+local tracks = setmetatable({}, {__mode = 'k'})
 
-function module.smoothVelocity(part, fallback)
-	if typeof(part) ~= 'Instance' then return fallback or Vector3.zero end
+function module.observe(root)
+	if typeof(root) ~= 'Instance' then return nil end
 
 	local now = os.clock()
-	local samples = history[part]
-	if not samples then
-		samples = {}
-		history[part] = samples
+	local track = tracks[root]
+	if not track then
+		track = {samples = {}, takeoffs = {}, disagree = 0}
+		tracks[root] = track
 	end
 
-	local position = part.Position
+	local samples = track.samples
 	local last = samples[#samples]
-	if not last or now - last.at > 0.008 then
-		table.insert(samples, {at = now, pos = position})
+	if last and now - last.at < 1 / 90 then return track end
+
+	local position, velocity = root.Position, root.AssemblyLinearVelocity
+	if last then
+		-- Further than they could have moved: a respawn, a teleport or a lag spike, and
+		-- nothing from before it describes where they are now.
+		local gap = now - last.at
+		if (position - last.pos).Magnitude > math.max(25, (velocity.Magnitude + 80) * gap * 2) then
+			table.clear(samples)
+			table.clear(track.takeoffs)
+			track.disagree, track.spoofed = 0, false
+			last = nil
+		end
 	end
 
-	-- Anything older than the window is no longer evidence about where they are going.
-	while #samples > 1 and now - samples[1].at > WINDOW do
+	local sample = {at = now, pos = position, vel = velocity}
+	table.insert(samples, sample)
+	while #samples > 2 and now - samples[1].at > HISTORY do
 		table.remove(samples, 1)
 	end
 
-	local oldest = samples[1]
-	local span = now - oldest.at
-	if #samples < 2 or span < 0.03 then
-		return fallback or part.AssemblyLinearVelocity
+	local reference = sampleBefore(samples, now - 0.1)
+	if reference and now - reference.at > 0.05 then
+		local measured = (position - reference.pos) / (now - reference.at)
+		sample.measured = measured
+
+		-- A reversal or a hit disagrees for a few frames while the measurement catches up.
+		-- Only a disagreement that lasts means the velocity is not describing the motion.
+		local reported, moved = velocity * horizontal, measured * horizontal
+		if (reported - moved).Magnitude > math.max(15, moved.Magnitude * 0.75) then
+			track.disagree = math.min(track.disagree + 1, 30)
+		else
+			track.disagree = math.max(track.disagree - 1, 0)
+		end
+		if track.disagree >= 12 then
+			track.spoofed = true
+		elseif track.disagree == 0 then
+			track.spoofed = false
+		end
 	end
 
-	local measured = (position - oldest.pos) / span
+	-- A takeoff: rising fast just after being on something. Going from falling to rising
+	-- within a frame needs a floor in between, so a jump from standing and a hop off a
+	-- landing both count.
+	if last and velocity.Y > 12 and last.vel.Y <= 12 then
+		local lowest = math.huge
+		for i = #samples - 1, 1, -1 do
+			if now - samples[i].at > 0.3 then break end
+			lowest = math.min(lowest, samples[i].vel.Y)
+		end
+		if lowest <= 2 then
+			table.insert(track.takeoffs, {at = now, speed = velocity.Y})
+			if #track.takeoffs > 5 then
+				table.remove(track.takeoffs, 1)
+			end
+		end
+	end
 
-	--[[
-		Vertical is taken from the engine, horizontal from the measurement.
+	return track
+end
 
-		A jump lasts less than this window, so averaging across it flattens the rise into
-		nothing - and being wrong about the vertical is exactly what makes a shot sail over
-		somebody's head. The engine's value is immediate there, which is what that needs.
-	]]
-	local instant = part.AssemblyLinearVelocity
-	return Vector3.new(measured.X, instant.Y, measured.Z)
+local function velocityOf(track, sample)
+	return track.spoofed and sample.measured or sample.vel
+end
+
+local function currentVelocity(track, fallback)
+	local latest = track.samples[#track.samples]
+	if not latest then return fallback end
+
+	local reported, measured = velocityOf(track, latest), latest.measured
+	-- Moving with no velocity at all: an anchored rig, a tweened NPC, CFrame movement.
+	if measured and (reported * horizontal).Magnitude < 1 and (measured * horizontal).Magnitude > 3 then
+		return Vector3.new(measured.X, reported.Y, measured.Z)
+	end
+	return reported
+end
+
+-- Kept for anything still calling it by its old name.
+function module.smoothVelocity(part, fallback)
+	local track = module.observe(part)
+	return track and currentVelocity(track, fallback or Vector3.zero) or fallback or Vector3.zero
 end
 
 --[[
-	The angle that puts a shot onto a fixed point.
+	Knocked back.
 
-	For a speed and a gravity there are two arcs onto a point: the flat one and the lobbed
-	one. Nothing under the root means the point cannot be reached at that speed at all,
-	which is a real answer and not a failure to converge.
+	A hit adds a burst of speed that their own movement then works off, so leading them by
+	the speed they have straight after it puts the shot yards past where they stop. The burst
+	is found as a sudden rise in horizontal speed; the speed from before it is what they go
+	back to, and the rest fades - at a rate read off how much of it is already gone, once
+	enough time has passed to read one.
 ]]
-local function launchAngle(speed, gravity, flat, rise, high)
-	local v2 = speed * speed
-	local inner = v2 * v2 - gravity * (gravity * flat * flat + 2 * rise * v2)
-	if inner < 0 then return nil end
+local function readKnockback(track, now, grounded)
+	local samples = track.samples
+	local count = #samples
+	if count < 2 then return nil end
 
-	local root = math.sqrt(inner)
-	return math.atan((v2 + (high and root or -root)) / (gravity * flat))
+	local current = velocityOf(track, samples[count]) * horizontal
+	for i = count, 2, -1 do
+		local sample = samples[i]
+		if now - sample.at > 0.7 then break end
+
+		local before = velocityOf(track, samples[i - 1]) * horizontal
+		local after = velocityOf(track, sample) * horizontal
+		-- A reversal changes direction at the same speed. A hit adds speed.
+		if (after - before).Magnitude > 22 and after.Magnitude > before.Magnitude + 12 then
+			local burst = after - before
+			local left = current - before
+			if left.Magnitude < 6 or left:Dot(burst.Unit) < left.Magnitude * 0.5 then
+				return nil
+			end
+
+			local rate = grounded and 8 or 2.5
+			local elapsed = now - sample.at
+			if elapsed > 0.08 and left.Magnitude < burst.Magnitude then
+				rate = math.clamp(math.log(burst.Magnitude / left.Magnitude) / elapsed, 0.8, 12)
+			end
+			return {base = before, burst = left, rate = rate}
+		end
+	end
+	return nil
 end
 
-local function ballisticAim(origin, speed, gravity, point, high)
-	local flatVec = Vector3.new(point.X - origin.X, 0, point.Z - origin.Z)
-	local flat = flatVec.Magnitude
-	if flat < 0.01 or gravity <= 0 or speed <= 0 then return nil end
+--[[
+	Strafing back and forth across the shot.
 
-	local angle = launchAngle(speed, gravity, flat, point.Y - origin.Y, high)
-	if not angle or angle ~= angle then return nil end
+	Only the sideways part of their movement is read, because it is the only part a shot is
+	sensitive to: an arrow flying at somebody passes through wherever they are along its
+	path, but two studs to the side and it goes past. Leading a strafer by their current
+	speed is the worst guess there is - it aims at the far end of a swing they will have
+	turned back from before the arrow gets there.
 
-	local axis = Vector3.new(-flatVec.Z, 0, flatVec.X)
-	if axis.Magnitude < 1e-6 then return nil end
-	return CFrame.fromAxisAngle(axis.Unit, angle) * (flatVec.Unit * speed)
+	Every reversal marks one end of the swing. The last few give where both ends are, how
+	long a swing takes and where along it they are now. Up to the next reversal the path is
+	known. Past it, the moment of their next keypress is not, so the prediction settles
+	towards the middle of the swing the further past it has to guess - which is where they
+	are most likely to be.
+]]
+local function readStrafe(track, origin, now)
+	local samples = track.samples
+	local count = #samples
+	if count < 10 then return nil end
+
+	local latest = samples[count]
+	local look = (latest.pos - origin) * horizontal
+	if look.Magnitude < 2 then return nil end
+	look = look.Unit
+	local axis = Vector3.new(-look.Z, 0, look.X)
+
+	local turns, direction, edge = {}, 0, nil
+	for i = 1, count do
+		local sample = samples[i]
+		local speed = velocityOf(track, sample):Dot(axis)
+		local along = sample.pos:Dot(axis)
+		if math.abs(speed) > 4 then
+			local moving = speed > 0 and 1 or -1
+			if direction ~= 0 and moving ~= direction then
+				table.insert(turns, {at = sample.at, edge = edge})
+				edge = along
+			end
+			direction = moving
+		end
+		if direction > 0 then
+			edge = edge and math.max(edge, along) or along
+		elseif direction < 0 then
+			edge = edge and math.min(edge, along) or along
+		end
+	end
+
+	local n = #turns
+	local speedNow = velocityOf(track, latest):Dot(axis)
+	if n < 3 or math.abs(speedNow) <= 4 then return nil end
+
+	local newest, older = turns[n].at - turns[n - 1].at, turns[n - 1].at - turns[n - 2].at
+	local half = (newest + older) * 0.5
+	if half < 0.08 or half > 1.2 or math.max(newest, older) > math.min(newest, older) * 2 then
+		return nil
+	end
+	-- Stopped swinging and carried on one way.
+	if now - turns[n].at > half * 1.6 + 0.1 then return nil end
+
+	local near, far, oldest = turns[n].edge, turns[n - 1].edge, turns[n - 2].edge
+	local width = math.abs(near - far)
+	if width < 1 then return nil end
+
+	local swing = width / half
+	local middle = (near + far) * 0.5
+	local middleAt = (turns[n].at + turns[n - 1].at) * 0.5
+	local drift = 0
+	if oldest then
+		local previousAt = (turns[n - 1].at + turns[n - 2].at) * 0.5
+		if middleAt - previousAt > 0.02 then
+			drift = (middle - (far + oldest) * 0.5) / (middleAt - previousAt)
+		end
+	end
+	drift = math.clamp(drift, -swing * 0.5, swing * 0.5)
+
+	return {
+		axis = axis,
+		centre = middle + drift * (now - middleAt),
+		drift = drift,
+		reach = width * 0.5,
+		swing = swing,
+		half = half,
+		direction = speedNow > 0 and 1 or -1,
+		along = latest.pos:Dot(axis),
+		speed = speedNow
+	}
+end
+
+local function strafeAlong(strafe, t)
+	local reach, swing = strafe.reach, strafe.swing
+	local x = math.clamp(strafe.along - strafe.centre, -reach, reach)
+	local direction, left, turnedAt = strafe.direction, t, nil
+	for _ = 1, 24 do
+		local needed = (direction > 0 and (reach - x) or (x + reach)) / swing
+		if left <= needed then
+			x += direction * swing * left
+			break
+		end
+		x = direction * reach
+		left -= needed
+		turnedAt = turnedAt or (t - left)
+		direction = -direction
+	end
+	if turnedAt then
+		-- Past the reversal that can be seen coming, the swing is a guess, and the middle
+		-- of it is where a guess is least wrong.
+		x *= math.exp(-(t - turnedAt) / strafe.half)
+	end
+	return strafe.centre + strafe.drift * t + x
+end
+
+-- A footprint rather than a single ray, so somebody standing at the edge of a block is
+-- standing on it instead of over whatever is below.
+local function castDown(position, reach, params)
+	local ok, hit = pcall(workspace.Blockcast, workspace, CFrame.new(position), FOOTPRINT, Vector3.new(0, -reach, 0), params)
+	if not ok then
+		hit = workspace:Raycast(position, Vector3.new(0, -reach, 0), params)
+	end
+	return hit and hit.Position.Y or nil
+end
+
+--[[
+	Where a character will be, as a function of time.
+
+	Horizontally: the speed they have, unless their history says they are working off a
+	knockback or swinging back and forth. Vertically: their own physics, stepped once and
+	reused for every time the solver asks about.
+
+	The vertical is where the old prediction went wrong, both ways. Standing somebody was
+	predicted falling unless a floor ray under them said otherwise, so any ray that missed -
+	the edge of a block, a block outside the map filter - put the shot under their feet. And
+	the game's jumping flag, which stays set for a whole chain of hops, was read as a jump
+	starting now, so anyone on their way down from a hop was aimed over. Now standing people
+	stay at their height unless the ground under them is found to end, and a hop only starts
+	after they have landed.
+]]
+local function buildMotion(origin, rootPos, offset, velocity, fall, playerHeight, playerJump, floorParams, track, now)
+	local rootHeight = (playerHeight and playerHeight > 0) and playerHeight or 3
+	local floorNow = castDown(rootPos, 600, floorParams)
+	local height = floorNow and rootPos.Y - floorNow
+	-- Nothing found under them is not proof of nothing being there, so it does not make
+	-- somebody who is not moving vertically start falling.
+	local grounded = math.abs(velocity.Y) < 4 and (height == nil or height < rootHeight + 1.2)
+
+	local stand = rootHeight
+	if floorNow and grounded and math.abs(height - rootHeight) < 1.5 then
+		stand = height
+	end
+
+	-- Off the ground but not falling the way gravity would make them: flying.
+	local flying = false
+	if not grounded and track and fall > 0 then
+		local samples, oldest = track.samples, nil
+		flying = true
+		for i = #samples, 1, -1 do
+			local sample = samples[i]
+			if now - sample.at > 0.35 then break end
+			oldest = sample
+			if math.abs(velocityOf(track, sample).Y - velocity.Y) > math.max(fall * 0.1, 6) then
+				flying = false
+				break
+			end
+		end
+		flying = flying and oldest ~= nil and now - oldest.at > 0.25
+	end
+
+	-- Hopping: seen taking off repeatedly, or flagged by the caller.
+	local hopSpeed, hopEvery
+	if track then
+		local takeoffs = track.takeoffs
+		local latest = takeoffs[#takeoffs]
+		local gaps, span, speeds = 0, 0, latest and latest.speed or 0
+		for i = #takeoffs, 2, -1 do
+			local gap = takeoffs[i].at - takeoffs[i - 1].at
+			if gap > 1.5 then break end
+			gaps += 1
+			span += gap
+			speeds += takeoffs[i - 1].speed
+		end
+		if gaps > 0 and now - latest.at < (span / gaps) * 1.5 + 0.2 then
+			hopEvery, hopSpeed = span / gaps, speeds / (gaps + 1)
+		end
+	end
+	if not hopSpeed and playerJump and playerJump > 0 then
+		hopSpeed = playerJump
+	end
+	if flying or fall <= 0 then
+		hopSpeed = nil
+	end
+
+	-- The average height of a hop, for when which part of one they will be in is a guess.
+	local groundGap, meanLift = 0.05, nil
+	if hopSpeed then
+		local airTime = 2 * hopSpeed / fall
+		if hopEvery then
+			groundGap = math.clamp(hopEvery - airTime, 0.02, 0.5)
+		end
+		meanLift = (hopSpeed * hopSpeed / (2 * fall)) * (2 / 3) * airTime / (airTime + groundGap)
+	end
+
+	-- With no floor found anywhere the casts cannot be trusted, and the lowest they have
+	-- been lately is the best stand-in for the ground they will come down on.
+	local lowest
+	if not floorNow and track then
+		for _, sample in track.samples do
+			lowest = lowest and math.min(lowest, sample.pos.Y) or sample.pos.Y
+		end
+	end
+
+	local knock = track and readKnockback(track, now, grounded)
+	local strafe = track and not knock and readStrafe(track, origin, now)
+	local base = velocity * horizontal
+	local startFlat = rootPos * horizontal
+
+	local function flatAt(t)
+		local at
+		if knock then
+			at = startFlat + knock.base * t + knock.burst * ((1 - math.exp(-knock.rate * t)) / knock.rate)
+		else
+			at = startFlat + base * t
+		end
+		if strafe then
+			at += strafe.axis * (strafeAlong(strafe, t) - (strafe.along + strafe.speed * t))
+		end
+		return at
+	end
+
+	local floors = {[0] = floorNow or false}
+	local function restAt(t, point, fromY)
+		local index = math.floor(t / FLOOR_EVERY)
+		local known = floors[index]
+		if known == nil then
+			known = castDown(Vector3.new(point.X, fromY + 0.5, point.Z), 600, floorParams) or false
+			floors[index] = known
+		end
+		if known then
+			return known + stand
+		end
+		return lowest
+	end
+
+	local simY, simVy = rootPos.Y, grounded and 0 or velocity.Y
+	local onGround, groundedFor, hops = grounded and not flying, 0, 0
+	local states = {{y = simY, hops = 0, rest = floorNow and floorNow + stand or lowest}}
+
+	local function advance()
+		local t = #states * STEP
+		local rest = restAt(t, flatAt(t), simY)
+
+		if flying then
+			simY += simVy * STEP
+			if rest and simY < rest then
+				simY = rest
+			end
+		else
+			if onGround then
+				if rest and rest > simY + 2.2 then
+					-- Too tall to step onto. They are stopped by it, not lifted.
+				elseif rest and rest >= simY - 0.6 then
+					simY = rest
+				elseif floorNow then
+					-- The ground ends, or drops away, under where they are heading.
+					onGround, simVy = false, 0
+				end
+				if onGround and hopSpeed then
+					groundedFor += STEP
+					if groundedFor >= groundGap then
+						onGround, simVy, hops = false, hopSpeed, hops + 1
+					end
+				end
+			end
+			if not onGround then
+				local nextY = simY + simVy * STEP - 0.5 * fall * STEP * STEP
+				simVy -= fall * STEP
+				if rest and simVy <= 0 and nextY <= rest and simY >= rest - 1.5 then
+					nextY, simVy, onGround, groundedFor = rest, 0, true, 0
+				end
+				simY = nextY
+			end
+		end
+
+		table.insert(states, {y = simY, hops = hops, rest = rest})
+	end
+
+	local function heightAt(t)
+		local position = math.max(t, 0) / STEP
+		local index = math.floor(position)
+		local wanted = math.min(index + 2, MAX_STATES)
+		while #states < wanted do
+			advance()
+		end
+
+		local a = states[math.min(index + 1, #states)]
+		local b = states[math.min(index + 2, #states)]
+		local y = a.y + (b.y - a.y) * math.clamp(position - index, 0, 1)
+		-- Hops they have not taken yet: the further ahead, the less the exact phase of one
+		-- is worth, and the more their average height is.
+		if b.hops > 0 and meanLift and b.rest then
+			local trust = math.min(0.25 + 0.2 * b.hops, 0.8)
+			y += (b.rest + meanLift - y) * trust
+		end
+		return y
+	end
+
+	return function(t)
+		local point = flatAt(t)
+		return Vector3.new(point.X, heightAt(t), point.Z) + offset
+	end
 end
 
 --[[
@@ -302,18 +694,24 @@ end
 	                                    world's: balloons, the void kit and an owl grab all
 	                                    change it.
 	playerHeight                      - their root's height above the floor when standing.
-	playerJump                        - non-nil when they are known to be jumping, carrying
-	                                    the jump speed, since a fresh jump is often not in
-	                                    the sampled velocity yet.
-	params                            - raycast filter for the map, used for the floor and
-	                                    for checking the arc is clear.
-	extra                             - optional: { rootPosition, lifetime }.
+	playerJump                        - their takeoff speed when they are known to be hopping,
+	                                    so every landing is followed by another hop. It is not
+	                                    a jump happening now; their velocity already says that.
+	params                            - raycast filter for what the shot collides with.
+	extra                             - optional: {
+	                                        root        - their root part; turns on everything
+	                                                      read from their history,
+	                                        rootPosition,
+	                                        lifetime    - the longest the shot can fly,
+	                                        floorParams - what can be stood on, when that is
+	                                                      not the same as params
+	                                    }
 ]]
 function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, targetVelocity, playerGravity, playerHeight, playerJump, params, extra)
 	if not (origin and targetPos) then return nil end
 	if not projectileSpeed or projectileSpeed <= 0 then return nil end
 
-	gravity = gravity or 0
+	gravity = math.max(gravity or 0, 0)
 	targetVelocity = targetVelocity or Vector3.zero
 	extra = extra or {}
 
@@ -328,136 +726,97 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 	local fall = playerGravity or 0
 	if fall ~= fall or fall < 0 then fall = 0 end
 
-	local FLOOR_REACH = 600
-	local function floorUnder(x, y, z)
-		local hit = workspace:Raycast(Vector3.new(x, y, z), Vector3.new(0, -FLOOR_REACH, 0), params)
-		return hit and hit.Position.Y or nil
+	local now = os.clock()
+	local root = extra.root
+	if typeof(root) ~= 'Instance' or not root.Parent then
+		root = nil
+	end
+	local track = root and module.observe(root)
+	local rootPos = extra.rootPosition or (root and root.Position) or targetPos
+	local velocity = track and currentVelocity(track, targetVelocity) or targetVelocity
+
+	local floorParams = extra.floorParams or params
+	if not floorParams and root then
+		floorParams = RaycastParams.new()
+		floorParams.FilterDescendantsInstances = {root.Parent}
+		floorParams.RespectCanCollide = true
 	end
 
-	--[[
-		How high the aimed-at point sits above the floor when they are standing on it.
-
-		Everything about the vertical prediction hangs off this, and it is the part that was
-		wrong before: the floor was found and the prediction clamped to the floor ITSELF, so
-		a target who jumped was predicted to land with the aimed-at part at ground level -
-		the shot went to their feet, or into the floor.
-
-		It also cannot be assumed to be the root's height, because the caller chooses what to
-		aim at and it is frequently the head. Given the root, the offset between the two is
-		exact; without it, what they are standing at right now is a good measurement, and the
-		root height is the last resort.
-	]]
-	local groundNow = floorUnder(targetPos.X, targetPos.Y + 2, targetPos.Z)
-	local aboveFloor = groundNow and (targetPos.Y - groundNow) or nil
-
-	local vy = targetVelocity.Y
-	-- A jump that has just started is often not in the sampled velocity yet, and missing it
-	-- means predicting somebody who is about to rise six studs as standing still.
-	if playerJump and playerJump > 0 and vy < 1 then vy = playerJump end
-
-	local rootHeight = (playerHeight and playerHeight > 0) and playerHeight or 3
-	local airborne = math.abs(vy) > 1
-		or (aboveFloor ~= nil and aboveFloor > rootHeight + 2.5)
-
-	local standHeight
-	if extra.rootPosition then
-		standHeight = rootHeight + (targetPos.Y - extra.rootPosition.Y)
-	elseif aboveFloor and not airborne then
-		standHeight = aboveFloor
+	local aimAt
+	if not root and velocity.Magnitude < 1e-3 and not (playerHeight and playerHeight > 0) then
+		-- A spot, not somebody: nothing to predict.
+		aimAt = function()
+			return targetPos
+		end
 	else
-		standHeight = rootHeight
+		aimAt = buildMotion(origin, rootPos, targetPos - rootPos, velocity, fall, playerHeight, playerJump, floorParams, track, now)
 	end
 
-	local driftX, driftZ = targetVelocity.X, targetVelocity.Z
+	local distance = (targetPos - origin).Magnitude
+	if distance < 0.05 then return nil end
+
+	local lift = Vector3.new(0, 0.5 * gravity, 0)
+	local speedSquared = projectileSpeed * projectileSpeed
+
+	local function required(t)
+		return aimAt(t) - origin + lift * (t * t)
+	end
+
+	-- Below zero once a shot at this speed can be where they are by t.
+	local function excess(t)
+		local needed = required(t)
+		return needed:Dot(needed) - speedSquared * t * t
+	end
+
+	-- Long enough for a lob, never longer than the shot lives.
+	local horizon = distance / projectileSpeed * 3 + 0.6
+	if gravity > 0 then
+		horizon = math.max(horizon, 2 * projectileSpeed / gravity + 0.3)
+	end
+	horizon = math.min(horizon, extra.lifetime or 8, 8)
 
 	--[[
-		Where they will be, by their own physics.
+		Stepping out along the flight time until the sign changes, then halving the step.
 
-		Airborne, they follow their jump or their fall and stop when they reach the floor
-		they are heading for. On foot they keep their height above the ground rather than
-		their height in the world, so somebody running down a slope or off a bridge is
-		predicted going down with it - and they fall no faster than gravity allows, so
-		running off a ledge is not predicted as dropping instantly.
+		The steps are packed towards zero, where the answer for a close target sits in a few
+		hundredths of a second, and spread out towards the horizon, where only lobs live.
 	]]
-	local function predictAt(flight)
-		local x = targetPos.X + driftX * flight
-		local z = targetPos.Z + driftZ * flight
-
-		local y
-		if airborne then
-			y = targetPos.Y + vy * flight - 0.5 * fall * flight * flight
-		else
-			y = targetPos.Y - 0.5 * fall * flight * flight
-		end
-
-		local floor = floorUnder(x, math.max(targetPos.Y, y) + 2, z)
-		if floor then
-			local resting = floor + standHeight
-			if y < resting then
-				y = resting
-			elseif not airborne and y > resting then
-				-- Following the ground upward: a walk up a slope or a stair.
-				y = resting
-			end
-		end
-
-		return Vector3.new(x, y, z)
+	local SCAN = 48
+	local function scanTime(i)
+		return horizon * (i / SCAN) ^ 1.6
 	end
 
-	--[[
-		Guess, aim, and let the answer correct the guess.
-
-		The first guess is the straight distance over the speed, which is always a little
-		short because an arc is longer than the line it spans. Solving gives a launch
-		velocity whose horizontal part, over the horizontal distance, is the flight time that
-		shot really takes; feeding that back moves the predicted point, and after a couple of
-		passes neither moves.
-	]]
-	local function solveArc(high)
-		if gravity <= 0 or projectileSpeed <= 0 then return nil end
-
-		local flight = (targetPos - origin).Magnitude / projectileSpeed
-		local velocity, point
-
-		--[[
-			The best pass is kept, not the last one.
-
-			The loop usually settles, but where the prediction is piecewise - somebody
-			landing during the flight, a floor stepping down under them - it can end up
-			oscillating between two answers and return whichever it happened to stop on.
-			Scoring each pass by how far the shot actually lands from where they are
-			predicted to be costs nothing and means the answer returned is the best one
-			seen rather than the most recent.
-		]]
-		local best, bestFlight, bestMiss
-
-		for _ = 1, 6 do
-			point = predictAt(flight)
-			velocity = ballisticAim(origin, projectileSpeed, gravity, point, high)
-			if not velocity then break end
-
-			local flat = Vector3.new(point.X - origin.X, 0, point.Z - origin.Z).Magnitude
-			local across = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
-			if across < 0.01 then break end
-
-			local settled = flat / across
-
-			-- Where this shot really is when it arrives, against where they really are.
-			local landing = origin + velocity * settled - Vector3.new(0, 0.5 * gravity * settled * settled, 0)
-			local miss = (landing - predictAt(settled)).Magnitude
-			if not bestMiss or miss < bestMiss then
-				best, bestFlight, bestMiss = velocity, settled, miss
+	local function crossing(fromIndex)
+		local lastTime = scanTime(fromIndex)
+		local wasReachable = excess(lastTime) < 0
+		for i = fromIndex + 1, SCAN do
+			local t = scanTime(i)
+			local reachable = excess(t) < 0
+			if reachable ~= wasReachable then
+				local low, high = lastTime, t
+				for _ = 1, 24 do
+					local mid = (low + high) * 0.5
+					if (excess(mid) < 0) == wasReachable then
+						low = mid
+					else
+						high = mid
+					end
+				end
+				return (low + high) * 0.5, i
 			end
-
-			local moved = math.abs(settled - flight)
-			flight = settled
-			if moved < 1e-3 then break end
+			lastTime, wasReachable = t, reachable
 		end
-
-		if not best then return nil end
-		if extra.lifetime and bestFlight > extra.lifetime then return nil end
-		return best, bestFlight
+		return nil
 	end
+
+	local flight, index = crossing(0)
+	if not flight then return nil end
+
+	local function launch(t)
+		return required(t).Unit * projectileSpeed
+	end
+
+	local shot = launch(flight)
 
 	--[[
 		Whether the shot can get there, walked along the arc.
@@ -466,61 +825,32 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 		unreachable when an arc clears it, and one under an overhang reachable when the arc
 		buries itself in the ceiling.
 	]]
-	local function arcClear(velocity, flight)
+	local function arcClear(launched, time)
 		local previous, steps = origin, 8
 		for i = 1, steps do
-			local at = flight * (i / steps)
-			local point = origin + velocity * at - Vector3.new(0, 0.5 * gravity * at * at, 0)
+			local at = time * (i / steps)
+			local point = origin + launched * at - Vector3.new(0, 0.5 * gravity * at * at, 0)
 			if workspace:Raycast(previous, point - previous, params) then return false end
 			previous = point
 		end
 		return true
 	end
 
-	if gravity > 0 then
-		local velocity, flight = solveArc(false)
-		if velocity then
-			-- Over it, when through it is not an option. Only when the flat shot is known
-			-- blocked and the lobbed one is known clear, so a shot that lands today still
-			-- lands.
-			if params then
-				local blocked = workspace:Raycast(origin, targetPos - origin, params)
-				if blocked and not arcClear(velocity, flight) then
-					local lobbed, lobbedFlight = solveArc(true)
-					if lobbed and arcClear(lobbed, lobbedFlight) then
-						return origin + lobbed, lobbed.Unit, lobbedFlight
-					end
+	-- Over it, when through it is not an option. Only when the flat shot is known blocked
+	-- and the lobbed one is known clear, so a shot that lands today still lands.
+	if gravity > 0 and params then
+		if workspace:Raycast(origin, targetPos - origin, params) and not arcClear(shot, flight) then
+			local lobbedFlight = crossing(index)
+			if lobbedFlight then
+				local lobbed = launch(lobbedFlight)
+				if arcClear(lobbed, lobbedFlight) then
+					shot, flight = lobbed, lobbedFlight
 				end
 			end
-
-			return origin + velocity, velocity.Unit, flight
 		end
-		return nil
 	end
 
-	--[[
-		Nothing that falls, so it is a straight line - but still a moving target.
-
-		The lead is iterated for the same reason the arc is: leading to where they are now
-		gives a flight time, which gives a better lead, which gives a better flight time.
-	]]
-	local flight = (targetPos - origin).Magnitude / projectileSpeed
-	local point
-	for _ = 1, 4 do
-		point = predictAt(flight)
-		local span = (point - origin).Magnitude
-		if span <= 0 then return nil end
-		local settled = span / projectileSpeed
-		local moved = math.abs(settled - flight)
-		flight = settled
-		if moved < 1e-3 then break end
-	end
-
-	if extra.lifetime and flight > extra.lifetime then return nil end
-
-	local direction = point - origin
-	if direction.Magnitude <= 0 then return nil end
-	return origin + direction.Unit * projectileSpeed, direction.Unit, flight
+	return origin + shot, shot.Unit, flight
 end
 
 return module

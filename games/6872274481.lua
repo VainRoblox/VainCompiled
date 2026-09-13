@@ -4850,6 +4850,28 @@ run(function()
 		end
 	end
 	
+	-- What a character can stand on: anything collidable that is not a character. The map
+	-- filter above is what the arrow itself collides with; a floor has to include placed
+	-- blocks and everything else people stand on, wherever the game keeps them.
+	local floorCheck = RaycastParams.new()
+	floorCheck.FilterType = Enum.RaycastFilterType.Exclude
+	floorCheck.RespectCanCollide = true
+	local floorRefreshed = 0
+	local function refreshFloorFilter()
+		if os.clock() - floorRefreshed < 0.5 then return end
+		floorRefreshed = os.clock()
+		local ignore = {gameCamera}
+		if lplr.Character then
+			table.insert(ignore, lplr.Character)
+		end
+		for _, ent in entitylib.List do
+			if ent.Character then
+				table.insert(ignore, ent.Character)
+			end
+		end
+		floorCheck.FilterDescendantsInstances = ignore
+	end
+	
 	local function mousePosition()
 		if inputService.TouchEnabled then
 			return gameCamera.ViewportSize / 2
@@ -5012,18 +5034,13 @@ run(function()
 		end
 	
 		refreshMapFilter()
+		refreshFloorFilter()
 	
 		local aimpos = target.Position
-		--[[
-			Measured, not asked for.
-	
-			A replicated character's velocity property arrives in steps: it reads zero between
-			updates and spikes on knockback, and one sample of it decided the whole lead. The
-			library differences positions over a short window instead, which is the speed they
-			are actually travelling at.
-		]]
-		local motion = projmeta.projectile == 'telepearl' and Vector3.zero
-			or prediction.smoothVelocity(target, target.Velocity)
+		-- A pearl is thrown to where they stand, not to where they are heading, so it gets
+		-- neither their motion nor their history.
+		local pearl = projmeta.projectile == 'telepearl'
+		local motion = pearl and Vector3.zero or target.AssemblyLinearVelocity
 	
 		--[[
 			No latency lead: the server already compensates for it.
@@ -5082,12 +5099,13 @@ run(function()
 		end
 	
 		--[[
-			Their own jump, rather than a number that was true once.
+			How hard they take off when they hop again.
 	
-			The jump speed was hardcoded, and kits, effects and the game's own tuning all change
-			it - and being wrong about it is wrong in the vertical, which is where a miss becomes
-			a shot sailing over somebody. Humanoids describe their jump either as a speed or as a
-			height, so both are read.
+			plr.Jumping means "jumped again without settling" and stays set for a whole chain of
+			hops, on the way down as much as on the way up. So it is passed as the speed of the
+			next hop after they land, never as their speed now - reading it as the second is what
+			aimed over the head of anybody coming down from one. Humanoids describe a jump either
+			as a speed or as a height, so both are read.
 		]]
 		local jumpSpeed
 		if plr.Jumping then
@@ -5103,8 +5121,10 @@ run(function()
 		end
 	
 		local hints = {
+			root = not pearl and plr.RootPart or nil,
 			rootPosition = plr.RootPart and plr.RootPart.Position or nil,
 			lifetime = lifetime,
+			floorParams = floorCheck,
 		}
 	
 		local aimDirection = (aimpos - offsetpos)
@@ -5179,6 +5199,23 @@ run(function()
 				ProjectileAimbot:Clean(function()
 					pcall(function() runService:UnbindFromRenderStep(bindName) end)
 				end)
+	
+				--[[
+					Recorded before the shot, not from it.
+	
+					Strafes, hops and knockback are read from what a target has been doing, and a
+					history that only starts when you draw has nothing in it when you let go.
+				]]
+				ProjectileAimbot:Clean(runService.Heartbeat:Connect(function()
+					if not entitylib.isAlive then return end
+					local here = entitylib.character.RootPart.Position
+					for _, ent in entitylib.List do
+						local root = ent.RootPart
+						if root and ent.Targetable and (root.Position - here).Magnitude <= Range.Value + 20 then
+							prediction.observe(root)
+						end
+					end
+				end))
 	
 				old = bedwars.ProjectileController.calculateImportantLaunchValues
 				--[[
@@ -5425,6 +5462,28 @@ run(function()
 		end
 	end
 	
+	-- What a character can stand on: anything collidable that is not a character. The map
+	-- filter above is what the arrow itself collides with; a floor has to include placed
+	-- blocks and everything else people stand on, wherever the game keeps them.
+	local floorCheck = RaycastParams.new()
+	floorCheck.FilterType = Enum.RaycastFilterType.Exclude
+	floorCheck.RespectCanCollide = true
+	local floorRefreshed = 0
+	local function refreshFloorFilter()
+		if os.clock() - floorRefreshed < 0.5 then return end
+		floorRefreshed = os.clock()
+		local ignore = {gameCamera}
+		if lplr.Character then
+			table.insert(ignore, lplr.Character)
+		end
+		for _, ent in entitylib.List do
+			if ent.Character then
+				table.insert(ignore, ent.Character)
+			end
+		end
+		floorCheck.FilterDescendantsInstances = ignore
+	end
+	
 	-- First person puts the camera inside your own head, so the gap between the camera and
 	-- the head is what separates the two views. Shiftlock still counts as third person here,
 	-- which matches what you see on screen.
@@ -5466,6 +5525,18 @@ run(function()
 		Function = function(callback)
 			if callback then
 				task.spawn(resolveProjectileRemote)
+				-- Strafes, hops and knockback are read from what a target has been doing, so
+				-- that is recorded every frame rather than only when a shot goes out.
+				ProjectileAura:Clean(runService.Heartbeat:Connect(function()
+					if not entitylib.isAlive then return end
+					local here = entitylib.character.RootPart.Position
+					for _, ent in entitylib.List do
+						local root = ent.RootPart
+						if root and ent.Targetable and (root.Position - here).Magnitude <= Range.Value + 20 then
+							prediction.observe(root)
+						end
+					end
+				end))
 				repeat
 					-- Guarded because this is a long-lived loop reaching into inventory and
 					-- projectile metadata that changes underneath it. An error used to kill the
@@ -5488,6 +5559,7 @@ run(function()
 									local item, ammo, projectile, itemMeta = unpack(data)
 									if (FireDelays[item.itemType] or 0) < tick() and item.tool then
 										refreshMapFilter()
+										refreshFloorFilter()
 										local meta = bedwars.ProjectileMeta[projectile]
 										local projSpeed = meta and meta.launchVelocity
 										if not projSpeed then continue end
@@ -5496,13 +5568,13 @@ run(function()
 										-- compensation, rewinding targets to where you saw them, so
 										-- leading a round trip on top pushed every shot ahead of its
 										-- target by ping times their speed.
-										-- Differenced over a short window rather than read off the
-										-- part, whose velocity reads zero between replication
-										-- updates and spikes on knockback.
-										local motion = prediction.smoothVelocity(ent.RootPart, ent.RootPart.Velocity)
+										-- Their velocity as it stands. Strafes, hops and knockback are
+										-- read from the history recorded above.
+										local motion = ent.RootPart.AssemblyLinearVelocity
 										local aimAt = ent.RootPart.Position
 	
-										-- Their own jump speed, however the humanoid describes it.
+										-- How hard they take off on their next hop. Jumping stays set
+										-- for a whole chain of hops, so this is never their speed now.
 										local jumpSpeed
 										if ent.Jumping then
 											local hum = ent.Humanoid
@@ -5517,8 +5589,10 @@ run(function()
 										end
 	
 										local calc = prediction.SolveTrajectory(pos, projSpeed, gravity, aimAt, motion, workspace.Gravity, ent.HipHeight, jumpSpeed, rayCheck, {
+											root = ent.RootPart,
 											rootPosition = ent.RootPart.Position,
 											lifetime = meta.lifetimeSec,
+											floorParams = floorCheck,
 										})
 										if calc then
 											targetinfo.Targets[ent] = tick() + 1
