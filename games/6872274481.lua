@@ -16804,12 +16804,29 @@ run(function()
 	                notif('Fisherman Spy', `{data.catchingPlayer.Name} has caught a <font color='#6FD3FF'>Shark</font>`, 8, 'info')
 	            end
 	
+	            --[[
+	                The amount, as close as the client can get it.
+	
+	                A drop lists a base amount, but the server pays out that base times a
+	                weight scale between its own low and high multipliers - so the flat base was
+	                always the top of the range and read high. The exact figure also turns on
+	                how many fish the catcher has landed this game, which their client never
+	                tells us, so the honest answer is the bounded range rather than one number.
+	            ]]
+	            local scaling = data.dropData.weightScaling
+	            local low = scaling and tonumber(scaling.lowScaleMultiplier) or 1
+	            local high = scaling and tonumber(scaling.highScaleMultiplier) or 1
+	            if low > high then low, high = high, low end
+	
 	            local text = {}
 	            for _, v in data.dropData.drops do
 	                local itemDisplay = displayName(v.itemType)
 	                if lootWanted(v.itemType, itemDisplay) then
-	                    -- The server rolls the real payout from this, so it is an estimate.
-	                    text[#text + 1] = `~{tonumber(v.amount) or 0} {itemDisplay}`
+	                    local base = tonumber(v.amount) or 0
+	                    local lo = math.max(0, math.floor(base * low + 0.5))
+	                    local hi = math.max(0, math.floor(base * high + 0.5))
+	                    local quantity = lo ~= hi and `{lo}-{hi}` or `~{hi}`
+	                    text[#text + 1] = `{quantity} {itemDisplay}`
 	                end
 	            end
 	            if #text == 0 then return end
