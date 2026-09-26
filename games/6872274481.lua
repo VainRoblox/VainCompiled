@@ -2286,13 +2286,48 @@ run(function()
 			or ent.RootPart
 	end
 	
+	-- The parts a body region can be, most specific first, so the same choice works on an
+	-- R15 rig, an R6 one and an oddly built NPC. The first that exists is used, the torso is
+	-- the fallback for anything shaped differently.
+	local BODY_PARTS = {
+		Chest = {'UpperTorso', 'Torso'},
+		Pelvis = {'LowerTorso', 'Torso'},
+		Feet = {'LeftFoot', 'RightFoot', 'LeftLowerLeg', 'RightLowerLeg', 'Left Leg', 'Right Leg'}
+	}
+	
+	local function firstPart(char, names)
+		for _, name in names do
+			local part = char:FindFirstChild(name)
+			if part and part:IsA('BasePart') then return part end
+		end
+	end
+	
+	-- Random aims wander between parts, but a fresh roll every frame is a jitter no hand
+	-- makes, so a target keeps its part for a short spell before the next roll.
+	local randomAim = setmetatable({}, {__mode = 'k'})
+	local randomAimAt = setmetatable({}, {__mode = 'k'})
+	local RANDOM_POOL = {'Head', 'Chest', 'Pelvis', 'Feet'}
+	
+	local function partFor(ent, value)
+		local root = torsoOf(ent)
+		if value == 'Head' then return ent.Head or root end
+		if value == 'RootPart' then return root end
+		local char = ent.Character
+		if char then
+			local names = BODY_PARTS[value]
+			if names then
+				return firstPart(char, names) or root
+			end
+		end
+		return root
+	end
+	
 	local function aimPart(ent)
-		local head, root = ent.Head, torsoOf(ent)
 		local value = AimPart.Value
-		if value == 'Head' then return head or root end
 		if value == 'Nearest' then
 			-- Whichever part is currently the smaller camera movement away, so the assist
 			-- takes the shortest correction rather than always dragging to one part.
+			local head, root = ent.Head, torsoOf(ent)
 			if not head then return root end
 			if not root then return head end
 			local ha, ra = angleTo(head.Position), angleTo(root.Position)
@@ -2300,7 +2335,15 @@ run(function()
 			if not ra then return head end
 			return ha <= ra and head or root
 		end
-		return root
+		if value == 'Random' then
+			local now = os.clock()
+			if not randomAim[ent] or now - (randomAimAt[ent] or 0) > 0.6 then
+				randomAim[ent] = RANDOM_POOL[math.random(#RANDOM_POOL)]
+				randomAimAt[ent] = now
+			end
+			value = randomAim[ent]
+		end
+		return partFor(ent, value)
 	end
 	
 	-- Where to point so a fired projectile actually lands on the target, rather than
@@ -2534,11 +2577,15 @@ run(function()
 	AimPart = AimAssist:CreateDropdown({
 		Name = 'Aim Part',
 		Tooltip = 'Which part of the target to aim at',
-		List = {'RootPart', 'Head', 'Nearest'},
+		List = {'RootPart', 'Head', 'Chest', 'Pelvis', 'Feet', 'Nearest', 'Random'},
 		Tooltips = {
 			RootPart = 'Aims at the middle of the body',
 			Head = 'Aims at the head',
-			Nearest = 'Aims at whichever of the two needs the smaller camera movement'
+			Chest = 'Aims at the upper torso',
+			Pelvis = 'Aims at the lower torso',
+			Feet = 'Aims at the feet',
+			Nearest = 'Aims at whichever of head or torso needs the smaller camera movement',
+			Random = 'Switches between body parts every so often'
 		}
 	})
 	AimMode = AimAssist:CreateDropdown({
