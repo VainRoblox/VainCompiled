@@ -623,8 +623,52 @@ local sortmethodtips = {
 	Health = 'Whoever has the lowest health',
 	Threat = 'Whoever is holding the strongest sword',
 	Kit = 'Whoever is playing the most dangerous kit',
-	['Final Kill'] = 'Players whose bed is already broken'
+	['Final Kill'] = 'Players whose bed is already broken',
+	['Effective HP'] = 'Whoever dies fastest once their armour is counted',
+	['Facing You'] = 'Whoever is aiming most directly at you',
+	Random = 'A random target, changed every so often'
 }
+
+-- Health after armour: the same health lasts longer behind more of it, so this is a
+-- rough stand-in for how long someone would take to kill - lowest first.
+local function effectiveHealth(ent)
+	return (ent.Health or 0) * (1 + getArmor(ent))
+end
+
+-- How squarely someone is facing you, flattened to the ground: 1 is dead-on, -1 is away.
+-- Whoever is pointed at you is the one about to swing, which is who a defensive aim wants.
+local function facingAmount(ent)
+	local root = ent.RootPart
+	if not (root and entitylib.isAlive and entitylib.character.RootPart) then return -1 end
+
+	local look = root.CFrame.LookVector * Vector3.new(1, 0, 1)
+	local toYou = (entitylib.character.RootPart.Position - root.Position) * Vector3.new(1, 0, 1)
+	if look.Magnitude < 1e-4 or toYou.Magnitude < 1e-4 then return -1 end
+	return look.Unit:Dot(toYou.Unit)
+end
+
+--[[
+	A weight per entity so Random can be a real ordering.
+
+	A comparator that rolls a fresh number each call is not a consistent order and the sort
+	throws on it, so each entity is given one weight and keeps it, and the whole set is
+	dropped every so often - which is what makes the pick wander rather than lock onto one.
+]]
+local randomWeights = setmetatable({}, {__mode = 'k'})
+local randomRolled = 0
+local function randomWeight(ent)
+	local now = os.clock()
+	if now - randomRolled > 1.5 then
+		table.clear(randomWeights)
+		randomRolled = now
+	end
+	local weight = randomWeights[ent]
+	if not weight then
+		weight = math.random()
+		randomWeights[ent] = weight
+	end
+	return weight
+end
 
 local sortmethods = {
 	Damage = function(a, b)
@@ -659,6 +703,15 @@ local sortmethods = {
 		local angle = math.acos(localfacing:Dot(((a.Entity.RootPart.Position - selfrootpos) * Vector3.new(1, 0, 1)).Unit))
 		local angle2 = math.acos(localfacing:Dot(((b.Entity.RootPart.Position - selfrootpos) * Vector3.new(1, 0, 1)).Unit))
 		return angle < angle2
+	end,
+	['Effective HP'] = function(a, b)
+		return effectiveHealth(a.Entity) < effectiveHealth(b.Entity)
+	end,
+	['Facing You'] = function(a, b)
+		return facingAmount(a.Entity) > facingAmount(b.Entity)
+	end,
+	Random = function(a, b)
+		return randomWeight(a.Entity) < randomWeight(b.Entity)
 	end
 }
 
