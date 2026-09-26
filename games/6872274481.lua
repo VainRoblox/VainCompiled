@@ -2384,15 +2384,19 @@ run(function()
 						local basespeed = (not issword) and ProjectileSpeed.Value or AimSpeed.Value
 						local speed = basespeed + (StrafeIncrease.Enabled and (inputService:IsKeyDown(Enum.KeyCode.A) or inputService:IsKeyDown(Enum.KeyCode.D)) and 10 or 0)
 						local alpha
-						if AimMode.Value == 'Voidware' then
-							--[[
-								Voidware's curve, kept as it is written there: a flat fraction
-								of the remaining angle each frame, taken as one over the slider
-								rather than scaled by frame time, with a small extra push while
-								strafing. That makes it frame rate dependent, which the other
-								modes are not - it is here because it is the feel that was
-								asked for, not because it is the sounder of the two.
-							]]
+						--[[
+							Voidware's curve is for melee only.
+	
+							It is one over the Aim Speed slider - higher is smoother, not faster -
+							which is the opposite of what Projectile Aim Speed means (higher is
+							faster, 60 snaps), so feeding the projectile slider through it made that
+							slider do nothing while a projectile was held. Projectiles fall through
+							to the speed-times-frame path below in every mode, so their slider
+							behaves the same way whichever curve is picked for melee.
+						]]
+						if AimMode.Value == 'Voidware' and issword then
+							-- Voidware's flat fraction each frame, with a small extra push while
+							-- strafing. Frame rate dependent, kept as it is written there.
 							alpha = 1 / math.max(AimSpeed.Value, 1)
 							if StrafeIncrease.Enabled and (inputService:IsKeyDown(Enum.KeyCode.A) or inputService:IsKeyDown(Enum.KeyCode.D)) then
 								alpha = alpha + 0.01
