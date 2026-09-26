@@ -15871,6 +15871,7 @@ run(function()
 	    local BlacklistOption, Blacklist
 	    local AutoCast, AutoCastDelay
 	    local SpyToggle, Teammates, GoldNotify, LootWhitelist
+	    local FishGroupESP
 	
 	    local hookOld, animOld, spyConn
 	
@@ -15880,6 +15881,7 @@ run(function()
 	        fish_gold    = 'Gold Fish',
 	        fish_special = 'Special Fish',
 	        fish_emerald = 'Emerald Fish',
+	        shark        = 'Shark',
 	    }
 	
 	    local function on(setting)
@@ -15889,6 +15891,18 @@ run(function()
 	    local function displayName(itemType)
 	        local meta = bedwars.ItemMeta[itemType]
 	        return meta and meta.displayName or itemType
+	    end
+	
+	    --[[
+	        Every rod, not one name.
+	
+	        The kit used to hand out a single 'fishing_rod'. It now starts on fishing_rod_1
+	        and upgrades through _2 and _3, and ice fishing hands out its own - so the exact
+	        name this matched on stopped matching the day the rework landed, and casting
+	        never fired again.
+	    ]]
+	    local function isFishingRod(name)
+	        return type(name) == 'string' and name:find('fishing_rod', 1, true) ~= nil
 	    end
 	
 	    local function getBait()
@@ -16308,7 +16322,7 @@ run(function()
 	            if type(original) ~= 'function' then return end
 	
 	            local held = store.hand and store.hand.tool
-	            local wanted = castTarget and held and held.Name == 'fishing_rod' and castTarget
+	            local wanted = castTarget and held and isFishingRod(held.Name) and castTarget
 	
 	            if wanted and type(handler) == 'table' then
 	                handler.targetPoint = wanted
@@ -16367,7 +16381,7 @@ run(function()
 	            repeat
 	                local camera = workspace.CurrentCamera
 	                if camera and entitylib.isAlive and on(AutoCast)
-	                    and store.hand.tool and store.hand.tool.Name == 'fishing_rod'
+	                    and store.hand.tool and isFishingRod(store.hand.tool.Name)
 	                    and not getBait() then
 	
 	                    if findVoid() then
@@ -16397,6 +16411,115 @@ run(function()
 	            until not Fisherman.Enabled
 	            castLoop = false
 	        end)
+	    end
+	
+	    -- ── fish groups ───────────────────────────────────────────────────────
+	    --[[
+	        Where the fish are.
+	
+	        The rework spawns shoals around the map and tells the client where each one is
+	        and which of four tiers it belongs to. The game draws a pond for it, which is
+	        easy to miss from any distance and says nothing about how good it is, so each
+	        gets a marker naming its tier - the purple and orange ones are the ones worth
+	        walking to.
+	    ]]
+	    local FISH_TIERS = {
+	        [0] = {name = 'Green', color = Color3.fromRGB(120, 220, 120)},
+	        [1] = {name = 'Blue', color = Color3.fromRGB(110, 180, 255)},
+	        [2] = {name = 'Purple', color = Color3.fromRGB(200, 130, 255)},
+	        [3] = {name = 'Orange', color = Color3.fromRGB(255, 170, 90)}
+	    }
+	    local groupMarkers, groupConns = {}, {}
+	
+	    local function groupKey(position)
+	        return `{math.round(position.X)},{math.round(position.Y)},{math.round(position.Z)}`
+	    end
+	
+	    local function clearFishGroups()
+	        for key, marker in groupMarkers do
+	            marker:Destroy()
+	            groupMarkers[key] = nil
+	        end
+	    end
+	
+	    local function addFishGroup(position, tier)
+	        if typeof(position) ~= 'Vector3' then return end
+	
+	        local key = groupKey(position)
+	        if groupMarkers[key] then return end
+	
+	        local info = FISH_TIERS[tier] or FISH_TIERS[0]
+	        -- Parented to Terrain rather than the ScreenGui, because a billboard needs
+	        -- something in the world to hang off and there is no pond part of ours to use.
+	        local anchor = Instance.new('Part')
+	        anchor.Anchored = true
+	        anchor.CanCollide = false
+	        anchor.CanQuery = false
+	        anchor.CanTouch = false
+	        anchor.Transparency = 1
+	        anchor.Size = Vector3.one
+	        anchor.Position = position
+	        anchor.Parent = workspace.Terrain
+	
+	        local billboard = Instance.new('BillboardGui')
+	        billboard.Adornee = anchor
+	        billboard.Size = UDim2.fromOffset(120, 20)
+	        billboard.StudsOffsetWorldSpace = Vector3.new(0, 5, 0)
+	        billboard.AlwaysOnTop = true
+	        billboard.Parent = anchor
+	
+	        local label = Instance.new('TextLabel')
+	        label.Size = UDim2.fromScale(1, 1)
+	        label.BackgroundTransparency = 1
+	        label.Font = Enum.Font.GothamBold
+	        label.TextSize = 13
+	        label.TextStrokeTransparency = 0.5
+	        label.TextColor3 = info.color
+	        label.Text = info.name .. ' shoal'
+	        label.Parent = billboard
+	
+	        groupMarkers[key] = anchor
+	    end
+	
+	    local function cleanupFishGroups()
+	        for _, conn in groupConns do
+	            pcall(function() conn:Disconnect() end)
+	        end
+	        table.clear(groupConns)
+	        clearFishGroups()
+	    end
+	
+	    local function setupFishGroups()
+	        if #groupConns > 0 or not on(FishGroupESP) then return end
+	
+	        -- Both remotes are new with the rework, so an older client simply has no shoals
+	        -- to mark rather than an error.
+	        local ok, spawned = pcall(function()
+	            return bedwars.Client:Get('FishGroupSpawn')
+	        end)
+	        local despawned
+	        ok, despawned = pcall(function()
+	            return bedwars.Client:Get('FishGroupDespawn')
+	        end)
+	        if not (spawned and despawned) then return end
+	
+	        table.insert(groupConns, spawned:Connect(function(data)
+	            if on(FishGroupESP) and data then
+	                addFishGroup(data.position, data.tier)
+	            end
+	        end))
+	        table.insert(groupConns, despawned:Connect(function(data)
+	            if not (data and typeof(data.position) == 'Vector3') then return end
+	            local key = groupKey(data.position)
+	            local marker = groupMarkers[key]
+	            if marker then
+	                marker:Destroy()
+	                groupMarkers[key] = nil
+	            end
+	        end))
+	        for _, conn in groupConns do
+	            Fisherman:Clean(conn)
+	        end
 	    end
 	
 	    -- ── watching everyone else ────────────────────────────────────────────
@@ -16480,11 +16603,13 @@ run(function()
 	                setupAim()
 	                setupAutoCast()
 	                setupSpy()
+	                setupFishGroups()
 	            else
 	                removeHook()
 	                cleanupAim()
 	                restoreCatchSpeed()
 	                cleanupAnimationControl()
+	                cleanupFishGroups()
 	                spyConn = nil
 	            end
 	        end
@@ -16593,6 +16718,18 @@ run(function()
 	        Visible = false,
 	        Darker = true,
 	        Tooltip = 'How long to wait before each cast'
+	    })
+	    FishGroupESP = Fisherman:CreateToggle({
+	        Name = 'Fish Group ESP',
+	        Default = false,
+	        Tooltip = 'Marks each shoal the rework spawns, named by tier',
+	        Function = function(cv)
+	            if not cv then
+	                cleanupFishGroups()
+	            elseif Fisherman.Enabled then
+	                setupFishGroups()
+	            end
+	        end
 	    })
 	    SpyToggle = Fisherman:CreateToggle({
 	        Name = 'Spy',
@@ -19352,6 +19489,323 @@ run(function()
 	        if ESPColor and ESPColor.Object then ESPColor.Object.Visible = false end
 	    end)
 	end)
+	
+	kitRun(function()
+	    --[[
+	        Trapper, as the rework left it.
+	
+	        The kit throws three traps - snap, venom and explosive - switching between them
+	        with one ability and detonating every armed explosive with another. Every thrown
+	        trap is tagged 'trapper_trap' and carries who placed it, which team they are on
+	        and when it arms, so all of this is read off the trap itself rather than guessed.
+	
+	        The ESP is deliberately not limited to playing the kit: a snap trap you walk into
+	        is worth seeing whoever you are.
+	    ]]
+	    local Trapper
+	    local TrapESP, OwnTraps
+	    local WarnToggle, WarnRange
+	    local AutoDetonate, DetonateRange, DetonateTargets
+	    local PreferredTrap
+	    local Reference, espConns, warnedAt = {}, {}, {}
+	    local Folder = Instance.new('Folder')
+	    Folder.Parent = vain.gui
+	
+	    -- Everything the kit throws carries the first tag. The other two are placed by other
+	    -- kits and are worth seeing for exactly the same reason.
+	    local TAGS = {'trapper_trap', 'GlueTrap', 'tesla-trap'}
+	    local KINDS = {
+	        snap = 'Snap Trap',
+	        venom = 'Venom Trap',
+	        explosive = 'Explosive Trap',
+	        glue = 'Glue Trap',
+	        tesla = 'Tesla Trap'
+	    }
+	    local WANTED = {
+	        ['Snap'] = 'snap_trap',
+	        ['Venom'] = 'venom_trap',
+	        ['Explosive'] = 'explosive_trap'
+	    }
+	    local OWN_COLOR = Color3.fromRGB(120, 220, 140)
+	    local ENEMY_COLOR = Color3.fromRGB(255, 95, 95)
+	
+	    local function on(setting)
+	        return setting ~= nil and setting.Enabled
+	    end
+	
+	    -- A trap carries no item type of its own, so the model's name is what says which one
+	    -- it is. Anything unrecognised is still shown, as a trap.
+	    local function trapKind(trap)
+	        local name = trap.Name:lower()
+	        for key in KINDS do
+	            if name:find(key, 1, true) then return key end
+	        end
+	        return nil
+	    end
+	
+	    local function trapPart(trap)
+	        if trap:IsA('BasePart') then return trap end
+	        return trap:FindFirstChildWhichIsA('BasePart', true)
+	    end
+	
+	    local function isMine(trap)
+	        return trap:GetAttribute('PlacedByUserId') == lplr.UserId
+	    end
+	
+	    -- Their team id and yours are written by different parts of the game, so they are
+	    -- compared as text; anything that does not match is treated as an enemy's, which is
+	    -- the safe way round for something you are trying not to stand on.
+	    local function isFriendly(trap)
+	        if isMine(trap) then return true end
+	        local team = trap:GetAttribute('TrapperTeamId')
+	        return team ~= nil and tostring(team) == tostring(lplr:GetAttribute('Team'))
+	    end
+	
+	    -- Thrown traps only catch anyone once they arm, and the trap says when that is.
+	    local function isArmed(trap)
+	        local armAt = trap:GetAttribute('TrapperArmAt')
+	        return armAt == nil or workspace:GetServerTimeNow() >= armAt
+	    end
+	
+	    local function espRemove(trap)
+	        local billboard = Reference[trap]
+	        if billboard then
+	            billboard:Destroy()
+	            Reference[trap] = nil
+	        end
+	    end
+	
+	    local function espAdd(trap)
+	        if Reference[trap] or not on(TrapESP) then return end
+	
+	        local mine = isMine(trap)
+	        if mine and not on(OwnTraps) then return end
+	
+	        local adornee = trapPart(trap)
+	        if not adornee then return end
+	
+	        local kind = trapKind(trap)
+	        local billboard = Instance.new('BillboardGui')
+	        billboard.Name = 'TrapESP'
+	        billboard.Adornee = adornee
+	        billboard.Size = UDim2.fromOffset(120, 20)
+	        billboard.StudsOffsetWorldSpace = Vector3.new(0, 2.5, 0)
+	        billboard.AlwaysOnTop = true
+	        billboard.Parent = Folder
+	
+	        local label = Instance.new('TextLabel')
+	        label.Size = UDim2.fromScale(1, 1)
+	        label.BackgroundTransparency = 1
+	        label.Font = Enum.Font.GothamBold
+	        label.TextSize = 13
+	        label.TextStrokeTransparency = 0.5
+	        label.TextColor3 = isFriendly(trap) and OWN_COLOR or ENEMY_COLOR
+	        label.Text = KINDS[kind] or 'Trap'
+	        label.Parent = billboard
+	
+	        Reference[trap] = billboard
+	    end
+	
+	    local function clearESP()
+	        for trap in Reference do
+	            espRemove(trap)
+	        end
+	        for _, conn in espConns do
+	            pcall(function() conn:Disconnect() end)
+	        end
+	        table.clear(espConns)
+	    end
+	
+	    local function setupESP()
+	        if #espConns > 0 then return end
+	
+	        for _, tag in TAGS do
+	            table.insert(espConns, collectionService:GetInstanceAddedSignal(tag):Connect(espAdd))
+	            table.insert(espConns, collectionService:GetInstanceRemovedSignal(tag):Connect(espRemove))
+	            for _, trap in collectionService:GetTagged(tag) do
+	                espAdd(trap)
+	            end
+	        end
+	        for _, conn in espConns do
+	            Trapper:Clean(conn)
+	        end
+	    end
+	
+	    local function eachTrap(handler)
+	        for _, tag in TAGS do
+	            for _, trap in collectionService:GetTagged(tag) do
+	                handler(trap)
+	            end
+	        end
+	    end
+	
+	    -- Someone else's armed trap within reach of you, said once rather than every frame.
+	    local function warnNearby()
+	        if not (on(WarnToggle) and entitylib.isAlive) then return end
+	
+	        local here = entitylib.character.RootPart.Position
+	        eachTrap(function(trap)
+	            if isFriendly(trap) then return end
+	
+	            local part = trapPart(trap)
+	            if not part or (part.Position - here).Magnitude > WarnRange.Value then return end
+	            if tick() - (warnedAt[trap] or 0) < 8 then return end
+	
+	            warnedAt[trap] = tick()
+	            notif('Trapper', (KINDS[trapKind(trap)] or 'Trap') .. ' next to you', 4, 'warning')
+	        end)
+	    end
+	
+	    -- One press blows every armed explosive you have out, so it is worth spending on the
+	    -- first one with somebody standing on it rather than on the first one at all.
+	    local function detonateReady()
+	        if not (on(AutoDetonate) and store.equippedKit == 'trapper') then return false end
+	        if not bedwars.AbilityController:canUseAbility('trapper_detonate') then return false end
+	
+	        local found = false
+	        eachTrap(function(trap)
+	            if found or not isMine(trap) or trapKind(trap) ~= 'explosive' or not isArmed(trap) then return end
+	
+	            local part = trapPart(trap)
+	            if not part then return end
+	
+	            for _, ent in entitylib.List do
+	                local root = ent.RootPart
+	                if root and ent.Targetable
+	                    and (ent.Player and DetonateTargets.Players.Enabled or (not ent.Player) and DetonateTargets.NPCs.Enabled)
+	                    and (root.Position - part.Position).Magnitude <= DetonateRange.Value
+	                then
+	                    found = true
+	                    break
+	                end
+	            end
+	        end)
+	        return found
+	    end
+	
+	    -- The kit cycles through its traps one press at a time, so this presses until the one
+	    -- you asked for is the one selected, and leaves it alone once it is.
+	    local function keepSelected()
+	        local wanted = WANTED[PreferredTrap.Value]
+	        if not (wanted and store.equippedKit == 'trapper') then return end
+	        if lplr:GetAttribute('TrapperSelectedTrap') == wanted then return end
+	        if not bedwars.AbilityController:canUseAbility('trapper_switch') then return end
+	
+	        bedwars.AbilityController:useAbility('trapper_switch')
+	    end
+	
+	    Trapper = vain.Categories.Kit:CreateModule({
+	        Name = 'Trapper',
+	        Tooltip = 'Shows traps on the map and works the Trapper kit',
+	        Function = function(callback)
+	            if callback then
+	                setupESP()
+	                repeat
+	                    -- Guarded because it reads traps the game is adding and removing
+	                    -- underneath it; one bad frame should not switch the module off.
+	                    pcall(function()
+	                        warnNearby()
+	                        if detonateReady() then
+	                            bedwars.AbilityController:useAbility('trapper_detonate')
+	                        end
+	                        keepSelected()
+	                    end)
+	                    task.wait(0.2)
+	                until not Trapper.Enabled
+	                clearESP()
+	                table.clear(warnedAt)
+	            else
+	                clearESP()
+	                table.clear(warnedAt)
+	            end
+	        end
+	    })
+	    TrapESP = Trapper:CreateToggle({
+	        Name = 'Trap ESP',
+	        Default = true,
+	        Tooltip = 'Names every trap on the map, red when it is not your own',
+	        Function = function(callback)
+	            if OwnTraps and OwnTraps.Object then OwnTraps.Object.Visible = callback end
+	            if not callback then
+	                for trap in Reference do
+	                    espRemove(trap)
+	                end
+	            elseif Trapper.Enabled then
+	                setupESP()
+	                for _, tag in TAGS do
+	                    for _, trap in collectionService:GetTagged(tag) do
+	                        espAdd(trap)
+	                    end
+	                end
+	            end
+	        end
+	    })
+	    OwnTraps = Trapper:CreateToggle({
+	        Name = 'Show Own',
+	        Default = true,
+	        Darker = true,
+	        Tooltip = 'Also shows the traps you and your team placed'
+	    })
+	    WarnToggle = Trapper:CreateToggle({
+	        Name = 'Warn',
+	        Tooltip = 'Says when you walk up to an enemy trap',
+	        Function = function(callback)
+	            if WarnRange and WarnRange.Object then WarnRange.Object.Visible = callback end
+	        end
+	    })
+	    WarnRange = Trapper:CreateSlider({
+	        Name = 'Warn Range',
+	        Tooltip = 'How close a trap has to be to be called out',
+	        Min = 5,
+	        Max = 60,
+	        Default = 20,
+	        Visible = false,
+	        Darker = true,
+	        Suffix = function(val)
+	            return val == 1 and 'stud' or 'studs'
+	        end
+	    })
+	    AutoDetonate = Trapper:CreateToggle({
+	        Name = 'Auto Detonate',
+	        Tooltip = 'Sets off your explosive traps when somebody stands on one',
+	        Function = function(callback)
+	            for _, setting in {DetonateRange, DetonateTargets} do
+	                if setting and setting.Object then setting.Object.Visible = callback end
+	            end
+	        end
+	    })
+	    DetonateRange = Trapper:CreateSlider({
+	        Name = 'Detonate Range',
+	        Tooltip = 'How close an enemy has to be to the trap',
+	        Min = 1,
+	        Max = 30,
+	        Default = 8,
+	        Visible = false,
+	        Darker = true,
+	        Suffix = function(val)
+	            return val == 1 and 'stud' or 'studs'
+	        end
+	    })
+	    DetonateTargets = Trapper:CreateTargets({
+	        Players = true,
+	        NPCs = false,
+	        Visible = false,
+	        Tooltip = 'Who is worth setting a trap off for'
+	    })
+	    PreferredTrap = Trapper:CreateDropdown({
+	        Name = 'Hold Trap',
+	        Tooltip = 'Keeps this trap selected',
+	        List = {'Off', 'Snap', 'Venom', 'Explosive'},
+	        Default = 'Off',
+	        Tooltips = {
+	            Off = 'Leaves whichever trap you picked',
+	            Snap = 'Roots whoever steps on it',
+	            Venom = 'Poisons whoever steps on it',
+	            Explosive = 'Detonated by you, and breaks blocks'
+	        }
+	    })
+	end)
+	
 end)
 
 run(function()
