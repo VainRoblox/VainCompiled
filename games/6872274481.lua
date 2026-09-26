@@ -16786,53 +16786,154 @@ run(function()
 	        return false
 	    end
 	
+	    --[[
+	        A count of everything a player is holding, by item type.
+	
+	        Resources are ordinary inventory items with an amount, the same the game sums for a
+	        shop purchase, so a catch shows up here as those amounts going up - which is how the
+	        exact reward is read rather than guessed from the drop table.
+	    ]]
+	    local function countsOf(plr)
+	        local counts = {}
+	        local ok, inv = pcall(function() return bedwars.getInventory(plr) end)
+	        if ok and inv and inv.items then
+	            for _, item in inv.items do
+	                counts[item.itemType] = (counts[item.itemType] or 0) + (tonumber(item.amount) or 0)
+	            end
+	        end
+	        return counts
+	    end
+	
+	    --[[
+	        A snapshot per fishing player, kept fresh until the catch.
+	
+	        The reward is the inventory going up, so what it was just before is needed to read
+	        it. A caster is picked up from their bobber - it carries the shooter's id - and their
+	        counts are re-read while it is out, so the snapshot is at most a moment old when the
+	        catch lands and a generator ticking in the meantime does not creep into the total.
+	    ]]
+	    local fishingSnaps = {}
+	
+	    local function watchBobber(part)
+	        if part.Name ~= 'fisherman_bobber' then return end
+	        task.spawn(function()
+	            local shooter
+	            for _ = 1, 40 do
+	                shooter = part:GetAttribute('ProjectileShooter')
+	                if shooter or not part.Parent then break end
+	                task.wait(0.05)
+	            end
+	            if not shooter then return end
+	            local plr = playersService:GetPlayerByUserId(shooter)
+	            if not plr or plr == lplr then return end
+	
+	            fishingSnaps[shooter] = {plr = plr, counts = countsOf(plr)}
+	            while part.Parent and fishingSnaps[shooter] and not fishingSnaps[shooter].frozen do
+	                task.wait(0.2)
+	                local snap = fishingSnaps[shooter]
+	                if snap and not snap.frozen then
+	                    snap.counts = countsOf(plr)
+	                end
+	            end
+	        end)
+	    end
+	
+	    -- What the catcher actually gained, by diffing their inventory once the credit lands.
+	    -- Returns nil when there is no before-snapshot to compare against.
+	    local function exactGains(plr, before)
+	        if not before then return nil end
+	
+	        local deadline = os.clock() + 1.5
+	        while os.clock() < deadline do
+	            task.wait(0.05)
+	            local gained, total = {}, 0
+	            for itemType, amount in countsOf(plr) do
+	                local delta = amount - (before[itemType] or 0)
+	                if delta > 0 then gained[itemType] = delta; total += delta end
+	            end
+	            if total > 0 then
+	                -- Let the rest of a multi-item credit settle, then take the final diff.
+	                task.wait(0.2)
+	                local settled, settledTotal = {}, 0
+	                for itemType, amount in countsOf(plr) do
+	                    local delta = amount - (before[itemType] or 0)
+	                    if delta > 0 then settled[itemType] = delta; settledTotal += delta end
+	                end
+	                return settledTotal >= total and settled or gained
+	            end
+	        end
+	        return nil
+	    end
+	
 	    local function setupSpy()
+	        -- Casters are tracked from their bobbers so a before-snapshot exists by catch time.
+	        Fisherman:Clean(workspace.ChildAdded:Connect(watchBobber))
+	        for _, part in workspace:GetChildren() do
+	            watchBobber(part)
+	        end
+	
 	        connectEvent('FishCaught', function(data)
 	            if not on(SpyToggle) then return end
 	            if not (data.dropData and data.dropData.drops and data.catchingPlayer) then return end
-	            if on(Teammates) and sameTeam(data.catchingPlayer) then return end
+	            local plr = data.catchingPlayer
+	            if on(Teammates) and sameTeam(plr) then return end
+	
+	            -- Frozen and read first thing, so the credit that comes with this event does not
+	            -- land in the before-snapshot.
+	            local snap = fishingSnaps[plr.UserId]
+	            local before = snap and snap.counts
+	            if snap then snap.frozen = true end
 	
 	            -- A gold fish is the one worth interrupting for, so it gets said whether or
 	            -- not its loot survived the whitelist.
 	            if on(GoldNotify) and data.dropData.fishModel == 'fish_gold' then
-	                notif('Fisherman Spy', `{data.catchingPlayer.Name} has caught a <font color='#FFD75A'>Gold</font> fish`, 8, 'info')
+	                notif('Fisherman Spy', `{plr.Name} has caught a <font color='#FFD75A'>Gold</font> fish`, 8, 'info')
 	            end
-	
-	            -- The rework put sharks in the water, and they are the catch worth knowing
-	            -- about for the same reason gold is.
+	            -- The rework put sharks in the water, worth knowing for the same reason.
 	            if on(SharkNotify) and data.dropData.fishModel == 'shark' then
-	                notif('Fisherman Spy', `{data.catchingPlayer.Name} has caught a <font color='#6FD3FF'>Shark</font>`, 8, 'info')
+	                notif('Fisherman Spy', `{plr.Name} has caught a <font color='#6FD3FF'>Shark</font>`, 8, 'info')
 	            end
 	
-	            --[[
-	                The amount, as close as the client can get it.
+	            task.spawn(function()
+	                local gained = exactGains(plr, before)
+	                fishingSnaps[plr.UserId] = nil
 	
-	                A drop lists a base amount, but the server pays out that base times a
-	                weight scale between its own low and high multipliers - so the flat base was
-	                always the top of the range and read high. The exact figure also turns on
-	                how many fish the catcher has landed this game, which their client never
-	                tells us, so the honest answer is the bounded range rather than one number.
-	            ]]
-	            local scaling = data.dropData.weightScaling
-	            local low = scaling and tonumber(scaling.lowScaleMultiplier) or 1
-	            local high = scaling and tonumber(scaling.highScaleMultiplier) or 1
-	            if low > high then low, high = high, low end
-	
-	            local text = {}
-	            for _, v in data.dropData.drops do
-	                local itemDisplay = displayName(v.itemType)
-	                if lootWanted(v.itemType, itemDisplay) then
-	                    local base = tonumber(v.amount) or 0
-	                    local lo = math.max(0, math.floor(base * low + 0.5))
-	                    local hi = math.max(0, math.floor(base * high + 0.5))
-	                    local quantity = lo ~= hi and `{lo}-{hi}` or `~{hi}`
-	                    text[#text + 1] = `{quantity} {itemDisplay}`
+	                local text = {}
+	                if gained then
+	                    -- The exact reward, read from their inventory going up.
+	                    for itemType, amount in gained do
+	                        local itemDisplay = displayName(itemType)
+	                        if lootWanted(itemType, itemDisplay) then
+	                            text[#text + 1] = `{amount} {itemDisplay}`
+	                        end
+	                    end
+	                else
+	                    --[[
+	                        No snapshot to diff - they were already fishing when Spy came on, or
+	                        their inventory could not be read - so it falls back to the drop
+	                        table's range. The base is the top of what the drop pays; the server
+	                        scales it down by the drop's own multipliers, so the range is honest
+	                        where the exact figure is not available.
+	                    ]]
+	                    local scaling = data.dropData.weightScaling
+	                    local low = scaling and tonumber(scaling.lowScaleMultiplier) or 1
+	                    local high = scaling and tonumber(scaling.highScaleMultiplier) or 1
+	                    if low > high then low, high = high, low end
+	                    for _, v in data.dropData.drops do
+	                        local itemDisplay = displayName(v.itemType)
+	                        if lootWanted(v.itemType, itemDisplay) then
+	                            local base = tonumber(v.amount) or 0
+	                            local lo = math.max(0, math.floor(base * low + 0.5))
+	                            local hi = math.max(0, math.floor(base * high + 0.5))
+	                            text[#text + 1] = lo ~= hi and `{lo}-{hi} {itemDisplay}` or `~{hi} {itemDisplay}`
+	                        end
+	                    end
 	                end
-	            end
-	            if #text == 0 then return end
+	                if #text == 0 then return end
 	
-	            local fish = fishNames[data.dropData.fishModel] or data.dropData.fishModel
-	            notif('Fisherman Spy', `{data.catchingPlayer.Name} caught a {fish}: {table.concat(text, ', ')}`, 8, 'info')
+	                local fish = fishNames[data.dropData.fishModel] or data.dropData.fishModel
+	                notif('Fisherman Spy', `{plr.Name} caught a {fish}: {table.concat(text, ', ')}`, 8, 'info')
+	            end)
 	        end)
 	    end
 	
