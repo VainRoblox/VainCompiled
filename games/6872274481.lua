@@ -311,6 +311,41 @@ local function findUpvalue(func, value)
 	return nil
 end
 
+--[[
+	An upvalue that may not be where it was.
+
+	debug.getupvalue throws outright when the slot is not there, and the table below is
+	built in one expression - so one upvalue moving in a game update, as the bow constants
+	did, stopped the whole file loading rather than losing one entry. These two ask for a
+	slot without that risk, and find one by what it looks like when even the slot is not to
+	be trusted.
+]]
+local function upvalue(func, index)
+	if type(func) ~= 'function' then return nil end
+	local suc, up = pcall(debug.getupvalue, func, index)
+	return suc and up or nil
+end
+
+local function findUpvalueLike(func, matches)
+	if type(func) ~= 'function' then return nil end
+	for i = 1, 40 do
+		local suc, up = pcall(debug.getupvalue, func, i)
+		if not suc then break end
+		if up ~= nil and matches(up) then return up end
+	end
+	return nil
+end
+
+-- Where a fired projectile is spawned, relative to the launch point. Only the game knows
+-- the real numbers; these are what it shipped with, so an aim is off by a stud rather
+-- than nil if it is ever nowhere to be found.
+local function bowConstants(func)
+	local found = findUpvalueLike(func, function(up)
+		return type(up) == 'table' and type(up.RelX) == 'number' and type(up.RelY) == 'number' and type(up.RelZ) == 'number'
+	end)
+	return found or {RelX = 0.8, RelY = -0.5, RelZ = -1.5}
+end
+
 -- Same idea for constants.
 local function findConstant(func, value)
 	if type(func) ~= 'function' then return nil end
@@ -940,7 +975,7 @@ run(function()
 		BlockController = require(replicatedStorage['rbxts_include']['node_modules']['@easy-games']['block-engine'].out).BlockEngine,
 		BlockEngine = require(lplr.PlayerScripts.TS.lib['block-engine']['client-block-engine']).ClientBlockEngine,
 		BlockPlacer = require(replicatedStorage['rbxts_include']['node_modules']['@easy-games']['block-engine'].out.client.placement['block-placer']).BlockPlacer,
-		BowConstantsTable = debug.getupvalue(Knit.Controllers.ProjectileController.enableBeam, 8),
+		BowConstantsTable = bowConstants(Knit.Controllers.ProjectileController.enableBeam),
 		ClickHold = require(replicatedStorage['rbxts_include']['node_modules']['@easy-games']['game-core'].out.client.ui.lib.util['click-hold']).ClickHold,
 		Client = Client,
 		ClientConstructor = require(replicatedStorage['rbxts_include']['node_modules']['@rbxts'].net.out.client),
@@ -1052,7 +1087,7 @@ run(function()
 		DragonFly = Knit.Controllers.VoidDragonController.flapWings,
 		DropItem = Knit.Controllers.ItemDropController.dropItemInHand,
 		EquipItem = debug.getproto(require(replicatedStorage.TS.entity.entities['inventory-entity']).InventoryEntity.equipItem, 4),
-		FireProjectile = debug.getupvalue(Knit.Controllers.ProjectileController.launchProjectileWithValues, 2),
+		FireProjectile = upvalue(Knit.Controllers.ProjectileController.launchProjectileWithValues, 2),
 		GroundHit = Knit.Controllers.FallDamageController.KnitStart,
 		GuitarHeal = Knit.Controllers.GuitarController.performHeal,
 		HannahKill = debug.getproto(Knit.Controllers.HannahController.registerExecuteInteractions, 1),
