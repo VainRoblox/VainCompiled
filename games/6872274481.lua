@@ -15870,10 +15870,10 @@ run(function()
 	    local PullAnimationToggle, MinigameAnimationToggle, LegitToggle
 	    local BlacklistOption, Blacklist
 	    local AutoCast, AutoCastDelay
-	    local SpyToggle, Teammates, GoldNotify, LootWhitelist
+	    local SpyToggle, Teammates, GoldNotify, SharkNotify, LootWhitelist
 	    local FishGroupESP
 	
-	    local hookOld, animOld, spyConn
+	    local hookOld, animOld
 	
 	    local fishNames = {
 	        fish_iron    = 'Iron Fish',
@@ -16417,56 +16417,115 @@ run(function()
 	    --[[
 	        Where the fish are.
 	
-	        The rework spawns shoals around the map and tells the client where each one is
-	        and which of four tiers it belongs to. The game draws a pond for it, which is
-	        easy to miss from any distance and says nothing about how good it is, so each
-	        gets a marker naming its tier - the purple and orange ones are the ones worth
-	        walking to.
-	    ]]
-	    local FISH_TIERS = {
-	        [0] = {name = 'Green', color = Color3.fromRGB(120, 220, 120)},
-	        [1] = {name = 'Blue', color = Color3.fromRGB(110, 180, 255)},
-	        [2] = {name = 'Purple', color = Color3.fromRGB(200, 130, 255)},
-	        [3] = {name = 'Orange', color = Color3.fromRGB(255, 170, 90)}
-	    }
-	    local groupMarkers, groupConns = {}, {}
+	        The rework spawns shoals around the map, each one of four tiers, and drops a pond
+	        model at every one. Those models are what this looks for. The spawn event fires
+	        once and only once, so anything that was already there when you switched this on -
+	        or that arrived while the remote was still registering - would never be marked at
+	        all, which is why watching the event alone showed nothing.
 	
-	    local function groupKey(position)
-	        return `{math.round(position.X)},{math.round(position.Y)},{math.round(position.Z)}`
+	        The event is still listened to, but only for the tier: there are two pond models
+	        for four tiers, so the model itself only says whether it is the big one.
+	    ]]
+	    local TIER_NAMES = {[0] = 'Green', [1] = 'Blue', [2] = 'Purple', [3] = 'Orange'}
+	    local TIER_COLORS = {
+	        [0] = Color3.fromRGB(120, 220, 120),
+	        [1] = Color3.fromRGB(110, 180, 255),
+	        [2] = Color3.fromRGB(200, 130, 255),
+	        [3] = Color3.fromRGB(255, 170, 90)
+	    }
+	    local groupFolder = Instance.new('Folder')
+	    groupFolder.Parent = vain.gui
+	    local groupMarkers, groupTiers = {}, {}
+	    local groupLoop = false
+	
+	    --[[
+	        Connected once the remote is actually there.
+	
+	        Get hands back what is registered at the moment it is asked and throws when the
+	        remote is not registered yet, which it is not while the round is still loading -
+	        so a connection made then was silently missing for the rest of the match. The
+	        game's own code waits for these. The RemoteEvent underneath carries the payload,
+	        so that is what is listened to when the wrapper hands back nothing connectable.
+	    ]]
+	    local liveEvents = {}
+	
+	    local function connectEvent(name, handler)
+	        if liveEvents[name] then return end
+	        liveEvents[name] = true
+	
+	        task.spawn(function()
+	            local connection
+	            for _ = 1, 30 do
+	                if not liveEvents[name] then return end
+	
+	                local ok, event = pcall(function()
+	                    return bedwars.Client:Get(name)
+	                end)
+	                if ok and event then
+	                    local gotInstance, instance = pcall(function()
+	                        return event.instance
+	                    end)
+	                    if gotInstance and typeof(instance) == 'Instance' and instance:IsA('RemoteEvent') then
+	                        connection = instance.OnClientEvent:Connect(handler)
+	                    elseif type(event) == 'table' and type(event.Connect) == 'function' then
+	                        connection = event:Connect(handler)
+	                    end
+	                end
+	                if connection then break end
+	                task.wait(1)
+	            end
+	
+	            if connection then
+	                liveEvents[name] = connection
+	                Fisherman:Clean(connection)
+	            else
+	                liveEvents[name] = nil
+	            end
+	        end)
 	    end
 	
-	    local function clearFishGroups()
-	        for key, marker in groupMarkers do
-	            marker:Destroy()
-	            groupMarkers[key] = nil
+	    local function disconnectEvent(name)
+	        local connection = liveEvents[name]
+	        liveEvents[name] = nil
+	        if typeof(connection) == 'RBXScriptConnection' then
+	            connection:Disconnect()
 	        end
 	    end
 	
-	    local function addFishGroup(position, tier)
-	        if typeof(position) ~= 'Vector3' then return end
+	    local function tierNear(position)
+	        local bestTier, bestDistance
+	        for _, entry in groupTiers do
+	            local distance = (entry.position - position).Magnitude
+	            if distance < 12 and (not bestDistance or distance < bestDistance) then
+	                bestTier, bestDistance = entry.tier, distance
+	            end
+	        end
+	        return bestTier
+	    end
 	
-	        local key = groupKey(position)
-	        if groupMarkers[key] then return end
+	    local function clearFishGroups()
+	        for pond, marker in groupMarkers do
+	            marker:Destroy()
+	            groupMarkers[pond] = nil
+	        end
+	    end
 	
-	        local info = FISH_TIERS[tier] or FISH_TIERS[0]
-	        -- Parented to Terrain rather than the ScreenGui, because a billboard needs
-	        -- something in the world to hang off and there is no pond part of ours to use.
-	        local anchor = Instance.new('Part')
-	        anchor.Anchored = true
-	        anchor.CanCollide = false
-	        anchor.CanQuery = false
-	        anchor.CanTouch = false
-	        anchor.Transparency = 1
-	        anchor.Size = Vector3.one
-	        anchor.Position = position
-	        anchor.Parent = workspace.Terrain
+	    local function markPond(pond)
+	        if groupMarkers[pond] then return end
+	
+	        local part = pond.PrimaryPart or pond:FindFirstChildWhichIsA('BasePart', true)
+	        if not part then return end
+	
+	        local tier = tierNear(part.Position)
+	        local big = pond.Name:lower():find('two', 1, true) ~= nil
 	
 	        local billboard = Instance.new('BillboardGui')
-	        billboard.Adornee = anchor
-	        billboard.Size = UDim2.fromOffset(120, 20)
+	        billboard.Name = 'FishGroup'
+	        billboard.Adornee = part
+	        billboard.Size = UDim2.fromOffset(130, 20)
 	        billboard.StudsOffsetWorldSpace = Vector3.new(0, 5, 0)
 	        billboard.AlwaysOnTop = true
-	        billboard.Parent = anchor
+	        billboard.Parent = groupFolder
 	
 	        local label = Instance.new('TextLabel')
 	        label.Size = UDim2.fromScale(1, 1)
@@ -16474,52 +16533,61 @@ run(function()
 	        label.Font = Enum.Font.GothamBold
 	        label.TextSize = 13
 	        label.TextStrokeTransparency = 0.5
-	        label.TextColor3 = info.color
-	        label.Text = info.name .. ' shoal'
+	        label.TextColor3 = tier and TIER_COLORS[tier] or (big and TIER_COLORS[2] or TIER_COLORS[0])
+	        label.Text = tier and (TIER_NAMES[tier] .. ' shoal') or (big and 'Shark shoal' or 'Shoal')
 	        label.Parent = billboard
 	
-	        groupMarkers[key] = anchor
+	        groupMarkers[pond] = billboard
 	    end
 	
 	    local function cleanupFishGroups()
-	        for _, conn in groupConns do
-	            pcall(function() conn:Disconnect() end)
-	        end
-	        table.clear(groupConns)
+	        disconnectEvent('FishGroupSpawn')
+	        disconnectEvent('FishGroupDespawn')
+	        table.clear(groupTiers)
 	        clearFishGroups()
 	    end
 	
 	    local function setupFishGroups()
-	        if #groupConns > 0 or not on(FishGroupESP) then return end
-	
-	        -- Both remotes are new with the rework, so an older client simply has no shoals
-	        -- to mark rather than an error.
-	        local ok, spawned = pcall(function()
-	            return bedwars.Client:Get('FishGroupSpawn')
-	        end)
-	        local despawned
-	        ok, despawned = pcall(function()
-	            return bedwars.Client:Get('FishGroupDespawn')
-	        end)
-	        if not (spawned and despawned) then return end
-	
-	        table.insert(groupConns, spawned:Connect(function(data)
-	            if on(FishGroupESP) and data then
-	                addFishGroup(data.position, data.tier)
+	        connectEvent('FishGroupSpawn', function(data)
+	            if data and typeof(data.position) == 'Vector3' then
+	                groupTiers[tostring(data.position)] = {position = data.position, tier = data.tier}
 	            end
-	        end))
-	        table.insert(groupConns, despawned:Connect(function(data)
-	            if not (data and typeof(data.position) == 'Vector3') then return end
-	            local key = groupKey(data.position)
-	            local marker = groupMarkers[key]
-	            if marker then
-	                marker:Destroy()
-	                groupMarkers[key] = nil
+	        end)
+	        connectEvent('FishGroupDespawn', function(data)
+	            if data and typeof(data.position) == 'Vector3' then
+	                groupTiers[tostring(data.position)] = nil
 	            end
-	        end))
-	        for _, conn in groupConns do
-	            Fisherman:Clean(conn)
-	        end
+	        end)
+	
+	        if groupLoop then return end
+	        groupLoop = true
+	
+	        task.spawn(function()
+	            repeat
+	                -- Guarded because it walks the workspace while the game is adding to it.
+	                pcall(function()
+	                    for pond, marker in groupMarkers do
+	                        if not pond.Parent then
+	                            marker:Destroy()
+	                            groupMarkers[pond] = nil
+	                        end
+	                    end
+	
+	                    if on(FishGroupESP) then
+	                        for _, child in workspace:GetChildren() do
+	                            if child:IsA('Model') and child.Name:lower():find('pond', 1, true) then
+	                                markPond(child)
+	                            end
+	                        end
+	                    else
+	                        clearFishGroups()
+	                    end
+	                end)
+	                task.wait(1)
+	            until not Fisherman.Enabled
+	            groupLoop = false
+	            clearFishGroups()
+	        end)
 	    end
 	
 	    -- ── watching everyone else ────────────────────────────────────────────
@@ -16536,18 +16604,37 @@ run(function()
 	        return false
 	    end
 	
-	    local function setupSpy()
-	        if spyConn then return end
+	    --[[
+	        Whose catch it is.
 	
-	        spyConn = bedwars.Client:Get('FishCaught'):Connect(function(data)
+	        Bedwars keeps the team on an attribute, not in a Roblox Team object, so both
+	        sides of the old comparison read nil - which made every catch in the match look
+	        like a teammate's, and 'Ignore teammate' is on by default, so the spy reported
+	        nothing at all.
+	    ]]
+	    local function sameTeam(player)
+	        local mine, theirs = lplr:GetAttribute('Team'), player:GetAttribute('Team')
+	        if mine ~= nil and theirs ~= nil then return mine == theirs end
+	        if lplr.Team ~= nil and player.Team ~= nil then return lplr.Team == player.Team end
+	        return false
+	    end
+	
+	    local function setupSpy()
+	        connectEvent('FishCaught', function(data)
 	            if not on(SpyToggle) then return end
 	            if not (data.dropData and data.dropData.drops and data.catchingPlayer) then return end
-	            if on(Teammates) and lplr.Team == data.catchingPlayer.Team then return end
+	            if on(Teammates) and sameTeam(data.catchingPlayer) then return end
 	
 	            -- A gold fish is the one worth interrupting for, so it gets said whether or
 	            -- not its loot survived the whitelist.
 	            if on(GoldNotify) and data.dropData.fishModel == 'fish_gold' then
 	                notif('Fisherman Spy', `{data.catchingPlayer.Name} has caught a <font color='#FFD75A'>Gold</font> fish`, 8, 'info')
+	            end
+	
+	            -- The rework put sharks in the water, and they are the catch worth knowing
+	            -- about for the same reason gold is.
+	            if on(SharkNotify) and data.dropData.fishModel == 'shark' then
+	                notif('Fisherman Spy', `{data.catchingPlayer.Name} has caught a <font color='#6FD3FF'>Shark</font>`, 8, 'info')
 	            end
 	
 	            local text = {}
@@ -16563,8 +16650,6 @@ run(function()
 	            local fish = fishNames[data.dropData.fishModel] or data.dropData.fishModel
 	            notif('Fisherman Spy', `{data.catchingPlayer.Name} caught a {fish}: {table.concat(text, ', ')}`, 8, 'info')
 	        end)
-	
-	        Fisherman:Clean(spyConn)
 	    end
 	
 	    --[[
@@ -16610,7 +16695,7 @@ run(function()
 	                restoreCatchSpeed()
 	                cleanupAnimationControl()
 	                cleanupFishGroups()
-	                spyConn = nil
+	                disconnectEvent('FishCaught')
 	            end
 	        end
 	    })
@@ -16736,7 +16821,7 @@ run(function()
 	        Default = false,
 	        Tooltip = 'Reports what everyone else catches',
 	        Function = function(cv)
-	            for _, s in {Teammates, GoldNotify, LootWhitelist} do
+	            for _, s in {Teammates, GoldNotify, SharkNotify, LootWhitelist} do
 	                if s and s.Object then s.Object.Visible = cv end
 	            end
 	            if Fisherman.Enabled and cv then setupSpy() end
@@ -16755,6 +16840,13 @@ run(function()
 	        Visible = false,
 	        Darker = true,
 	        Tooltip = 'A line of its own whenever anyone lands a Gold Fish'
+	    })
+	    SharkNotify = Fisherman:CreateToggle({
+	        Name = 'Notify on Shark',
+	        Default = true,
+	        Visible = false,
+	        Darker = true,
+	        Tooltip = 'A line of its own whenever anyone lands a Shark'
 	    })
 	    LootWhitelist = Fisherman:CreateTextList({
 	        Name = 'Loot Whitelist',
