@@ -559,12 +559,25 @@ local function buildMotion(origin, rootPos, offset, velocity, fall, playerHeight
 			hopEvery, hopSpeed = span / gaps, speeds / (gaps + 1)
 		end
 	end
-	if not hopSpeed and playerJump and playerJump > 0 then
-		hopSpeed = playerJump
-	end
+	--[[
+		The caller's jump flag is not a reason to hop for ever.
+
+		It stays set for a whole chain of bunny hops and lingers after the last one, so
+		feeding it in here modelled a target that had landed - or never left the ground - as
+		hopping the entire flight, and at range that put the aim a jump's height above where
+		they actually were. Repeat hopping is taken from takeoffs actually seen instead; the
+		flag only widens the height a single jump is allowed to reach, below.
+	]]
 	if flying or fall <= 0 then
 		hopSpeed = nil
 	end
+
+	-- A jump only clears its own apex above the ground, so the prediction is never allowed
+	-- higher than that - the fix for a far shot sailing over a target who can, at most, jump.
+	-- The envelope is sized by the fastest rise in play: what they are doing now, a hop they
+	-- are known to repeat, or the jump the caller says they can make.
+	local maxRise = math.max(math.abs(velocity.Y), hopSpeed or 0, playerJump or 0)
+	local apexAllow = fall > 0 and (maxRise * maxRise / (2 * fall) + 1.5) or math.huge
 
 	-- The average height of a hop, for when which part of one they will be in is a guess.
 	local groundGap, meanLift = 0.05, nil
@@ -676,6 +689,11 @@ local function buildMotion(origin, rootPos, offset, velocity, fall, playerHeight
 		if b.hops > 0 and meanLift and b.rest then
 			local trust = math.min(0.25 + 0.2 * b.hops, 0.8)
 			y += (b.rest + meanLift - y) * trust
+		end
+		-- Never above a real jump over the ground they are heading for. Flying targets are
+		-- exempt, since they leave the ground by other means and are handled on their own.
+		if not flying and b.rest then
+			y = math.min(y, b.rest + apexAllow)
 		end
 		return y
 	end
