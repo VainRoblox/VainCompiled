@@ -2138,6 +2138,20 @@ run(function()
 		return tool and bedwars.ItemMeta[tool.Name] or nil
 	end
 	
+	-- The projectile a held item would fire, or nil for one that fires none. Used to keep
+	-- items that are not thrown at people - the telepearl above all - out of the assist.
+	local function heldProjectileType()
+		local meta = heldItemMeta()
+		local source = meta and meta.projectileSource
+		if not source then return nil end
+	
+		local ok, name = pcall(function()
+			local ammo = source.ammoItemTypes and source.ammoItemTypes[1] or 'arrow'
+			return type(source.projectileType) == 'function' and source.projectileType(ammo) or source.projectileType
+		end)
+		return ok and name or nil
+	end
+	
 	-- Sword always qualifies. With Use Projectile on, anything the game considers a
 	-- projectile source counts too - that covers thrown items and fired weapons alike,
 	-- since both carry a projectileSource in their item meta.
@@ -2145,6 +2159,12 @@ run(function()
 		local hand = store.hand
 		if not hand then return false end
 		if hand.toolType == 'sword' then return true, true end
+		--[[
+			A telepearl carries a projectile source like any thrown item, but it is thrown to
+			teleport, never at a target - assisting it just flings you onto them - so it is left
+			out whatever the mode, Limit to item on or off.
+		]]
+		if heldProjectileType() == 'telepearl' then return false end
 		if UseProjectile.Enabled then
 			local meta = heldItemMeta()
 			if meta and meta.projectileSource then return true, false end
