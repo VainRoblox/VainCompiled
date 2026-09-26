@@ -16426,7 +16426,9 @@ run(function()
 	        The event is still listened to, but only for the tier: there are two pond models
 	        for four tiers, so the model itself only says whether it is the big one.
 	    ]]
-	    local TIER_NAMES = {[0] = 'Green', [1] = 'Blue', [2] = 'Purple', [3] = 'Orange'}
+	    -- Named for what they are worth rather than for their colour: the blue one is the
+	    -- ordinary shoal, and the purple one is the one with a shark in it.
+	    local TIER_NAMES = {[0] = 'Green Shoal', [1] = 'Shoal', [2] = 'Shark Shoal', [3] = 'Orange Shoal'}
 	    local TIER_COLORS = {
 	        [0] = Color3.fromRGB(120, 220, 120),
 	        [1] = Color3.fromRGB(110, 180, 255),
@@ -16534,7 +16536,7 @@ run(function()
 	        label.TextSize = 13
 	        label.TextStrokeTransparency = 0.5
 	        label.TextColor3 = tier and TIER_COLORS[tier] or (big and TIER_COLORS[2] or TIER_COLORS[0])
-	        label.Text = tier and (TIER_NAMES[tier] .. ' shoal') or (big and 'Shark shoal' or 'Shoal')
+	        label.Text = tier and TIER_NAMES[tier] or (big and 'Shark Shoal' or 'Shoal')
 	        label.Parent = billboard
 	
 	        groupMarkers[pond] = billboard
