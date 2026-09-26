@@ -5801,7 +5801,15 @@ run(function()
 		end)
 	
 		for _, part in parts do
-			if part:IsA('BasePart') and part.Name ~= 'Blanket' then
+			--[[
+				The visible bed only.
+	
+				A bed carries an invisible Root part - fully transparent, no colour of its own,
+				so it comes out default grey - that wraps the whole model. Boxing it drew a grey
+				cube over the bed, which is the grey blob on your own bed; skipping anything
+				transparent leaves just the parts you can actually see, whichever team it is.
+			]]
+			if part:IsA('BasePart') and part.Name ~= 'Blanket' and part.Name ~= 'Root' and part.Transparency < 1 then
 				local handle = Instance.new('BoxHandleAdornment')
 				handle.Size = part.Size + Vector3.new(.01, .01, .01)
 				handle.AlwaysOnTop = true
@@ -7257,17 +7265,34 @@ run(function()
 				enchant = name:find('enchant') ~= nil or STATUS_WEAPON_ENCHANT[name] or false
 			end
 	
+			--[[
+				Its own icon, whichever kind it is.
+	
+				The meta carries an image for enchantments as much as for effects - FIRE_ENCHANT,
+				the poison splash, the shield - so both are drawn as icons now rather than the
+				enchantments being written out. A few effects have no image of their own but name
+				an item instead (Speed Pie is the pie), so that item's icon stands in, and only
+				the ones with neither fall back to their word.
+			]]
+			local ok, meta = pcall(function() return bedwars.StatusEffectMeta[name] end)
+			meta = ok and meta or nil
+			if meta and meta.noDisplay then continue end
+	
+			local image = meta and meta.image or nil
+			if not image and meta and meta.item then
+				local got, icon = pcall(function() return bedwars.getIcon({itemType = meta.item}, true) end)
+				image = got and icon or nil
+			end
+	
+			local entry = {label = label, image = image}
 			if enchant then
-				enchants[#enchants + 1] = label
+				enchants[#enchants + 1] = entry
 			else
-				-- The game keeps an icon for most effects; the ones without stay as words so
-				-- they are not quietly dropped from the tag altogether.
-				local ok, meta = pcall(function() return bedwars.StatusEffectMeta[name] end)
-				effects[#effects + 1] = {label = label, image = ok and meta and meta.image or nil}
+				effects[#effects + 1] = entry
 			end
 		end
 	
-		table.sort(enchants)
+		table.sort(enchants, function(a, b) return a.label < b.label end)
 		table.sort(effects, function(a, b) return a.label < b.label end)
 		return enchants, effects
 	end
@@ -7291,18 +7316,18 @@ run(function()
 		if not ((Enchants and Enchants.Enabled) or (Effects and Effects.Enabled)) then return text end
 	
 		local enchants, effects = statusOf(ent)
-		if Enchants and Enchants.Enabled then
-			text = text .. statusText(enchants, rich and '#d0a3ff')
-		end
 		--[[
-			Effects are drawn as icons rather than written out, so nothing is appended here for
-			them in the rich renderer. The Drawing renderer has no way to place an image, so it
-			keeps the words.
+			Both groups are drawn as icons now, so the rich renderer appends nothing - it lets
+			drawEffects place the images. The Drawing renderer cannot place an image, so there
+			it keeps the words for whichever groups are switched on.
 		]]
-		if Effects and Effects.Enabled and not rich then
+		if not rich then
 			local words = {}
-			for _, effect in effects do
-				words[#words + 1] = effect.label
+			if Enchants and Enchants.Enabled then
+				for _, entry in enchants do words[#words + 1] = entry.label end
+			end
+			if Effects and Effects.Enabled then
+				for _, entry in effects do words[#words + 1] = entry.label end
 			end
 			text = text .. statusText(words)
 		end
@@ -7435,11 +7460,15 @@ run(function()
 		local enchants, effects = statusOf(ent)
 		if not enchants then return '' end
 	
-		local words = {}
-		for _, effect in effects do
-			words[#words + 1] = effect.label
+		local parts = {}
+		for _, entry in enchants do
+			parts[#parts + 1] = entry.label
 		end
-		return table.concat(enchants, ',') .. '|' .. table.concat(words, ',')
+		parts[#parts + 1] = '|'
+		for _, entry in effects do
+			parts[#parts + 1] = entry.label
+		end
+		return table.concat(parts, ',')
 	end
 	
 	--[[
@@ -7462,13 +7491,25 @@ run(function()
 		layout.Padding = UDim.new(0, 2)
 		layout.Parent = strip
 	
-		if not (Effects and Effects.Enabled) then
+		local wantEnchants = Enchants and Enchants.Enabled
+		local wantEffects = Effects and Effects.Enabled
+		if not (wantEnchants or wantEffects) then
 			strip.Visible = false
 			return
 		end
 	
-		local _, effects = statusOf(ent)
-		if not effects or #effects == 0 then
+		local enchants, effects = statusOf(ent)
+	
+		-- Enchantments first, then effects, so a tag reads the same way every time. Both are
+		-- drawn as their own icon; the handful with no icon keep their word rather than vanish.
+		local entries = {}
+		if wantEnchants and enchants then
+			for _, entry in enchants do entries[#entries + 1] = entry end
+		end
+		if wantEffects and effects then
+			for _, entry in effects do entries[#entries + 1] = entry end
+		end
+		if #entries == 0 then
 			strip.Visible = false
 			return
 		end
@@ -7476,15 +7517,15 @@ run(function()
 		local size = math.max(10, math.floor(18 * Scale.Value))
 		local shown = 0
 	
-		for _, effect in effects do
+		for _, entry in entries do
 			if shown >= STATUS_SHOWN then break end
 			shown += 1
 	
-			if effect.image then
+			if entry.image then
 				local icon = Instance.new('ImageLabel')
 				icon.BackgroundTransparency = 1
 				icon.Size = UDim2.fromOffset(size, size)
-				icon.Image = effect.image
+				icon.Image = entry.image
 				icon.LayoutOrder = shown
 				icon.Parent = strip
 			else
@@ -7492,7 +7533,7 @@ run(function()
 				word.BackgroundTransparency = 1
 				word.AutomaticSize = Enum.AutomaticSize.X
 				word.Size = UDim2.fromOffset(0, size)
-				word.Text = effect.label
+				word.Text = entry.label
 				word.TextColor3 = Color3.new(1, 1, 1)
 				word.TextStrokeTransparency = 0.4
 				word.TextSize = math.max(8, math.floor(size * 0.6))
@@ -8088,7 +8129,7 @@ run(function()
 	})
 	Enchants = NameTags:CreateToggle({
 		Name = 'Enchantments',
-		Tooltip = 'Shows the enchantments they have active',
+		Tooltip = 'Shows the enchantments they have active, as icons',
 		Function = function()
 			if NameTags.Enabled then
 				NameTags:Toggle()
@@ -8098,7 +8139,7 @@ run(function()
 	})
 	Effects = NameTags:CreateToggle({
 		Name = 'Effects',
-		Tooltip = 'Shows their active effects like jump, pie or gloop',
+		Tooltip = 'Shows their active effects like jump, pie or gloop, as icons',
 		Function = function()
 			if NameTags.Enabled then
 				NameTags:Toggle()

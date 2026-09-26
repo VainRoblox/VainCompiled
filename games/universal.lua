@@ -4259,6 +4259,7 @@ run(function()
 	local cursor
 	local oldIcon
 	local oldEnabled
+	local currentImage
 	
 	--[[
 		The icons the old client shipped with, kept so there is something to use straight away.
@@ -4332,6 +4333,17 @@ run(function()
 		cursor.Parent = vain.gui
 	end
 	
+	-- Size, tint and hiding the real pointer are things only the drawn overlay can do - a
+	-- system cursor is whatever image at whatever size Roblox draws it, uncoloured. So those
+	-- settings are shown only in Overlay, rather than sitting there in System doing nothing,
+	-- which is what "the options don't work" was.
+	local function refreshOptions()
+		local overlay = Mode and Mode.Value == 'Overlay'
+		for _, setting in {Size, Recolour, Tint, Hide} do
+			if setting and setting.Object then setting.Object.Visible = overlay end
+		end
+	end
+	
 	local function apply()
 		-- Settings are created after the module, so during a config restore some of these do
 		-- not exist yet and every one of them is read below.
@@ -4343,6 +4355,8 @@ run(function()
 			if reason then complain(reason) end
 			return
 		end
+	
+		currentImage = image
 	
 		if Mode.Value == 'Overlay' then
 			if not cursor then makeCursor() end
@@ -4367,6 +4381,7 @@ run(function()
 		Tooltip = 'Replaces the mouse pointer with a Roblox image or a file from your Vain folder',
 		Function = function(callback)
 			if callback then
+				refreshOptions()
 				oldIcon = inputService.MouseIcon
 				oldEnabled = inputService.MouseIconEnabled
 				apply()
@@ -4387,15 +4402,28 @@ run(function()
 					end
 				end))
 	
+				--[[
+					Reasserted, however the game clears it.
+	
+					Leaving first person, unequipping a tool and opening a menu all reset the
+					pointer - often to nothing at all - and the old check only put ours back when
+					the game had left some other icon in place, so the moment it cleared the icon
+					to empty (which is what leaving first person does) the custom cursor was gone
+					until the next reload. It is now put back whenever the pointer is not already
+					ours, empty included, and the real one is kept hidden under the overlay.
+				]]
 				task.spawn(function()
 					repeat
-						if Mode.Value ~= 'Overlay' and inputService.MouseIcon ~= '' then
-							local image = chosenImage()
-							if image and inputService.MouseIcon ~= image then
-								inputService.MouseIcon = image
+						if CustomCursor.Enabled and currentImage then
+							if Mode.Value == 'Overlay' then
+								if Hide.Enabled and inputService.MouseIconEnabled then
+									inputService.MouseIconEnabled = false
+								end
+							elseif inputService.MouseIcon ~= currentImage then
+								inputService.MouseIcon = currentImage
 							end
 						end
-						task.wait(0.25)
+						task.wait(0.1)
 					until not CustomCursor.Enabled
 				end)
 			else
@@ -4448,9 +4476,13 @@ run(function()
 			System = 'Sets the real mouse pointer. Sharp, but the image decides its own size',
 			Overlay = 'Draws the image over the mouse instead, so it can be sized and tinted',
 		},
-		Function = apply
+		Function = function()
+			refreshOptions()
+			apply()
+		end
 	})
 	Size = CustomCursor:CreateSlider({
+		Visible = false,
 		Name = 'Size',
 		Min = 8,
 		Max = 128,
@@ -4460,23 +4492,28 @@ run(function()
 		Function = apply
 	})
 	Recolour = CustomCursor:CreateToggle({
+		Visible = false,
 		Name = 'Recolour',
 		Default = false,
 		Tooltip = 'Overlay only - tints the image with the colour below instead of leaving it as it is',
 		Function = apply
 	})
 	Tint = CustomCursor:CreateColorSlider({
+		Visible = false,
 		Name = 'Tint',
 		Darker = true,
 		Tooltip = 'Overlay only - the colour to tint with when Recolour is on',
 		Function = apply
 	})
 	Hide = CustomCursor:CreateToggle({
+		Visible = false,
 		Name = 'Hide real cursor',
 		Default = true,
 		Tooltip = 'Overlay only - hides the pointer underneath the drawn one',
 		Function = apply
 	})
+	
+	task.defer(refreshOptions)
 	
 end)
 
