@@ -686,16 +686,18 @@ do
 				or byLabel[lower]
 		end
 
+		-- Whether an amount was actually given, rather than one being assumed.
+		local explicit = text:match('^(.-)%s*(%d+)%s*$') ~= nil
 		local itemType = resolve(head)
 		if not itemType then
 			-- A name that ends in a number of its own, like fishing_rod_1, typed with no
 			-- amount after it.
 			local whole = text:match('^%s*(.-)%s*$')
 			itemType = resolve(whole)
-			amount = 1
+			amount, explicit = 1, false
 		end
 		if not itemType then return nil end
-		return itemType, math.max(1, tonumber(amount) or 1)
+		return itemType, math.max(1, tonumber(amount) or 1), explicit
 	end
 
 	--[[
@@ -709,23 +711,31 @@ do
 	function itemAlerts.create(module, options)
 		options = options or {}
 		local refresh = options.refresh or function() end
-		local defaults = options.defaults or {'emerald x10', 'diamond x10'}
 		local api = {}
-		local Master, Item, Add, Watched, Reset, Notify, IgnoreSelf, Alert, Highlight, HighlightColor
+		local Master, Item, Add, Watched, Stored, Reset, Notify, IgnoreSelf, Alert, Highlight, HighlightColor
 		itemAlerts.items()
 
 		--[[
-			An amount per watched item, each on a slider of its own.
+			Items and amounts, kept apart.
 
-			The list keeps 'emerald x10' because that is what a config saves, but the number
-			is set on the item's own slider rather than chosen before it is added. A slider
-			is made for every item the list holds and removed with it, so whatever the
-			slider says is what is looked for - and the list text is rewritten to match once
-			you let go, so it is what loads next time.
+			The visible list holds just the item, the way you would say it. How many of each
+			is set on that item's own slider, and remembered in a second list nobody sees -
+			'emerald=30' - so it saves with the config. Old entries that still carry their
+			amount, 'emerald x30', are split up the first time they are read, and so is
+			anything typed that way, so typing an amount in still works.
 		]]
 		local DEFAULT_AMOUNT = 10
+		local defaultItems, defaultAmounts = {}, {}
+		for _, text in options.defaults or {'emerald x10', 'diamond x10'} do
+			local itemType, amount = itemAlerts.parse(text)
+			if itemType then
+				defaultItems[#defaultItems + 1] = itemType
+				defaultAmounts[#defaultAmounts + 1] = itemType .. '=' .. amount
+			end
+		end
+
 		local sliders, amounts = {}, {}
-		local syncing = false
+		local syncing, busy = false, false
 		local syncSliders
 
 		local function on(setting)
@@ -743,13 +753,39 @@ do
 			if HighlightColor and HighlightColor.Object then
 				HighlightColor.Object.Visible = shown and on(Highlight)
 			end
+			-- Never shown: it is only somewhere for the amounts to be saved.
+			if Stored and Stored.Object then Stored.Object.Visible = false end
 		end
 
-		-- Replaced whole through Load, which every GUI's list has, rather than through
-		-- methods only some of them do.
-		local function setList(list, enabled)
-			if not Watched then return end
-			Watched:Load({List = list, ListEnabled = enabled})
+		-- The remembered amounts, item -> number.
+		local function storedAmounts()
+			local map = {}
+			if not Stored then return map end
+			for _, text in Stored.List do
+				local itemType, amount = tostring(text):match('^(.-)=(%d+)$')
+				if itemType then map[itemType] = tonumber(amount) end
+			end
+			return map
+		end
+
+		-- Both lists replaced whole through Load, which every GUI's list has, with the
+		-- resync they each trigger held back until both are in place.
+		local function writeLists(items, enabled, amountMap)
+			busy = true
+			if Stored and amountMap then
+				local list, keys = {}, {}
+				for itemType in amountMap do keys[#keys + 1] = itemType end
+				table.sort(keys)
+				for _, itemType in keys do
+					list[#list + 1] = itemType .. '=' .. math.max(1, math.floor(amountMap[itemType]))
+				end
+				Stored:Load({List = list, ListEnabled = table.clone(list)})
+			end
+			if Watched and items then
+				Watched:Load({List = items, ListEnabled = enabled})
+			end
+			busy = false
+			syncSliders()
 			refresh()
 		end
 
@@ -775,6 +811,7 @@ do
 			Darker = true,
 			Visible = false
 		})
+
 		--[[
 			Buttons are created visible and hidden afterwards by layout, rather than created
 			hidden: in GUIs whose buttons hand nothing back there would be no way to show
@@ -790,32 +827,39 @@ do
 			Darker = true,
 			Function = function()
 				local itemType = Item and Item.Value
-				if not itemType or itemType == 'None' then return end
+				if not (itemType and itemType ~= 'None' and Watched) then return end
 
 				-- Once per item. Already watched, it has a slider - that is where the amount
-				-- changes.
-				for _, v in Watched.List do
-					if itemAlerts.parse(v) == itemType then return end
-				end
-
-				local entry = itemAlerts.entry(itemType, DEFAULT_AMOUNT)
-				local list, enabled = table.clone(Watched.List), table.clone(Watched.ListEnabled)
-				list[#list + 1] = entry
-				enabled[#enabled + 1] = entry
-				setList(list, enabled)
+				-- changes. Its last amount is remembered if it was watched before.
+				if table.find(Watched.List, itemType) then return end
+				local items, enabled = table.clone(Watched.List), table.clone(Watched.ListEnabled)
+				items[#items + 1] = itemType
+				enabled[#enabled + 1] = itemType
+				local map = storedAmounts()
+				map[itemType] = map[itemType] or DEFAULT_AMOUNT
+				writeLists(items, enabled, map)
 			end
 		})
 		Watched = module:CreateTextList({
 			Name = 'Watched Items',
-			Tooltip = "Items being watched, as 'item xAmount'",
-			Placeholder = 'emerald x10',
-			Default = defaults,
+			Tooltip = 'Items being watched - click to pause, X to remove',
+			Placeholder = 'emerald',
+			Default = defaultItems,
 			Darker = true,
 			Visible = false,
 			Function = function()
 				-- Also called while the list is still being built, before Watched is set.
-				if Watched and syncSliders then syncSliders() end
+				if Watched and syncSliders and not busy then syncSliders() end
 				refresh()
+			end
+		})
+		Stored = module:CreateTextList({
+			Name = 'Alert Amounts',
+			Tooltip = 'Where the amounts are saved',
+			Default = defaultAmounts,
+			Visible = false,
+			Function = function()
+				if Stored and syncSliders and not busy then syncSliders() end
 			end
 		})
 		Reset = makeButton({
@@ -823,7 +867,12 @@ do
 			Tooltip = 'Puts the watched items back to the default list',
 			Darker = true,
 			Function = function()
-				setList(table.clone(defaults), table.clone(defaults))
+				local map = {}
+				for _, text in defaultAmounts do
+					local itemType, amount = text:match('^(.-)=(%d+)$')
+					map[itemType] = tonumber(amount)
+				end
+				writeLists(table.clone(defaultItems), table.clone(defaultItems), map)
 			end
 		})
 		Notify = module:CreateToggle({
@@ -884,26 +933,6 @@ do
 			})
 		end
 
-		-- The item's entry rewritten with a new amount, everywhere it appears in the list.
-		local function writeAmount(itemType, amount)
-			local changed = false
-			local function rewrite(source)
-				local out = {}
-				for _, text in source do
-					if itemAlerts.parse(text) == itemType then
-						local entry = itemAlerts.entry(itemType, amount)
-						if entry ~= text then changed = true end
-						out[#out + 1] = entry
-					else
-						out[#out + 1] = text
-					end
-				end
-				return out
-			end
-			local list, enabled = rewrite(Watched.List), rewrite(Watched.ListEnabled)
-			if changed then setList(list, enabled) end
-		end
-
 		local function sliderName(itemType)
 			local name = itemAlerts.label(itemType) .. ' Amount'
 			local taken = module.Options and module.Options[name]
@@ -937,9 +966,15 @@ do
 				Function = function(value, final)
 					if syncing then return end
 					amounts[itemType] = value
+					-- Saved once let go, so dragging does not rewrite the list every step.
 					if final then
-						writeAmount(itemType, value)
-						refresh()
+						local map = storedAmounts()
+						if map[itemType] ~= value then
+							map[itemType] = value
+							writeLists(nil, nil, map)
+						else
+							refresh()
+						end
 					end
 				end
 			})
@@ -950,30 +985,63 @@ do
 		end
 
 		--[[
-			Sliders brought in line with the list.
+			Everything brought in line with the two lists.
 
-			Run whenever the list changes - added, removed, reset, typed into or loaded from a
-			config. The list text is the record, so a slider that disagrees with it is moved
-			to match; the guard stops that move being taken for you dragging it.
+			Run whenever either changes - added, removed, reset, typed into or loaded from a
+			config. Entries that still carry an amount are split into item and amount first,
+			then a slider is made or moved for every item and removed for any that is gone.
+			The guard stops a slider being moved here from being taken for you dragging it.
 		]]
 		function syncSliders()
-			if not Watched then return end
+			if busy or not (Watched and Stored) then return end
 
-			local present = {}
+			local map = storedAmounts()
+			local items, enabled, seen, wasEnabled = {}, {}, {}, {}
+			local rewrite = false
+			for _, text in Watched.ListEnabled do
+				local itemType = itemAlerts.parse(text)
+				if itemType then wasEnabled[itemType] = true end
+			end
 			for _, text in Watched.List do
-				local itemType, amount = itemAlerts.parse(text)
-				if itemType and present[itemType] == nil then
-					present[itemType] = amount
+				local itemType, amount, explicit = itemAlerts.parse(text)
+				if itemType then
+					if explicit then
+						map[itemType] = amount
+						rewrite = true
+					end
+					if text ~= itemType then rewrite = true end
+					if seen[itemType] then
+						rewrite = true
+					else
+						seen[itemType] = true
+						items[#items + 1] = itemType
+						if wasEnabled[itemType] then enabled[#enabled + 1] = itemType end
+					end
+				else
+					-- Text that names no item is left where it is, and ignored.
+					items[#items + 1] = text
+					if table.find(Watched.ListEnabled, text) then enabled[#enabled + 1] = text end
 				end
+			end
+			for itemType in seen do
+				if map[itemType] == nil then
+					map[itemType] = DEFAULT_AMOUNT
+					rewrite = true
+				end
+			end
+			if rewrite then
+				-- Rewritten into the clean form; writeLists runs this again on the result.
+				writeLists(items, enabled, map)
+				return
 			end
 
 			for itemType in table.clone(sliders) do
-				if present[itemType] == nil then
+				if not seen[itemType] then
 					removeSlider(itemType)
 				end
 			end
-
-			for itemType, amount in present do
+			for itemType in seen do
+				local amount = map[itemType]
 				amounts[itemType] = amount
 				local slider = sliders[itemType]
 				if not slider then
@@ -984,6 +1052,7 @@ do
 					syncing = false
 				end
 			end
+			layout()
 		end
 
 		function api.enabled()
@@ -999,12 +1068,12 @@ do
 		function api.watches()
 			local map = {}
 			if not (on(Master) and Watched) then return map end
+			local stored = storedAmounts()
 			for _, text in Watched.ListEnabled do
-				local itemType, amount = itemAlerts.parse(text)
+				local itemType = itemAlerts.parse(text)
 				if itemType then
-					-- The slider wins: it is live while dragged, the text only once let go.
-					amount = amounts[itemType] or amount
-					map[itemType] = math.min(map[itemType] or math.huge, amount)
+					-- The slider wins: it is live while dragged, the saved amount once let go.
+					map[itemType] = amounts[itemType] or stored[itemType] or DEFAULT_AMOUNT
 				end
 			end
 			return map
