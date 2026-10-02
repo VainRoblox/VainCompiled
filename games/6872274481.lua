@@ -612,6 +612,324 @@ local function getCursorDistance(ent)
 	return (mouse - Vector2.new(position.X, position.Y)).Magnitude
 end
 
+--[[
+	Item alerts, shared by StorageESP and InventoryESP.
+
+	You pick items to watch and how many of each counts, and both modules flag whatever
+	holds that many - a chest, a player - by tinting its ESP, telling you once, and for
+	players optionally highlighting them. The list, the parsing and the settings are the
+	same in both, so they live here rather than twice.
+
+	Entries are kept as plain text, 'emerald x10', because that is what a TextList holds
+	and saves. Typed by hand they are read just as loosely: 'emerald:10', 'Emerald 10' and
+	a bare 'emerald' (meaning one) all work, by item id or by the name the game shows.
+]]
+local itemAlerts = {}
+do
+	-- Filled in place rather than replaced, so a dropdown that was handed these tables
+	-- before the item metadata existed still sees the names once it does.
+	local names, labels, byLabel = {}, {}, {}
+
+	function itemAlerts.items()
+		if #names > 0 then return names, labels end
+
+		local ok, meta = pcall(function() return bedwars.ItemMeta end)
+		if ok and type(meta) == 'table' then
+			for itemType, data in meta do
+				if type(itemType) == 'string' and type(data) == 'table' then
+					names[#names + 1] = itemType
+					local label = type(data.displayName) == 'string' and data.displayName or itemType
+					labels[itemType] = label
+					byLabel[label:lower()] = byLabel[label:lower()] or itemType
+				end
+			end
+		end
+		table.sort(names, function(a, b)
+			local la, lb = labels[a]:lower(), labels[b]:lower()
+			if la == lb then return a < b end
+			return la < lb
+		end)
+		return names, labels
+	end
+
+	function itemAlerts.label(itemType)
+		itemAlerts.items()
+		return labels[itemType] or itemType
+	end
+
+	-- An entry as text, the form the list keeps.
+	function itemAlerts.entry(itemType, amount)
+		return itemType .. ' x' .. math.max(1, math.floor(tonumber(amount) or 1))
+	end
+
+	-- Text back to an item id and an amount, or nil for text that names no item.
+	function itemAlerts.parse(text)
+		if type(text) ~= 'string' then return nil end
+		itemAlerts.items()
+
+		local head, amount = text:match('^(.-)%s*(%d+)%s*$')
+		if head then
+			-- A separator before the number, but only a real one: 'box 5' is not 'bo x5'.
+			head = head:gsub('%s+x$', ''):gsub(':$', '')
+		else
+			head, amount = text, 1
+		end
+		head = head:match('^%s*(.-)%s*$')
+		if head == '' then return nil end
+
+		local function resolve(name)
+			local lower = name:lower()
+			local snake = (lower:gsub('%s+', '_'))
+			return (labels[name] and name)
+				or (labels[lower] and lower)
+				or (labels[snake] and snake)
+				or byLabel[lower]
+		end
+
+		local itemType = resolve(head)
+		if not itemType then
+			-- A name that ends in a number of its own, like fishing_rod_1, typed with no
+			-- amount after it.
+			local whole = text:match('^%s*(.-)%s*$')
+			itemType = resolve(whole)
+			amount = 1
+		end
+		if not itemType then return nil end
+		return itemType, math.max(1, tonumber(amount) or 1)
+	end
+
+	--[[
+		The settings, added to a module.
+
+		options.refresh is called whenever something changes what should be flagged, and
+		options.highlight adds the player highlight, which only makes sense for people.
+		Returns what the module needs to ask: what is watched, which of those a set of
+		totals meets, the colours, and whether to say so.
+	]]
+	function itemAlerts.create(module, options)
+		options = options or {}
+		local refresh = options.refresh or function() end
+		local defaults = options.defaults or {'emerald x10', 'diamond x10'}
+		local api = {}
+		local Master, Item, Amount, Add, Watched, Reset, Notify, Alert, Highlight, HighlightColor
+		itemAlerts.items()
+
+		local function on(setting)
+			return setting ~= nil and setting.Enabled
+		end
+
+		local function layout()
+			local shown = on(Master)
+			for _, setting in {Item, Amount, Add, Watched, Reset, Notify, Alert, Highlight} do
+				if setting and setting.Object then setting.Object.Visible = shown end
+			end
+			if HighlightColor and HighlightColor.Object then
+				HighlightColor.Object.Visible = shown and on(Highlight)
+			end
+		end
+
+		-- Replaced whole through Load, which every GUI's list has, rather than through
+		-- methods only some of them do.
+		local function setList(list, enabled)
+			if not Watched then return end
+			Watched:Load({List = list, ListEnabled = enabled})
+			refresh()
+		end
+
+		Master = module:CreateToggle({
+			Name = 'Item Alerts',
+			Tooltip = 'Flags whoever holds enough of an item you pick',
+			Function = function()
+				-- The list may have been empty if the metadata was not there yet.
+				local list = itemAlerts.items()
+				if Item and Item.Change and #list > 0 and Item.Value == 'None' then
+					Item:Change(list)
+				end
+				layout()
+				refresh()
+			end
+		})
+		Item = module:CreateDropdown({
+			Name = 'Alert Item',
+			Tooltip = 'The item to watch for - type to search',
+			List = names,
+			Labels = labels,
+			Search = true,
+			Darker = true,
+			Visible = false
+		})
+		Amount = module:CreateSlider({
+			Name = 'Alert Amount',
+			Tooltip = 'How many of it counts',
+			Min = 1,
+			Max = 256,
+			Default = 10,
+			Darker = true,
+			Visible = false
+		})
+		--[[
+			Buttons are created visible and hidden afterwards by layout, rather than created
+			hidden: in GUIs whose buttons hand nothing back there would be no way to show
+			them again. A GUI with no buttons at all still has the list to type into.
+		]]
+		local makeButton = module.CreateButton and function(settings)
+			return module:CreateButton(settings)
+		end or function() return nil end
+
+		Add = makeButton({
+			Name = 'Add Item',
+			Tooltip = 'Adds the item and amount above to the list',
+			Darker = true,
+			Function = function()
+				local itemType = Item and Item.Value
+				if not itemType or itemType == 'None' then return end
+
+				-- One entry per item, so adding it again changes the amount rather than
+				-- leaving two to disagree.
+				local entry = itemAlerts.entry(itemType, Amount and Amount.Value or 1)
+				local list, enabled = {}, {}
+				for _, v in Watched.List do
+					if itemAlerts.parse(v) ~= itemType then list[#list + 1] = v end
+				end
+				for _, v in Watched.ListEnabled do
+					if itemAlerts.parse(v) ~= itemType then enabled[#enabled + 1] = v end
+				end
+				list[#list + 1] = entry
+				enabled[#enabled + 1] = entry
+				setList(list, enabled)
+			end
+		})
+		Watched = module:CreateTextList({
+			Name = 'Watched Items',
+			Tooltip = "Items being watched, as 'item xAmount'",
+			Placeholder = 'emerald x10',
+			Default = defaults,
+			Darker = true,
+			Visible = false,
+			Function = function()
+				refresh()
+			end
+		})
+		Reset = makeButton({
+			Name = 'Reset Items',
+			Tooltip = 'Puts the watched items back to the default list',
+			Darker = true,
+			Function = function()
+				setList(table.clone(defaults), table.clone(defaults))
+			end
+		})
+		Notify = module:CreateToggle({
+			Name = 'Alert Notify',
+			Tooltip = 'Tells you when something reaches an amount',
+			Default = true,
+			Darker = true,
+			Visible = false
+		})
+		Alert = module:CreateColorSlider({
+			Name = 'Alert Color',
+			Tooltip = 'Colour the ESP turns while it holds enough',
+			DefaultHue = 0.12,
+			DefaultSat = 0.85,
+			DefaultValue = 1,
+			DefaultOpacity = 0.6,
+			Darker = true,
+			Visible = false,
+			Function = function()
+				refresh()
+			end
+		})
+		if options.highlight then
+			Highlight = module:CreateToggle({
+				Name = 'Highlight',
+				Tooltip = 'Outlines the player while they hold enough',
+				Darker = true,
+				Visible = false,
+				Function = function()
+					layout()
+					refresh()
+				end
+			})
+			HighlightColor = module:CreateColorSlider({
+				Name = 'Highlight Color',
+				Tooltip = 'Colour of the highlight',
+				DefaultHue = 0,
+				DefaultSat = 0.85,
+				DefaultValue = 1,
+				DefaultOpacity = 0.5,
+				Darker = true,
+				Visible = false,
+				Function = function()
+					refresh()
+				end
+			})
+		end
+
+		function api.enabled()
+			return on(Master)
+		end
+
+		-- What is watched and how many of each, from the entries that are switched on.
+		function api.watches()
+			local map = {}
+			if not (on(Master) and Watched) then return map end
+			for _, text in Watched.ListEnabled do
+				local itemType, amount = itemAlerts.parse(text)
+				if itemType then
+					map[itemType] = math.min(map[itemType] or math.huge, amount)
+				end
+			end
+			return map
+		end
+
+		-- Which watched items a set of totals meets, ordered by name so a message reads
+		-- the same way every time.
+		function api.matches(totals, watches)
+			watches = watches or api.watches()
+			local found = {}
+			for itemType, need in watches do
+				local have = totals[itemType] or 0
+				if have >= need then
+					found[#found + 1] = {itemType = itemType, have = have, need = need}
+				end
+			end
+			table.sort(found, function(a, b)
+				return itemAlerts.label(a.itemType) < itemAlerts.label(b.itemType)
+			end)
+			return found
+		end
+
+		function api.describe(found)
+			local parts = {}
+			for _, hit in found do
+				parts[#parts + 1] = hit.have .. ' ' .. itemAlerts.label(hit.itemType)
+			end
+			return table.concat(parts, ', ')
+		end
+
+		function api.color()
+			return Color3.fromHSV(Alert.Hue or 0.12, Alert.Sat or 0.85, Alert.Value or 1), Alert.Opacity or 0.6
+		end
+
+		function api.notify(title, text)
+			if on(Notify) then
+				notif(title, text, 6, 'info')
+			end
+		end
+
+		function api.highlight()
+			return on(Master) and on(Highlight)
+		end
+
+		function api.highlightColor()
+			if not HighlightColor then return Color3.new(1, 0, 0), 0.5 end
+			return Color3.fromHSV(HighlightColor.Hue or 0, HighlightColor.Sat or 0.85, HighlightColor.Value or 1), HighlightColor.Opacity or 0.5
+		end
+
+		task.defer(layout)
+		return api
+	end
+end
+
 -- Shown when hovering an individual Target Mode option. Keys match sortmethods plus
 -- 'Distance', which is not in that table because it is the default magnitude ordering.
 local sortmethodtips = {
@@ -6172,6 +6490,12 @@ run(function()
 	local Gap
 	local ShowAll
 	local Teammates
+	local Alerts
+	-- Item Alerts' watched items for the current pass, item -> amount. Watched items are
+	-- always drawn, whatever the list says, since they are what the alert is about.
+	local watching = {}
+	-- player -> {itemType = true} for what they have already been called out for.
+	local alerted = {}
 	
 	-- The things worth knowing an enemy has. Seeded straight into the item list, so they can
 	-- be switched off or removed there like anything else rather than being nine settings of
@@ -6218,6 +6542,7 @@ run(function()
 	-- than however the inventory happened to be arranged.
 	local function listed(itemType)
 		if not itemType then return nil end
+		if watching[itemType] then return 0 end
 		if not (List and List.ListEnabled) then return nil end
 	
 		for i, v in List.ListEnabled do
@@ -6286,6 +6611,76 @@ run(function()
 		end
 	end
 	
+	-- The tint and outline a player's strip wears while they hold enough of a watched item.
+	local function paint(container, active)
+		local frame = container:FindFirstChild('Frame')
+		if not frame then return end
+	
+		local stroke = frame:FindFirstChild('AlertStroke')
+		if active and Alerts then
+			local tint, opacity = Alerts.color()
+			frame.BackgroundColor3 = tint
+			frame.BackgroundTransparency = 1 - opacity
+			if not stroke then
+				stroke = Instance.new('UIStroke')
+				stroke.Name = 'AlertStroke'
+				stroke.Thickness = 2
+				stroke.Parent = frame
+			end
+			stroke.Color = tint
+			stroke.Enabled = true
+		else
+			frame.BackgroundColor3 = Color3.fromHSV(Color.Hue or 0, Color.Sat or 0, Color.Value or 0.15)
+			frame.BackgroundTransparency = 1 - (on(Background) and (Color.Opacity or 0.5) or 0)
+			if stroke then stroke.Enabled = false end
+		end
+	end
+	
+	--[[
+		The outline around the player themselves, for as long as they hold enough.
+	
+		Kept in this module's folder with the character as its adornee, the way Chams draws
+		its highlights, and taken away the moment they drop below - or the setting goes off.
+	]]
+	local function setHighlight(entry, plr, want)
+		local char = plr and plr.Character
+		if want and char and Alerts then
+			local highlight = entry.Highlight
+			if not (highlight and highlight.Parent) then
+				highlight = Instance.new('Highlight')
+				highlight.Name = 'ItemAlert'
+				highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+				highlight.Parent = Folder
+				entry.Highlight = highlight
+			end
+			local tint, opacity = Alerts.highlightColor()
+			highlight.Adornee = char
+			highlight.FillColor = tint
+			highlight.OutlineColor = tint
+			highlight.FillTransparency = 1 - opacity
+			highlight.OutlineTransparency = 0
+			highlight.Enabled = true
+		elseif entry.Highlight then
+			entry.Highlight:Destroy()
+			entry.Highlight = nil
+		end
+	end
+	
+	-- Said once per item as they reach it, and again only after they have dropped below.
+	local function announce(plr, found)
+		local before = alerted[plr] or {}
+		local now, fresh = {}, {}
+		for _, hit in found do
+			now[hit.itemType] = true
+			if not before[hit.itemType] then fresh[#fresh + 1] = hit end
+		end
+		alerted[plr] = now
+	
+		if #fresh > 0 and Alerts then
+			Alerts.notify('InventoryESP', plr.Name .. ' has ' .. Alerts.describe(fresh))
+		end
+	end
+	
 	--[[
 		Draws what a player is carrying.
 	
@@ -6313,6 +6708,8 @@ run(function()
 		end
 	
 		local totals, rank, order = {}, {}, {}
+		-- Everything they hold, for the alerts - counted whether or not it is drawn.
+		local all = {}
 	
 		local function count(item)
 			if type(item) ~= 'table' or not item.itemType then return end
@@ -6345,14 +6742,19 @@ run(function()
 		local folder = inventoryFolder(plr)
 		if folder then
 			for _, child in folder:GetChildren() do
-				-- Worn armour is in this folder too, carrying the slot it sits in.
-				if child:GetAttribute('ArmorSlot') == nil and not isGear(child.Name) then
+				all[child.Name] = (all[child.Name] or 0) + (tonumber(child:GetAttribute('Amount')) or 1)
+				-- Worn armour is in this folder too, carrying the slot it sits in. A watched
+				-- item is drawn even if it is gear, since you asked about it.
+				if watching[child.Name] or (child:GetAttribute('ArmorSlot') == nil and not isGear(child.Name)) then
 					count({itemType = child.Name, amount = child:GetAttribute('Amount')})
 				end
 			end
 		elseif type(inventory.items) == 'table' then
 			for _, item in inventory.items do
-				if not isGear(item.itemType) then
+				if type(item) == 'table' and item.itemType then
+					all[item.itemType] = (all[item.itemType] or 0) + (tonumber(item.amount) or 1)
+				end
+				if type(item) == 'table' and (watching[item.itemType] or not isGear(item.itemType)) then
 					count(item)
 				end
 			end
@@ -6376,7 +6778,12 @@ run(function()
 			any = true
 		end
 	
-		entry.Shown = any
+		local found = Alerts and Alerts.enabled() and Alerts.matches(all, watching) or {}
+		paint(container, #found > 0)
+		announce(plr, found)
+		setHighlight(entry, plr, #found > 0 and Alerts.highlight())
+	
+		entry.Shown = any or #found > 0
 	end
 	
 	--[[
@@ -6411,6 +6818,7 @@ run(function()
 	end
 	
 	local function refreshAll()
+		watching = Alerts and Alerts.enabled() and Alerts.watches() or {}
 		for ent, entry in Entries do
 			if entry.Billboard.Parent and entry.Player and entry.Player.Parent then
 				-- Each player is read on its own. One that cannot be read used to abort the
@@ -6419,6 +6827,7 @@ run(function()
 				local ok, err = pcall(function()
 					if hidden(ent, entry.Player) then
 						entry.Shown = false
+						setHighlight(entry, entry.Player, false)
 					else
 						refreshAdornee(entry, entry.Player)
 					end
@@ -6429,6 +6838,7 @@ run(function()
 				end
 			else
 				entry.Billboard:Destroy()
+				setHighlight(entry, entry.Player, false)
 				Entries[ent] = nil
 			end
 		end
@@ -6531,6 +6941,7 @@ run(function()
 					local entry = Entries[ent]
 					if entry then
 						entry.Billboard:Destroy()
+						setHighlight(entry, entry.Player, false)
 						Entries[ent] = nil
 					end
 				end))
@@ -6548,6 +6959,7 @@ run(function()
 				end)
 			else
 				table.clear(Entries)
+				table.clear(alerted)
 				Folder:ClearAllChildren()
 			end
 		end,
@@ -6576,6 +6988,8 @@ run(function()
 					blur.Visible = callback
 				end
 			end
+			-- A flagged player keeps their alert colour.
+			task.spawn(refreshAll)
 		end,
 		Default = true
 	})
@@ -6592,6 +7006,7 @@ run(function()
 					frame.BackgroundTransparency = 1 - opacity
 				end
 			end
+			task.spawn(refreshAll)
 		end,
 		Darker = true
 	})
@@ -6629,6 +7044,13 @@ run(function()
 		Function = function()
 			task.spawn(refreshAll)
 		end
+	})
+	Alerts = itemAlerts.create(InventoryESP, {
+		refresh = function()
+			task.spawn(refreshAll)
+		end,
+		highlight = true,
+		defaults = {'emerald x10', 'diamond x10'}
 	})
 	
 end)
@@ -8446,7 +8868,11 @@ run(function()
 	local ShowAmount
 	local ShowAll
 	local ShowOwn
+	local Alerts
 	local Reference = {}
+	-- chest -> {itemType = true} for what it has already been called out for, so each item is
+	-- said once when a chest reaches it and again only after it has dropped back below.
+	local alerted = {}
 	local Folder = Instance.new('Folder')
 	Folder.Parent = vain.gui
 	
@@ -8489,13 +8915,57 @@ run(function()
 		return not on(ShowOwn) and ownTeamChest(block)
 	end
 	
+	local refreshAdornee
+	
 	local function nearStorageItem(item)
 		for _, v in List.ListEnabled do
 			if item:find(v) then return v end
 		end
 	end
 	
-	local function refreshAdornee(v)
+	local function where(inst)
+		if inst:IsA('BasePart') then return inst.Position end
+		if inst:IsA('Model') then
+			local ok, pivot = pcall(inst.GetPivot, inst)
+			if ok then return pivot.Position end
+		end
+		local part = inst:FindFirstChildWhichIsA('BasePart', true)
+		return part and part.Position or nil
+	end
+	
+	-- The tint and outline a chest wears while it holds enough of a watched item, or its usual
+	-- look when it does not.
+	local function paint(v, active)
+		local frame = v:FindFirstChild('Frame')
+		if not frame then return end
+	
+		local stroke = frame:FindFirstChild('AlertStroke')
+		if active and Alerts then
+			local tint, opacity = Alerts.color()
+			frame.BackgroundColor3 = tint
+			frame.BackgroundTransparency = 1 - opacity
+			if not stroke then
+				stroke = Instance.new('UIStroke')
+				stroke.Name = 'AlertStroke'
+				stroke.Thickness = 2
+				stroke.Parent = frame
+			end
+			stroke.Color = tint
+			stroke.Enabled = true
+		else
+			frame.BackgroundColor3 = Color3.fromHSV(Color.Hue or 0, Color.Sat or 0, Color.Value or 0)
+			frame.BackgroundTransparency = 1 - (on(Background) and (Color.Opacity or 0.5) or 0)
+			if stroke then stroke.Enabled = false end
+		end
+	end
+	
+	local function refreshAll()
+		for _, v in Reference do
+			task.spawn(refreshAdornee, v)
+		end
+	end
+	
+	function refreshAdornee(v)
 		local chest = v.Adornee:FindFirstChild('ChestFolderValue')
 		chest = chest and chest.Value or nil
 		if not chest then
@@ -8523,7 +8993,8 @@ run(function()
 			summed. Reading only the first stack, the way the old dedup did, would under-report
 			anything that arrived in separate drops.
 		]]
-		local order, totals = {}, {}
+		local order, totals, all = {}, {}, {}
+		local watches = Alerts and Alerts.watches() or {}
 		for _, item in chestitems do
 			--[[
 				A child with no Amount is not an item.
@@ -8534,9 +9005,11 @@ run(function()
 			]]
 			local amount = item:GetAttribute('Amount')
 			if type(amount) ~= 'number' then continue end
+			all[item.Name] = (all[item.Name] or 0) + amount
 	
-			-- ShowAll displays all items regardless of the list; otherwise use the filter
-			local shouldShow = on(ShowAll) or table.find(List.ListEnabled, item.Name) or nearStorageItem(item.Name)
+			-- ShowAll displays all items regardless of the list; otherwise use the filter. A
+			-- watched item is always shown, since it is what the alert is about.
+			local shouldShow = on(ShowAll) or watches[item.Name] ~= nil or table.find(List.ListEnabled, item.Name) or nearStorageItem(item.Name)
 			if not shouldShow then continue end
 	
 			if totals[item.Name] == nil then
@@ -8577,6 +9050,36 @@ run(function()
 			end
 		end
 		table.clear(chestitems)
+	
+		--[[
+			Whether it holds enough of something watched.
+	
+			Counted over everything in the chest, not just what is drawn, and said once per
+			item: a chest that keeps its emeralds is not news every time someone opens it. An
+			item that drops back below is forgotten, so reaching it again is said again.
+		]]
+		local block = v.Adornee
+		local found = Alerts and Alerts.enabled() and Alerts.matches(all, watches) or {}
+		if #found > 0 then v.Enabled = true end
+		paint(v, #found > 0)
+	
+		if block then
+			local before = alerted[block] or {}
+			local now, fresh = {}, {}
+			for _, hit in found do
+				now[hit.itemType] = true
+				if not before[hit.itemType] then fresh[#fresh + 1] = hit end
+			end
+			alerted[block] = now
+	
+			if #fresh > 0 and Alerts then
+				local position = where(block)
+				local distance = position and entitylib.isAlive
+					and math.floor((position - entitylib.character.RootPart.Position).Magnitude) or nil
+				Alerts.notify('StorageESP', 'A chest holds ' .. Alerts.describe(fresh)
+					.. (distance and (' (' .. distance .. ' studs away)') or ''))
+			end
+		end
 	end
 	
 	local function Added(v)
@@ -8627,14 +9130,10 @@ run(function()
 	
 		StorageESP:Clean(chest.ChildAdded:Connect(function(item)
 			watchAmount(item)
-			if on(ShowAll) or table.find(List.ListEnabled, item.Name) or nearStorageItem(item.Name) then
-				refreshAdornee(billboard)
-			end
+			refreshAdornee(billboard)
 		end))
-		StorageESP:Clean(chest.ChildRemoved:Connect(function(item)
-			if on(ShowAll) or table.find(List.ListEnabled, item.Name) or nearStorageItem(item.Name) then
-				refreshAdornee(billboard)
-			end
+		StorageESP:Clean(chest.ChildRemoved:Connect(function()
+			refreshAdornee(billboard)
 		end))
 		task.spawn(refreshAdornee, billboard)
 	end
@@ -8649,6 +9148,7 @@ run(function()
 				end
 			else
 				table.clear(Reference)
+				table.clear(alerted)
 				Folder:ClearAllChildren()
 			end
 		end,
@@ -8672,6 +9172,8 @@ run(function()
 				v.Frame.BackgroundTransparency = 1 - (callback and Color.Opacity or 0)
 				v.Blur.Visible = callback
 			end
+			-- A chest that is flagged keeps its alert colour.
+			refreshAll()
 		end,
 		Default = true
 	})
@@ -8685,6 +9187,7 @@ run(function()
 				v.Frame.BackgroundColor3 = Color3.fromHSV(hue, sat, val)
 				v.Frame.BackgroundTransparency = 1 - opacity
 			end
+			refreshAll()
 		end,
 		Darker = true
 	})
@@ -8717,6 +9220,11 @@ run(function()
 			end
 		end
 	})
+	Alerts = itemAlerts.create(StorageESP, {
+		refresh = refreshAll,
+		defaults = {'emerald x10', 'diamond x10'}
+	})
+	
 end)
 
 run(function()
