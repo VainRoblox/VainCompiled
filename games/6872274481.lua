@@ -711,8 +711,22 @@ do
 		local refresh = options.refresh or function() end
 		local defaults = options.defaults or {'emerald x10', 'diamond x10'}
 		local api = {}
-		local Master, Item, Amount, Add, Watched, Reset, Notify, IgnoreSelf, Alert, Highlight, HighlightColor
+		local Master, Item, Add, Watched, Reset, Notify, IgnoreSelf, Alert, Highlight, HighlightColor
 		itemAlerts.items()
+
+		--[[
+			An amount per watched item, each on a slider of its own.
+
+			The list keeps 'emerald x10' because that is what a config saves, but the number
+			is set on the item's own slider rather than chosen before it is added. A slider
+			is made for every item the list holds and removed with it, so whatever the
+			slider says is what is looked for - and the list text is rewritten to match once
+			you let go, so it is what loads next time.
+		]]
+		local DEFAULT_AMOUNT = 10
+		local sliders, amounts = {}, {}
+		local syncing = false
+		local syncSliders
 
 		local function on(setting)
 			return setting ~= nil and setting.Enabled
@@ -720,8 +734,11 @@ do
 
 		local function layout()
 			local shown = on(Master)
-			for _, setting in {Item, Amount, Add, Watched, Reset, Notify, IgnoreSelf, Alert, Highlight} do
+			for _, setting in {Item, Add, Watched, Reset, Notify, IgnoreSelf, Alert, Highlight} do
 				if setting and setting.Object then setting.Object.Visible = shown end
+			end
+			for _, slider in sliders do
+				if slider.Object then slider.Object.Visible = shown end
 			end
 			if HighlightColor and HighlightColor.Object then
 				HighlightColor.Object.Visible = shown and on(Highlight)
@@ -758,15 +775,6 @@ do
 			Darker = true,
 			Visible = false
 		})
-		Amount = module:CreateSlider({
-			Name = 'Alert Amount',
-			Tooltip = 'How many of it counts',
-			Min = 1,
-			Max = 256,
-			Default = 10,
-			Darker = true,
-			Visible = false
-		})
 		--[[
 			Buttons are created visible and hidden afterwards by layout, rather than created
 			hidden: in GUIs whose buttons hand nothing back there would be no way to show
@@ -778,22 +786,20 @@ do
 
 		Add = makeButton({
 			Name = 'Add Item',
-			Tooltip = 'Adds the item and amount above to the list',
+			Tooltip = 'Adds the item - set how many on its own slider below',
 			Darker = true,
 			Function = function()
 				local itemType = Item and Item.Value
 				if not itemType or itemType == 'None' then return end
 
-				-- One entry per item, so adding it again changes the amount rather than
-				-- leaving two to disagree.
-				local entry = itemAlerts.entry(itemType, Amount and Amount.Value or 1)
-				local list, enabled = {}, {}
+				-- Once per item. Already watched, it has a slider - that is where the amount
+				-- changes.
 				for _, v in Watched.List do
-					if itemAlerts.parse(v) ~= itemType then list[#list + 1] = v end
+					if itemAlerts.parse(v) == itemType then return end
 				end
-				for _, v in Watched.ListEnabled do
-					if itemAlerts.parse(v) ~= itemType then enabled[#enabled + 1] = v end
-				end
+
+				local entry = itemAlerts.entry(itemType, DEFAULT_AMOUNT)
+				local list, enabled = table.clone(Watched.List), table.clone(Watched.ListEnabled)
 				list[#list + 1] = entry
 				enabled[#enabled + 1] = entry
 				setList(list, enabled)
@@ -807,6 +813,8 @@ do
 			Darker = true,
 			Visible = false,
 			Function = function()
+				-- Also called while the list is still being built, before Watched is set.
+				if Watched and syncSliders then syncSliders() end
 				refresh()
 			end
 		})
@@ -876,6 +884,108 @@ do
 			})
 		end
 
+		-- The item's entry rewritten with a new amount, everywhere it appears in the list.
+		local function writeAmount(itemType, amount)
+			local changed = false
+			local function rewrite(source)
+				local out = {}
+				for _, text in source do
+					if itemAlerts.parse(text) == itemType then
+						local entry = itemAlerts.entry(itemType, amount)
+						if entry ~= text then changed = true end
+						out[#out + 1] = entry
+					else
+						out[#out + 1] = text
+					end
+				end
+				return out
+			end
+			local list, enabled = rewrite(Watched.List), rewrite(Watched.ListEnabled)
+			if changed then setList(list, enabled) end
+		end
+
+		local function sliderName(itemType)
+			local name = itemAlerts.label(itemType) .. ' Amount'
+			local taken = module.Options and module.Options[name]
+			if taken and taken ~= sliders[itemType] then
+				name = itemType .. ' Amount'
+			end
+			return name
+		end
+
+		local function removeSlider(itemType)
+			local slider = sliders[itemType]
+			sliders[itemType] = nil
+			amounts[itemType] = nil
+			if not slider then return end
+			if module.Options and slider.Name and module.Options[slider.Name] == slider then
+				module.Options[slider.Name] = nil
+			end
+			if slider.Object then slider.Object:Destroy() end
+		end
+
+		local function addSlider(itemType, amount)
+			local name = sliderName(itemType)
+			local slider = module:CreateSlider({
+				Name = name,
+				Tooltip = 'How many ' .. itemAlerts.label(itemType) .. ' sets it off',
+				Min = 1,
+				Max = 256,
+				Default = amount,
+				Darker = true,
+				Visible = on(Master),
+				Function = function(value, final)
+					if syncing then return end
+					amounts[itemType] = value
+					if final then
+						writeAmount(itemType, value)
+						refresh()
+					end
+				end
+			})
+			if slider then
+				slider.Name = name
+				sliders[itemType] = slider
+			end
+		end
+
+		--[[
+			Sliders brought in line with the list.
+
+			Run whenever the list changes - added, removed, reset, typed into or loaded from a
+			config. The list text is the record, so a slider that disagrees with it is moved
+			to match; the guard stops that move being taken for you dragging it.
+		]]
+		function syncSliders()
+			if not Watched then return end
+
+			local present = {}
+			for _, text in Watched.List do
+				local itemType, amount = itemAlerts.parse(text)
+				if itemType and present[itemType] == nil then
+					present[itemType] = amount
+				end
+			end
+
+			for itemType in table.clone(sliders) do
+				if present[itemType] == nil then
+					removeSlider(itemType)
+				end
+			end
+
+			for itemType, amount in present do
+				amounts[itemType] = amount
+				local slider = sliders[itemType]
+				if not slider then
+					addSlider(itemType, amount)
+				elseif slider.Value ~= amount and slider.SetValue then
+					syncing = true
+					pcall(slider.SetValue, slider, amount)
+					syncing = false
+				end
+			end
+		end
+
 		function api.enabled()
 			return on(Master)
 		end
@@ -892,6 +1002,8 @@ do
 			for _, text in Watched.ListEnabled do
 				local itemType, amount = itemAlerts.parse(text)
 				if itemType then
+					-- The slider wins: it is live while dragged, the text only once let go.
+					amount = amounts[itemType] or amount
 					map[itemType] = math.min(map[itemType] or math.huge, amount)
 				end
 			end
@@ -942,7 +1054,10 @@ do
 			return Color3.fromHSV(HighlightColor.Hue or 0, HighlightColor.Sat or 0.85, HighlightColor.Value or 1), HighlightColor.Opacity or 0.5
 		end
 
-		task.defer(layout)
+		task.defer(function()
+			syncSliders()
+			layout()
+		end)
 		return api
 	end
 end
