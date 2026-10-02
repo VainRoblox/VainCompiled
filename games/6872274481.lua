@@ -657,6 +657,52 @@ do
 		return labels[itemType] or itemType
 	end
 
+	--[[
+		A name in its team's colour, for the alert text.
+
+		Coloured the way the rest of Vain colours teams - by the player's own TeamColor, so
+		an alert reads the same as the nametag over them. A chest only knows its team's id,
+		so anyone still on that team stands in for it; the queue's own team list numbers
+		teams from a different end and would give the wrong colour.
+	]]
+	local function escape(text)
+		return (tostring(text):gsub('&', '&amp;'):gsub('<', '&lt;'):gsub('>', '&gt;'))
+	end
+
+	function itemAlerts.colored(text, color)
+		if typeof(color) ~= 'Color3' then return escape(text) end
+		return string.format('<font color="#%02X%02X%02X">%s</font>',
+			math.floor(color.R * 255 + 0.5), math.floor(color.G * 255 + 0.5), math.floor(color.B * 255 + 0.5),
+			escape(text))
+	end
+
+	local function teamColorOf(plr)
+		if plr and plr.TeamColor and tostring(plr.TeamColor) ~= 'White' then
+			return plr.TeamColor.Color
+		end
+	end
+
+	-- A player's name, in their team's colour.
+	function itemAlerts.playerName(plr, name)
+		return itemAlerts.colored(name or plr.Name, teamColorOf(plr))
+	end
+
+	-- 'Team Blue' in blue, from a team id, or nil when nobody on that team can say.
+	function itemAlerts.teamName(teamId)
+		if teamId == nil then return nil end
+		local wanted = tostring(teamId)
+		for _, plr in playersService:GetPlayers() do
+			if tostring(plr:GetAttribute('Team')) == wanted then
+				local color = teamColorOf(plr)
+				local name = plr.Team and plr.Team.Name
+				if color or name then
+					return itemAlerts.colored('Team ' .. (name or wanted), color)
+				end
+			end
+		end
+		return 'Team ' .. escape(wanted)
+	end
+
 	-- An entry as text, the form the list keeps.
 	function itemAlerts.entry(itemType, amount)
 		return itemType .. ' x' .. math.max(1, math.floor(tonumber(amount) or 1))
@@ -6880,7 +6926,9 @@ run(function()
 		alerted[plr] = now
 	
 		if #fresh > 0 and Alerts then
-			local who = plr == lplr and 'You have ' or (plr.Name .. ' has ')
+			-- Named in their team's colour, the way the nametag over them is.
+			local who = plr == lplr and (itemAlerts.playerName(plr, 'You') .. ' have ')
+				or (itemAlerts.playerName(plr) .. ' has ')
 			Alerts.notify('InventoryESP', who .. Alerts.describe(fresh))
 		end
 	end
@@ -9359,8 +9407,18 @@ run(function()
 				local position = where(block)
 				local distance = position and entitylib.isAlive
 					and math.floor((position - entitylib.character.RootPart.Position).Magnitude) or nil
-				Alerts.notify('StorageESP', 'A chest holds ' .. Alerts.describe(fresh)
-					.. (distance and (' (' .. distance .. ' studs away)') or ''))
+				-- Whose chest it is, in their colour, from the same Team attribute Show Own reads.
+				local owner
+				local node = block
+				for _ = 1, 3 do
+					if not node then break end
+					owner = teamOf(node)
+					if owner then break end
+					node = node.Parent
+				end
+				local team = itemAlerts.teamName(owner)
+				Alerts.notify('StorageESP', (team and (team .. "'s chest holds ") or 'A chest holds ')
+					.. Alerts.describe(fresh) .. (distance and (' (' .. distance .. ' studs away)') or ''))
 			end
 		end
 	end
