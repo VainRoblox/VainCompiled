@@ -711,7 +711,7 @@ do
 		local refresh = options.refresh or function() end
 		local defaults = options.defaults or {'emerald x10', 'diamond x10'}
 		local api = {}
-		local Master, Item, Amount, Add, Watched, Reset, Notify, Alert, Highlight, HighlightColor
+		local Master, Item, Amount, Add, Watched, Reset, Notify, IgnoreSelf, Alert, Highlight, HighlightColor
 		itemAlerts.items()
 
 		local function on(setting)
@@ -720,7 +720,7 @@ do
 
 		local function layout()
 			local shown = on(Master)
-			for _, setting in {Item, Amount, Add, Watched, Reset, Notify, Alert, Highlight} do
+			for _, setting in {Item, Amount, Add, Watched, Reset, Notify, IgnoreSelf, Alert, Highlight} do
 				if setting and setting.Object then setting.Object.Visible = shown end
 			end
 			if HighlightColor and HighlightColor.Object then
@@ -825,6 +825,18 @@ do
 			Darker = true,
 			Visible = false
 		})
+		IgnoreSelf = module:CreateToggle({
+			Name = 'Ignore Self',
+			Tooltip = 'Off also flags you and your own team',
+			Default = true,
+			Darker = true,
+			Visible = false,
+			Function = function()
+				-- Which things are looked at can change, not just how they look.
+				local rebuild = options.rebuild or refresh
+				rebuild()
+			end
+		})
 		Alert = module:CreateColorSlider({
 			Name = 'Alert Color',
 			Tooltip = 'Colour the ESP turns while it holds enough',
@@ -866,6 +878,11 @@ do
 
 		function api.enabled()
 			return on(Master)
+		end
+
+		-- Whether you and your own team are flagged too, rather than left out.
+		function api.includeSelf()
+			return on(Master) and IgnoreSelf ~= nil and not IgnoreSelf.Enabled
 		end
 
 		-- What is watched and how many of each, from the entries that are switched on.
@@ -6496,6 +6513,8 @@ run(function()
 	local watching = {}
 	-- player -> {itemType = true} for what they have already been called out for.
 	local alerted = {}
+	-- Your own character is not one of the entries, so its highlight is kept here.
+	local selfEntry = {}
 	
 	-- The things worth knowing an enemy has. Seeded straight into the item list, so they can
 	-- be switched off or removed there like anything else rather than being nine settings of
@@ -6677,8 +6696,47 @@ run(function()
 		alerted[plr] = now
 	
 		if #fresh > 0 and Alerts then
-			Alerts.notify('InventoryESP', plr.Name .. ' has ' .. Alerts.describe(fresh))
+			local who = plr == lplr and 'You have ' or (plr.Name .. ' has ')
+			Alerts.notify('InventoryESP', who .. Alerts.describe(fresh))
 		end
+	end
+	
+	-- Everything someone holds, by item - for checking alerts on people who are not drawn.
+	local function holdings(plr)
+		local all = {}
+		local folder = inventoryFolder(plr)
+		if folder then
+			for _, child in folder:GetChildren() do
+				all[child.Name] = (all[child.Name] or 0) + (tonumber(child:GetAttribute('Amount')) or 1)
+			end
+			return all
+		end
+	
+		local inventory = store.inventories[plr]
+		if plr == lplr and not inventory then
+			inventory = store.inventory and store.inventory.inventory
+		end
+		if type(inventory) == 'table' and type(inventory.items) == 'table' then
+			for _, item in inventory.items do
+				if type(item) == 'table' and item.itemType then
+					all[item.itemType] = (all[item.itemType] or 0) + (tonumber(item.amount) or 1)
+				end
+			end
+		end
+		return all
+	end
+	
+	--[[
+		The alert without the strip.
+	
+		With Ignore Self off you and your team are flagged too, but whether their loot is drawn
+		is still Ignore Teammates' call - and nobody needs their own inventory drawn over their
+		head. So these are told and highlighted without being drawn.
+	]]
+	local function alertOnly(entry, plr)
+		local found = Alerts and Alerts.enabled() and Alerts.matches(holdings(plr), watching) or {}
+		announce(plr, found)
+		setHighlight(entry, plr, #found > 0 and Alerts.highlight())
 	end
 	
 	--[[
@@ -6827,7 +6885,13 @@ run(function()
 				local ok, err = pcall(function()
 					if hidden(ent, entry.Player) then
 						entry.Shown = false
-						setHighlight(entry, entry.Player, false)
+						-- A hidden teammate is still checked when you asked for your own team;
+						-- someone who outranks you is not, whatever the setting.
+						if not ent.Protected and Alerts and Alerts.includeSelf() then
+							alertOnly(entry, entry.Player)
+						else
+							setHighlight(entry, entry.Player, false)
+						end
 					else
 						refreshAdornee(entry, entry.Player)
 					end
@@ -6841,6 +6905,19 @@ run(function()
 				setHighlight(entry, entry.Player, false)
 				Entries[ent] = nil
 			end
+		end
+	
+		-- You, when Ignore Self is off.
+		local ok = pcall(function()
+			if Alerts and Alerts.includeSelf() and entitylib.isAlive then
+				alertOnly(selfEntry, lplr)
+			else
+				setHighlight(selfEntry, lplr, false)
+				alerted[lplr] = nil
+			end
+		end)
+		if not ok then
+			setHighlight(selfEntry, lplr, false)
 		end
 	end
 	
@@ -6960,6 +7037,7 @@ run(function()
 			else
 				table.clear(Entries)
 				table.clear(alerted)
+				selfEntry.Highlight = nil
 				Folder:ClearAllChildren()
 			end
 		end,
@@ -8910,9 +8988,11 @@ run(function()
 		return false
 	end
 	
-	-- Hidden unless asked for: what is in your own crate is something you already know.
+	-- Hidden unless asked for: what is in your own crate is something you already know. Item
+	-- Alerts with Ignore Self off asks for it too, so your team's chest is watched as well.
 	local function hiddenAsOwn(block)
-		return not on(ShowOwn) and ownTeamChest(block)
+		if on(ShowOwn) or (Alerts and Alerts.includeSelf()) then return false end
+		return ownTeamChest(block)
 	end
 	
 	local refreshAdornee
@@ -9222,6 +9302,13 @@ run(function()
 	})
 	Alerts = itemAlerts.create(StorageESP, {
 		refresh = refreshAll,
+		-- Ignore Self changes which chests are shown at all, so they are rebuilt.
+		rebuild = function()
+			if StorageESP.Enabled then
+				StorageESP:Toggle()
+				StorageESP:Toggle()
+			end
+		end,
 		defaults = {'emerald x10', 'diamond x10'}
 	})
 	
