@@ -7706,6 +7706,7 @@ end)
 
 run(function()
 	local KitDisplay
+	local RankedOnly
 	
 	local function getKitMeta(player)
 		local kit = player:GetAttribute('PlayingAsKits') or player:GetAttribute('PlayingAsKit') or 'none'
@@ -7965,8 +7966,15 @@ run(function()
 		end
 	end
 	
+	-- Ranked by the queue's name, the same way AntiRender picks it out, so a ranked playlist
+	-- added later is covered without a list to keep up to date.
+	local function ranked()
+		return (store.queueType or ''):find('ranked') ~= nil
+	end
+	
 	local function runSetup(DraftApp)
 		if not DraftApp or not KitDisplay.Enabled then return end
+		if RankedOnly and RankedOnly.Enabled and not ranked() then return end
 		-- 5v5 first; if it found no team columns it hooks PlayerName labels itself.
 		setup5v5(DraftApp)
 		setupSquad(DraftApp)
@@ -7993,6 +8001,17 @@ run(function()
 			end
 		end,
 		Tooltip = 'Allows you to see the other opponent kits'
+	})
+	RankedOnly = KitDisplay:CreateToggle({
+		Name = 'Ranked Only',
+		Tooltip = 'Only shows kits while queueing ranked',
+		Function = function()
+			-- Restarted so kit images already drawn come off, or go on, straight away.
+			if KitDisplay.Enabled then
+				KitDisplay:Toggle()
+				KitDisplay:Toggle()
+			end
+		end
 	})
 	
 end)
