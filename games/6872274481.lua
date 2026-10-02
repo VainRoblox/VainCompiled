@@ -758,7 +758,7 @@ do
 		options = options or {}
 		local refresh = options.refresh or function() end
 		local api = {}
-		local Master, Item, Add, Watched, Stored, Reset, Notify, IgnoreSelf, Alert, Highlight, HighlightColor
+		local Master, Item, Add, Watched, Stored, Reset, Notify, IgnoreSelf, Until, Alert, Highlight, HighlightColor
 		itemAlerts.items()
 
 		--[[
@@ -790,7 +790,7 @@ do
 
 		local function layout()
 			local shown = on(Master)
-			for _, setting in {Item, Add, Watched, Reset, Notify, IgnoreSelf, Alert, Highlight} do
+			for _, setting in {Item, Add, Watched, Reset, Notify, IgnoreSelf, Until, Alert, Highlight} do
 				if setting and setting.Object then setting.Object.Visible = shown end
 			end
 			for _, slider in sliders do
@@ -938,6 +938,30 @@ do
 				-- Which things are looked at can change, not just how they look.
 				local rebuild = options.rebuild or refresh
 				rebuild()
+			end
+		})
+		--[[
+			How far into the match alerts are still worth having.
+
+			Late on, everybody is carrying emeralds and every chest has a stack, so an alert
+			stops meaning anything. Past the time set here nothing is flagged or said; at the
+			top of the range it never stops. Measured the way the game measures match time,
+			from when the match began.
+		]]
+		local NO_LIMIT = 20
+		Until = module:CreateSlider({
+			Name = 'Alert Until',
+			Tooltip = 'Stops alerting this many minutes into the match\n20+ never stops',
+			Min = 1,
+			Max = NO_LIMIT,
+			Default = NO_LIMIT,
+			Darker = true,
+			Visible = false,
+			Suffix = function(value)
+				return value >= NO_LIMIT and 'min+' or 'min'
+			end,
+			Function = function()
+				refresh()
 			end
 		})
 		Alert = module:CreateColorSlider({
@@ -1101,8 +1125,16 @@ do
 			layout()
 		end
 
+		local function expired()
+			local limit = Until and Until.Value or NO_LIMIT
+			if limit >= NO_LIMIT then return false end
+			local started = store.matchStartTime
+			if type(started) ~= 'number' or started <= 0 then return false end
+			return os.time() - started >= limit * 60
+		end
+
 		function api.enabled()
-			return on(Master)
+			return on(Master) and not expired()
 		end
 
 		-- Whether you and your own team are flagged too, rather than left out.
@@ -1113,7 +1145,7 @@ do
 		-- What is watched and how many of each, from the entries that are switched on.
 		function api.watches()
 			local map = {}
-			if not (on(Master) and Watched) then return map end
+			if not (api.enabled() and Watched) then return map end
 			local stored = storedAmounts()
 			for _, text in Watched.ListEnabled do
 				local itemType = itemAlerts.parse(text)
@@ -1161,7 +1193,7 @@ do
 		end
 
 		function api.highlight()
-			return on(Master) and on(Highlight)
+			return api.enabled() and on(Highlight)
 		end
 
 		function api.highlightColor()
@@ -1172,6 +1204,20 @@ do
 		task.defer(function()
 			syncSliders()
 			layout()
+		end)
+
+		-- Nothing changes in a chest when the time runs out, so the moment it does is
+		-- watched for, and the module told to redraw without the alert.
+		task.spawn(function()
+			local was = expired()
+			repeat
+				task.wait(2)
+				local now = expired()
+				if now ~= was then
+					was = now
+					refresh()
+				end
+			until vain.Loaded == nil
 		end)
 		return api
 	end
@@ -2463,6 +2509,9 @@ run(function()
 		if new.Game ~= old.Game then
 			store.matchState = new.Game.matchState
 			store.queueType = new.Game.queueType or 'bedwars_test'
+			-- When the match began, in os.time - the clock the game itself measures match
+			-- time against.
+			store.matchStartTime = new.Game.startTime
 		end
 
 		if new.Inventory ~= old.Inventory then
