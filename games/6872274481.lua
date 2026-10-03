@@ -29646,10 +29646,35 @@ run(function()
 	
 	local RANGE = 24
 	local SEGMENTS = 64
-	-- The root part sits about this far above the ground; the ring is lifted a little off it
-	-- so the floor does not swallow it.
+	-- The root part sits about this far above the ground when the humanoid gives nothing
+	-- better; the ring is lifted a little off it so the floor does not swallow it.
 	local ROOT_HEIGHT = 2.5
 	local LIFT = 0.2
+	local lastGround
+	
+	local groundParams = RaycastParams.new()
+	groundParams.FilterType = Enum.RaycastFilterType.Exclude
+	groundParams.RespectCanCollide = true
+	
+	--[[
+		The floor under you and how high your root stands above it. Measured from the floor
+		rather than the root itself, so jumping or falling does not move or shrink the ring:
+		it always shows the range for standing on the ground below you.
+	]]
+	local function standing(root)
+		local humanoid = entitylib.character.Humanoid
+		local rootHeight = humanoid and (humanoid.HipHeight + root.Size.Y / 2) or ROOT_HEIGHT
+		local ignore = {gameCamera, Folder}
+		for _, plr in playersService:GetPlayers() do
+			if plr.Character then ignore[#ignore + 1] = plr.Character end
+		end
+		groundParams.FilterDescendantsInstances = ignore
+		local hit = workspace:Raycast(root.Position, Vector3.new(0, -60, 0), groundParams)
+		if hit then
+			lastGround = hit.Position.Y
+		end
+		return lastGround or (root.Position.Y - rootHeight), rootHeight
+	end
 	local FILL_STRENGTH = 0.22
 	
 	local function colorOf(setting)
@@ -29716,6 +29741,10 @@ run(function()
 	local function update()
 		local root = entitylib.isAlive and entitylib.character.RootPart
 		local now = workspace:GetServerTimeNow()
+		local ground, rootHeight
+		if root and Mode.Value == 'Ring' and next(traps) then
+			ground, rootHeight = standing(root)
+		end
 		for trap, entry in traps do
 			if not trap.Parent then
 				remove(trap)
@@ -29758,15 +29787,16 @@ run(function()
 				entry.sphere.Visible = true
 			else
 				entry.sphere.Visible = false
-				-- The circle where the range meets your root's height, laid on the ground.
-				local height = root and root.Position.Y or center.Y
-				local dy = height - center.Y
+				-- The circle where the range meets your root standing on the floor below you,
+				-- laid on that floor.
+				local floor, height = ground or (center.Y - ROOT_HEIGHT), rootHeight or ROOT_HEIGHT
+				local dy = floor + height - center.Y
 				if math.abs(dy) >= RANGE then
 					hide(entry)
 					continue
 				end
 				local radius = math.sqrt(RANGE * RANGE - dy * dy)
-				local y = height - ROOT_HEIGHT + LIFT
+				local y = floor + LIFT
 				local thickness = Thickness.Value * ((danger and Pulse.Enabled) and 1.5 or 1)
 	
 				entry.disc.Visible = Fill.Enabled
