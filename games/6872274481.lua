@@ -15905,82 +15905,265 @@ run(function()
 	end)
 	
 	kitRun(function()
-	    local AutoTaliyah
-	    local Emerald
-	    local Diamond
-	    local Iron
-	    local Amount
+	    --[[
+	        Taliyah, as the kit actually works.
 	
-	    local function getShopNPC()
-	    	local shop, items, upgrades, newid = nil, false, false, nil
-	    	if entitylib.isAlive then
-	    		local localPosition = entitylib.character.RootPart.Position
-	    		for _, v in store.shop do
-	    			if (v.RootPart.Position - localPosition).Magnitude <= 20 then
-	    				shop = v.Upgrades or v.Shop or nil
-	    				upgrades = upgrades or v.Upgrades
-	    				items = items or v.Shop
-	    				newid = v.Shop and v.Id or newid
-	    			end
-	    		end
-	    	end
-	    	return shop, items, upgrades, newid
+	        The chicken price is two attributes on Workspace - ChickenPrice and ChickenCurrency -
+	        that the server moves around through the match. The currency is only ever iron or
+	        emerald: a price that climbs past 100 iron is usually turned into a hundredth of
+	        that in emeralds. The shop sells chickens back for that price (the "Sell chicken"
+	        entry, paid for with one deployed chicken), sells eggs for the same price, and sells
+	        nest upgrades.
+	
+	        The old module looked the price up through a TaliyahUtil Vain never had, so it threw
+	        on its first pass and never did anything; it also sent a sale every tenth of a second
+	        whether or not you had a chicken, and had a diamond setting the game never uses.
+	        This reads the attributes directly, only sells chickens you actually hold, and keeps
+	        iron and emerald prices apart because they are on completely different scales.
+	    ]]
+	    local AutoTaliyah
+	    local AutoSell, SellIron, MinIron, SellEmerald, MinEmerald, Keep
+	    local BuyEggs, MaxEggPrice, MaxEggs, KeepIron
+	    local AutoNest, PriceAlert, Notify
+	    local busyUntil = 0
+	    local lastAlerted
+	
+	    local NESTS = {
+	        {itemType = 'iron_chicken_nest', currency = 'iron', price = 60, name = 'Iron Nest'},
+	        {itemType = 'diamond_chicken_nest', currency = 'emerald', price = 2, name = 'Diamond Nest'},
+	        {itemType = 'emerald_chicken_nest', currency = 'emerald', price = 4, name = 'Emerald Nest'},
+	        {itemType = 'void_chicken_incubator', currency = 'emerald', price = 6, name = 'Void Incubator'}
+	    }
+	
+	    local function on(setting)
+	        return setting ~= nil and setting.Enabled
+	    end
+	
+	    local function price()
+	        local amount = workspace:GetAttribute('ChickenPrice')
+	        local currency = workspace:GetAttribute('ChickenCurrency')
+	        return type(amount) == 'number' and amount or 30, type(currency) == 'string' and currency or 'iron'
+	    end
+	
+	    local function count(itemType)
+	        local item = getItem(itemType)
+	        return item and item.amount or 0
+	    end
+	
+	    local function nearShop()
+	        if not entitylib.isAlive then return nil end
+	        local here = entitylib.character.RootPart.Position
+	        for _, v in store.shop do
+	            if v.Shop and v.RootPart and (v.RootPart.Position - here).Magnitude <= 20 then
+	                return v.Id
+	            end
+	        end
+	    end
+	
+	    local function purchased(itemType)
+	        local map = bedwars.BedwarsShopController and bedwars.BedwarsShopController.alreadyPurchasedMap
+	        return map ~= nil and map[itemType] == true
+	    end
+	
+	    -- The shop's own entry when it can give one, which carries the live price; a minimal
+	    -- stand-in otherwise, since the server works the purchase out from the item type.
+	    local function shopItem(itemType, fallbackPrice, fallbackCurrency)
+	        local ok, item = pcall(function()
+	            return bedwars.Shop.getShopItem(itemType, lplr)
+	        end)
+	        if ok and type(item) == 'table' then return item end
+	        return {itemType = itemType, amount = 1, price = fallbackPrice, currency = fallbackCurrency}
+	    end
+	
+	    -- One purchase at a time, waited on, so nothing is sent twice while the first is in
+	    -- flight.
+	    local function buy(shopId, item, message)
+	        busyUntil = os.clock() + 1
+	        bedwars.Client:Get('BedwarsPurchaseItem'):CallServerAsync({
+	            shopItem = item,
+	            shopId = shopId
+	        }):andThen(function(suc)
+	            busyUntil = 0
+	            if suc then
+	                bedwars.SoundManager:playSound(bedwars.SoundList.BEDWARS_PURCHASE_ITEM)
+	                bedwars.Store:dispatch({
+	                    type = 'BedwarsAddItemPurchased',
+	                    itemType = item.itemType
+	                })
+	                bedwars.BedwarsShopController.alreadyPurchasedMap[item.itemType] = true
+	                if on(Notify) and message then
+	                    notif('Auto Taliyah', message, 3)
+	                end
+	            end
+	        end)
+	    end
+	
+	    local function sellWorth(amount, currency)
+	        if currency == 'emerald' then
+	            return on(SellEmerald) and amount >= MinEmerald.Value
+	        end
+	        return on(SellIron) and amount >= MinIron.Value
+	    end
+	
+	    local function label(amount, currency)
+	        local meta = bedwars.ItemMeta[currency]
+	        return amount .. ' ' .. (meta and meta.displayName or currency)
+	    end
+	
+	    local function step(shopId)
+	        local amount, currency = price()
+	
+	        -- Sell first: a good price is the moment that does not come back.
+	        if on(AutoSell) and sellWorth(amount, currency) and count('chicken_deploy') > Keep.Value then
+	            buy(shopId, shopItem('chicken_shop_item', 1, 'chicken_deploy'), 'Sold a chicken for ' .. label(amount, currency))
+	            return
+	        end
+	
+	        -- Eggs only on iron: an emerald price is the expensive end of the range by definition.
+	        if on(BuyEggs) and currency == 'iron' and amount <= MaxEggPrice.Value
+	            and count('chicken_egg') < MaxEggs.Value
+	            and count('iron') - amount >= KeepIron.Value then
+	            buy(shopId, shopItem('chicken_egg', amount, currency), 'Bought an egg for ' .. label(amount, currency))
+	            return
+	        end
+	
+	        -- The next nest you do not have yet, once you can pay for it.
+	        if on(AutoNest) then
+	            for _, nest in NESTS do
+	                if not purchased(nest.itemType) then
+	                    if count(nest.currency) >= nest.price then
+	                        buy(shopId, shopItem(nest.itemType, nest.price, nest.currency), 'Bought the ' .. nest.name)
+	                    end
+	                    return
+	                end
+	            end
+	        end
 	    end
 	
 	    AutoTaliyah = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Taliyah',
-	    	Tooltip = 'Automatically buy chickens when it sells for emerald',
-	    	Function = function(callback)
-	    		if callback then
-	    			repeat
-	    				local shopNpc, items, __, id = getShopNPC()
-	    				if shopNpc and items then
-	    					local chickenData = bedwars.TaliyahUtil:getPrice()
-	    					if (chickenData.currency == 'emerald' and Emerald.Enabled or chickenData.currency == 'iron' and Iron.Enabled or chickenData.currency == 'diamond' and Diamond.Enabled) and chickenData.price >= Amount.Value then
-	    						local item = bedwars.Shop.getShopItem('chicken_shop_item', lplr)
+	        Name = 'Auto Taliyah',
+	        Tooltip = 'Sells chickens at good prices, buys cheap eggs and nests',
+	        Function = function(callback)
+	            if callback then
+	                -- Told when the price moves somewhere worth selling at, whether or not you
+	                -- are at a shop to do it.
+	                AutoTaliyah:Clean(workspace:GetAttributeChangedSignal('ChickenPrice'):Connect(function()
+	                    if not (on(PriceAlert) and store.equippedKit == 'taliyah') then return end
+	                    local amount, currency = price()
+	                    local key = amount .. currency
+	                    if sellWorth(amount, currency) and key ~= lastAlerted then
+	                        lastAlerted = key
+	                        notif('Auto Taliyah', 'Chickens sell for ' .. label(amount, currency), 5)
+	                    end
+	                end))
 	
-	    						bedwars.Client:Get('BedwarsPurchaseItem'):CallServerAsync({
-	    							shopItem = item,
-	    							shopId = id
-	    						}):andThen(function(suc)
-	    							if suc then
-	    								bedwars.SoundManager:playSound(bedwars.SoundList.BEDWARS_PURCHASE_ITEM)
-	    								bedwars.Store:dispatch({
-	    									type = 'BedwarsAddItemPurchased',
-	    									itemType = item.itemType
-	    								})
-	    								bedwars.BedwarsShopController.alreadyPurchasedMap[item.itemType] = true
-	    							end
-	    						end)
-	    					end
-	    				end
-	    				task.wait(0.1)
-	    			until not AutoTaliyah.Enabled
-	    		end
-	    	end,
+	                repeat
+	                    pcall(function()
+	                        if store.equippedKit ~= 'taliyah' or os.clock() < busyUntil then return end
+	                        local shopId = nearShop()
+	                        if shopId then step(shopId) end
+	                    end)
+	                    task.wait(0.25)
+	                until not AutoTaliyah.Enabled
+	            else
+	                busyUntil, lastAlerted = 0, nil
+	            end
+	        end
 	    })
 	
-	    Iron = AutoTaliyah:CreateToggle({
-	    	Name = 'Iron',
-	    	Default = true,
-	    	Tooltip = 'Sells ur chicken when the currency is iron'
+	    AutoSell = AutoTaliyah:CreateToggle({
+	        Name = 'Auto Sell',
+	        Tooltip = 'Sells chickens at a shop when the price is right',
+	        Default = true,
+	        Function = function(callback)
+	            for _, setting in {SellIron, MinIron, SellEmerald, MinEmerald, Keep} do
+	                if setting and setting.Object then setting.Object.Visible = callback end
+	            end
+	        end
 	    })
-	    Emerald = AutoTaliyah:CreateToggle({
-	    	Name = 'Emerald',
-	    	Default = true,
-	    	Tooltip = 'Sells ur chicken when the currency is emerald'
+	    SellIron = AutoTaliyah:CreateToggle({
+	        Name = 'Sell For Iron',
+	        Tooltip = 'Sells when the price is in iron',
+	        Default = true,
+	        Darker = true
 	    })
-	    Diamond = AutoTaliyah:CreateToggle({
-	    	Name = 'Diamond',
-	    	Default = true,
-	    	Tooltip = 'Sells ur chicken when the currency is diamond'
+	    MinIron = AutoTaliyah:CreateSlider({
+	        Name = 'Min Iron Price',
+	        Tooltip = 'Lowest iron price to sell at',
+	        Min = 1,
+	        Max = 99,
+	        Default = 40,
+	        Darker = true
 	    })
-	    Amount = AutoTaliyah:CreateSlider({
-	    	Name = 'Amount',
-	    	Default = 2,
-	    	Min = 1,
-	    	Max = 1000,
-	    	Tooltip = 'Only sells if the currency is selling for the selected amount'
+	    SellEmerald = AutoTaliyah:CreateToggle({
+	        Name = 'Sell For Emerald',
+	        Tooltip = 'Sells when the price is in emeralds',
+	        Default = true,
+	        Darker = true
+	    })
+	    MinEmerald = AutoTaliyah:CreateSlider({
+	        Name = 'Min Emerald Price',
+	        Tooltip = 'Lowest emerald price to sell at',
+	        Min = 1,
+	        Max = 12,
+	        Default = 2,
+	        Darker = true
+	    })
+	    Keep = AutoTaliyah:CreateSlider({
+	        Name = 'Keep Chickens',
+	        Tooltip = 'Never sells the last this many',
+	        Min = 0,
+	        Max = 8,
+	        Default = 0,
+	        Darker = true
+	    })
+	    BuyEggs = AutoTaliyah:CreateToggle({
+	        Name = 'Buy Eggs',
+	        Tooltip = 'Buys eggs when the price is cheap in iron',
+	        Function = function(callback)
+	            for _, setting in {MaxEggPrice, MaxEggs, KeepIron} do
+	                if setting and setting.Object then setting.Object.Visible = callback end
+	            end
+	        end
+	    })
+	    MaxEggPrice = AutoTaliyah:CreateSlider({
+	        Name = 'Max Egg Price',
+	        Tooltip = 'Highest iron price to buy an egg at',
+	        Min = 1,
+	        Max = 99,
+	        Default = 15,
+	        Darker = true,
+	        Visible = false
+	    })
+	    MaxEggs = AutoTaliyah:CreateSlider({
+	        Name = 'Max Eggs',
+	        Tooltip = 'Stops buying once you hold this many',
+	        Min = 1,
+	        Max = 16,
+	        Default = 4,
+	        Darker = true,
+	        Visible = false
+	    })
+	    KeepIron = AutoTaliyah:CreateSlider({
+	        Name = 'Keep Iron',
+	        Tooltip = 'Never spends iron below this',
+	        Min = 0,
+	        Max = 200,
+	        Default = 0,
+	        Darker = true,
+	        Visible = false
+	    })
+	    AutoNest = AutoTaliyah:CreateToggle({
+	        Name = 'Auto Nest',
+	        Tooltip = 'Buys the next nest upgrade when you can afford it'
+	    })
+	    PriceAlert = AutoTaliyah:CreateToggle({
+	        Name = 'Price Alert',
+	        Tooltip = 'Tells you when the price reaches your sell price'
+	    })
+	    Notify = AutoTaliyah:CreateToggle({
+	        Name = 'Notify',
+	        Tooltip = 'Tells you about each sale and purchase'
 	    })
 	end)
 	
