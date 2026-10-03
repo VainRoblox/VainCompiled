@@ -8741,26 +8741,54 @@ run(function()
 	--[[
 		The kits someone played in their last matches, from their match history.
 	
-		Asked for the way the Match History app does it - RequestMatchHistory with the user id
-		as text - which answers for any player, private profiles included. The profile's own
-		history (RequestProfileData) is only the fallback, as it comes back empty when the
-		profile is friends only or hidden. Each match lists every player with the kit they
-		played under bedwars.kit. Asked for once per player and kept for the session; the draft
-		screen asks for everyone at once, so the requests are spread out a little.
+		Asked for the way the game's Match History app does it -
+		MatchHistoryController:requestMatchHistory with the player's name, which resolves to
+		{player, matchHistory} - as that answers for any player, private profiles included.
+		The user id as text is tried next, then the profile's own history (RequestProfileData),
+		which comes back empty when the profile is friends only or hidden. Each match lists
+		every player with the kit they played under bedwars.kit.
+	
+		Every request has a time limit, so one the server never answers still ends in "no
+		history" instead of leaving the card waiting. Asked for once per player and kept for
+		the session; the draft screen asks for everyone at once, so the requests are spread out.
 	]]
+	local REQUEST_TIMEOUT = 6
+	
+	-- Runs a yielding request with a time limit; nil if it errors or takes too long.
+	local function within(seconds, request)
+		local result, finished = nil, false
+		local thread = task.spawn(function()
+			local ok, value = pcall(request)
+			result = ok and value or nil
+			finished = true
+		end)
+		local started = os.clock()
+		while not finished and os.clock() - started < seconds do
+			task.wait(0.1)
+		end
+		if not finished then pcall(task.cancel, thread) end
+		return result
+	end
+	
+	local function historyFrom(data)
+		if type(data) == 'table' and type(data.matchHistory) == 'table' and #data.matchHistory > 0 then
+			return data.matchHistory
+		end
+	end
+	
 	local function requestMatches(player)
-		local ok, data = pcall(function()
-			return bedwars.Client:Get('RequestMatchHistory'):CallServer(tostring(player.UserId))
-		end)
-		if ok and type(data) == 'table' and type(data.matchHistory) == 'table' and #data.matchHistory > 0 then
-			return data.matchHistory
+		local controller = bedwars.MatchHistoryController
+		for _, query in {player.Name, tostring(player.UserId)} do
+			local history = historyFrom(within(REQUEST_TIMEOUT, function()
+				local promise = controller:requestMatchHistory(query)
+				local ok, value = promise:await()
+				return ok and value or nil
+			end))
+			if history then return history end
 		end
-		ok, data = pcall(function()
+		return historyFrom(within(REQUEST_TIMEOUT, function()
 			return bedwars.Client:Get('RequestProfileData'):CallServer(player)
-		end)
-		if ok and type(data) == 'table' and type(data.matchHistory) == 'table' then
-			return data.matchHistory
-		end
+		end))
 	end
 	
 	local historyCache, historyWaiters = {}, {}
@@ -8792,9 +8820,10 @@ run(function()
 				for _, match in matches do
 					if #kits >= 10 then break end
 					for _, entry in (type(match.players) == 'table' and match.players or {}) do
-						if type(entry) == 'table' and entry.playerInfo and entry.playerInfo.userId == userId then
+						local info = type(entry) == 'table' and entry.playerInfo
+						if info and tonumber(info.userId) == userId then
 							local kit = entry.bedwars and entry.bedwars.kit
-							if type(kit) == 'string' then
+							if type(kit) == 'string' and kit ~= '' then
 								kits[#kits + 1] = kit
 							end
 							break
@@ -8810,7 +8839,43 @@ run(function()
 		end)
 	end
 	
-	-- A row of the kits under a player's card, most recent first.
+	-- A small row of kit icons in the bottom right of a player's card, newest on the right
+	-- edge. Kept inside the card, as anything hanging off it is clipped by the draft list.
+	local function newRow(card)
+		local row = Instance.new('Frame')
+		row.Name = 'KitHistory'
+		row.BackgroundTransparency = 1
+		row.AnchorPoint = Vector2.new(1, 1)
+		row.Position = UDim2.new(1, -4, 1, -4)
+		row.Size = UDim2.new(0.62, 0, 0.2, 0)
+		row.ZIndex = 10
+		row.Parent = card
+		KitDisplay:Clean(row)
+	
+		local layout = Instance.new('UIListLayout')
+		layout.FillDirection = Enum.FillDirection.Horizontal
+		layout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+		layout.VerticalAlignment = Enum.VerticalAlignment.Center
+		layout.SortOrder = Enum.SortOrder.LayoutOrder
+		layout.Padding = UDim.new(0, 2)
+		layout.Parent = row
+		return row
+	end
+	
+	local function rowText(row, text)
+		local label = Instance.new('TextLabel')
+		label.BackgroundTransparency = 1
+		label.Size = UDim2.fromScale(1, 1)
+		label.Text = text
+		label.TextScaled = true
+		label.Font = Enum.Font.GothamBold
+		label.TextColor3 = Color3.fromRGB(200, 200, 200)
+		label.TextStrokeTransparency = 0.5
+		label.TextXAlignment = Enum.TextXAlignment.Right
+		label.ZIndex = 10
+		label.Parent = row
+	end
+	
 	local function drawHistory(card, player)
 		if not card then return end
 		local old = card:FindFirstChild('KitHistory')
@@ -8820,52 +8885,34 @@ run(function()
 		-- Cards are reused as the list reorders, so the answer is only drawn if the card still
 		-- shows the player it was asked for.
 		card:SetAttribute('KitHistoryUser', player.UserId)
+		rowText(newRow(card), '…')
 		fetchHistory(player, function(kits)
 			if not (card.Parent and KitDisplay.Enabled) then return end
 			if card:GetAttribute('KitHistoryUser') ~= player.UserId then return end
 			if card:FindFirstChild('KitHistory') then card.KitHistory:Destroy() end
 	
-			local row = Instance.new('Frame')
-			row.Name = 'KitHistory'
-			row.BackgroundTransparency = 1
-			row.AnchorPoint = Vector2.new(0, 0)
-			row.Position = UDim2.new(0, 0, 1, 2)
-			row.Size = UDim2.new(1, 0, 0.32, 0)
-			row.ZIndex = 2
-			row.Parent = card
-			KitDisplay:Clean(row)
-	
-			local layout = Instance.new('UIListLayout')
-			layout.FillDirection = Enum.FillDirection.Horizontal
-			layout.SortOrder = Enum.SortOrder.LayoutOrder
-			layout.Padding = UDim.new(0, 2)
-			layout.Parent = row
-	
+			local row = newRow(card)
 			local shown = math.min(#kits, HistoryCount and HistoryCount.Value or 10)
 			if shown == 0 then
-				local none = Instance.new('TextLabel')
-				none.BackgroundTransparency = 1
-				none.Size = UDim2.fromScale(1, 1)
-				none.Text = 'No history'
-				none.TextScaled = true
-				none.TextColor3 = Color3.fromRGB(200, 200, 200)
-				none.TextXAlignment = Enum.TextXAlignment.Left
-				none.Parent = row
+				rowText(row, 'No history')
 				return
 			end
 			for i = 1, shown do
 				local meta = bedwars.BedwarsKitMeta[kits[i]]
 				local icon = Instance.new('ImageLabel')
 				icon.Name = kits[i]
-				icon.LayoutOrder = i
-				icon.BackgroundTransparency = 1
+				-- Laid out right to left: the newest sits on the edge.
+				icon.LayoutOrder = shown - i
+				icon.BackgroundColor3 = Color3.new(0, 0, 0)
+				icon.BackgroundTransparency = 0.45
 				icon.SizeConstraint = Enum.SizeConstraint.RelativeYY
 				icon.Size = UDim2.fromScale(1, 1)
 				icon.ScaleType = Enum.ScaleType.Crop
 				icon.Image = meta and meta.renderImage or ''
-				-- Newest brightest, fading back through the older ones.
 				icon.ImageTransparency = math.clamp((i - 1) * 0.05, 0, 0.45)
+				icon.ZIndex = 10
 				icon.Parent = row
+				Instance.new('UICorner', icon).CornerRadius = UDim.new(0.25, 0)
 			end
 		end)
 	end
