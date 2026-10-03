@@ -7360,6 +7360,7 @@ run(function()
 	local Diamond, Emerald, Team, ShowItems, ShowTier, ShowTimer, ProgressBar, Icons
 	local Background, BackgroundColor, Outline, FontOption, Range, Scale
 	local ShowDistance, Compact, HideEmpty, FullAlert, FullAmount, FullColor, ShowTierUp
+	local ReplaceGame, ShrinkFar, FullSizeWithin, MinSize, ShowOccupants
 	
 	--[[
 		When the diamond and emerald generators level up: the game's BWOreGenLevelSystem steps
@@ -7454,9 +7455,45 @@ run(function()
 		return false
 	end
 	
+	--[[
+		The game's own label over a generator is a BillboardGui under its RoactTree. With
+		Replace Game Label on it is switched off and the card takes its place - the same spot
+		over the generator - and it is switched back on when the card goes.
+	]]
+	local function gameLabels(model)
+		local list = {}
+		local tree = model:FindFirstChild('RoactTree')
+		if tree then
+			if tree:IsA('BillboardGui') then list[#list + 1] = tree end
+			for _, child in tree:GetDescendants() do
+				if child:IsA('BillboardGui') then list[#list + 1] = child end
+			end
+		end
+		return list
+	end
+	
+	local function restoreGame(entry)
+		for gui, enabled in entry.hidden or {} do
+			pcall(function() gui.Enabled = enabled end)
+		end
+		entry.hidden = nil
+	end
+	
+	local function replaceGame(model, entry, billboard)
+		if not entry.hidden then entry.hidden = {} end
+		for _, gui in gameLabels(model) do
+			if entry.hidden[gui] == nil then entry.hidden[gui] = gui.Enabled end
+			gui.Enabled = false
+			-- Sits where the game's label was.
+			billboard.StudsOffset = gui.StudsOffset
+			billboard.StudsOffsetWorldSpace = gui.StudsOffsetWorldSpace
+		end
+	end
+	
 	local function remove(model)
 		local entry = generators[model]
 		if entry then
+			restoreGame(entry)
 			entry.billboard:Destroy()
 			generators[model] = nil
 		end
@@ -7547,6 +7584,7 @@ run(function()
 		local distance = newText(header, 5)
 		local tierUp = newText(header, 6)
 		local contents = row(2)
+		local occupants = row(4)
 	
 		local bar = Instance.new('Frame')
 		bar.Name = 'Bar'
@@ -7565,7 +7603,12 @@ run(function()
 		generators[part] = {
 			billboard = billboard, adornee = part, card = card, stroke = stroke, padding = padding,
 			header = header, icon = icon, title = title, timer = timer, tier = tier, distance = distance, tierUp = tierUp,
-			contents = contents, chips = {}, bar = bar, fill = fill
+			contents = contents, chips = {}, bar = bar, fill = fill, occupants = occupants, dots = {},
+			scaler = (function()
+				local scale = Instance.new('UIScale')
+				scale.Parent = card
+				return scale
+			end)()
 		}
 	end
 	
@@ -7659,6 +7702,8 @@ run(function()
 		local inRange = not here or (entry.adornee.Position - here).Magnitude <= Range.Value
 		if not (kind and enabledKind(kind) and inRange) then
 			billboard.Enabled = false
+			-- Not shown here, so the game's own label comes back.
+			restoreGame(entry)
 			return
 		end
 	
@@ -7674,6 +7719,7 @@ run(function()
 		end
 		if on(HideEmpty) and total == 0 then
 			billboard.Enabled = false
+			restoreGame(entry)
 			return
 		end
 		local full = on(FullAlert) and total >= FullAmount.Value
@@ -7749,6 +7795,53 @@ run(function()
 			entry.fill.BackgroundColor3 = info.color
 		end
 	
+		-- The game's label off and the card in its place, or the game's label back.
+		if on(ReplaceGame) then
+			replaceGame(model, entry, billboard)
+		elseif entry.hidden then
+			restoreGame(entry)
+			billboard.StudsOffset = Vector3.zero
+			billboard.StudsOffsetWorldSpace = Vector3.new(0, 4.5, 0)
+		end
+	
+		-- Smaller the further away it is, so distant cards do not fill the screen.
+		local distanceAway = here and (entry.adornee.Position - here).Magnitude or 0
+		entry.scaler.Scale = on(ShrinkFar)
+			and math.clamp(FullSizeWithin.Value / math.max(distanceAway, 1), MinSize.Value / 100, 1)
+			or 1
+	
+		-- Who is standing at it, one dot per player in their team colour.
+		local present = {}
+		if on(ShowOccupants) and not compact then
+			local center = entry.adornee.Position
+			for _, entity in entitylib.List do
+				if entity.Player and entity.RootPart and (entity.Health or 0) > 0 then
+					local offset = entity.RootPart.Position - center
+					if Vector2.new(offset.X, offset.Z).Magnitude <= 10 and offset.Y <= 6 and offset.Y >= -16 then
+						present[#present + 1] = entity.Player
+					end
+				end
+			end
+		end
+		for i, player in present do
+			local dot = entry.dots[i]
+			if not dot then
+				dot = Instance.new('Frame')
+				dot.BorderSizePixel = 0
+				dot.LayoutOrder = i
+				dot.Parent = entry.occupants
+				Instance.new('UICorner', dot).CornerRadius = UDim.new(1, 0)
+				entry.dots[i] = dot
+			end
+			local dotSize = math.max(6, math.floor(size * 0.6))
+			dot.Size = UDim2.fromOffset(dotSize, dotSize)
+			dot.BackgroundColor3 = player.Team and player.TeamColor.Color or Color3.new(1, 1, 1)
+			dot.Visible = true
+		end
+		for i = #present + 1, #entry.dots do entry.dots[i].Visible = false end
+		entry.occupants.Visible = #present > 0
+		entry.occupants.Size = UDim2.fromOffset(0, math.max(6, math.floor(size * 0.6)))
+	
 		billboard.Size = UDim2.fromOffset(size * 22, size * 6)
 		billboard.Enabled = true
 	end
@@ -7821,6 +7914,44 @@ run(function()
 	ShowTier = GeneratorESP:CreateToggle({
 		Name = 'Show Tier',
 		Tooltip = 'Shows each generator\'s tier'
+	})
+	ReplaceGame = GeneratorESP:CreateToggle({
+		Name = 'Replace Game Label',
+		Tooltip = 'Hides the game\'s label and takes its place',
+		Default = true
+	})
+	ShrinkFar = GeneratorESP:CreateToggle({
+		Name = 'Shrink With Distance',
+		Tooltip = 'Far cards get smaller instead of filling the screen',
+		Default = true,
+		Function = function(callback)
+			for _, setting in {FullSizeWithin, MinSize} do
+				if setting and setting.Object then setting.Object.Visible = callback end
+			end
+		end
+	})
+	FullSizeWithin = GeneratorESP:CreateSlider({
+		Name = 'Full Size Within',
+		Tooltip = 'Closer than this, cards are full size',
+		Min = 5,
+		Max = 150,
+		Default = 35,
+		Darker = true,
+		Suffix = function(val) return val == 1 and 'stud' or 'studs' end
+	})
+	MinSize = GeneratorESP:CreateSlider({
+		Name = 'Smallest Size',
+		Tooltip = 'How small far cards can get',
+		Min = 10,
+		Max = 100,
+		Default = 40,
+		Darker = true,
+		Suffix = function() return '%' end
+	})
+	ShowOccupants = GeneratorESP:CreateToggle({
+		Name = 'Who\'s At Gen',
+		Tooltip = 'A dot in their team colour for each player at it',
+		Default = true
 	})
 	ShowTierUp = GeneratorESP:CreateToggle({
 		Name = 'Tier Up Timer',
@@ -8826,7 +8957,7 @@ run(function()
 	]]
 	local ItemESP
 	local Diamonds, Emeralds, Iron, Gold, Pearls, TNT, Others, OtherList
-	local SkipGenerators, Range, ShowDistance, Outline, TextSize
+	local SkipGenerators, Range, ShowDistance, Outline, TextSize, Group, GroupRadius
 	local Folder = Instance.new('Folder')
 	Folder.Name = 'ItemESP'
 	Folder.Parent = vain.gui
@@ -8924,8 +9055,41 @@ run(function()
 		drops[drop] = {billboard = billboard, label = label, part = part}
 	end
 	
+	--[[
+		Drops of the same item lying close together share one label with their total, on the
+		first of them, so a scattered pile reads "x12" once rather than twelve times.
+	]]
+	local function show(entry, drop, amount, distance, here)
+		local color = COLORS[drop.Name] or Color3.new(1, 1, 1)
+		entry.label.Text = 'x' .. amount .. (on(ShowDistance) and here and string.format('  %dm', math.floor(distance)) or '')
+		entry.label.TextColor3 = color
+		entry.label.TextSize = TextSize.Value
+		entry.billboard.Size = UDim2.fromOffset(TextSize.Value * 9, TextSize.Value + 6)
+		entry.billboard.Enabled = true
+		if on(Outline) then
+			if not entry.highlight then
+				entry.highlight = Instance.new('Highlight')
+				entry.highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+				entry.highlight.FillTransparency = 0.6
+				entry.highlight.Adornee = drop
+				entry.highlight.Parent = Folder
+			end
+			entry.highlight.FillColor = color
+			entry.highlight.OutlineColor = color
+			entry.highlight.Enabled = true
+		elseif entry.highlight then
+			entry.highlight.Enabled = false
+		end
+	end
+	
+	local function hide(entry)
+		entry.billboard.Enabled = false
+		if entry.highlight then entry.highlight.Enabled = false end
+	end
+	
 	local function update()
 		local here = entitylib.isAlive and entitylib.character.RootPart.Position
+		local wantedDrops = {}
 		for drop, entry in drops do
 			if not (drop.Parent and entry.part.Parent) then
 				remove(drop)
@@ -8933,32 +9097,33 @@ run(function()
 			end
 			local position = entry.part.Position
 			local distance = here and (position - here).Magnitude or 0
-			local show = wanted(drop.Name) and distance <= Range.Value
-				and not (on(SkipGenerators) and onGenerator(position))
-			entry.billboard.Enabled = show
-			if show then
-				local color = COLORS[drop.Name] or Color3.new(1, 1, 1)
-				local amount = tonumber(drop:GetAttribute('Amount')) or 1
-				entry.label.Text = 'x' .. amount .. (on(ShowDistance) and here and string.format('  %dm', math.floor(distance)) or '')
-				entry.label.TextColor3 = color
-				entry.label.TextSize = TextSize.Value
-				entry.billboard.Size = UDim2.fromOffset(TextSize.Value * 9, TextSize.Value + 6)
-				if on(Outline) then
-					if not entry.highlight then
-						entry.highlight = Instance.new('Highlight')
-						entry.highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-						entry.highlight.FillTransparency = 0.6
-						entry.highlight.Adornee = drop
-						entry.highlight.Parent = Folder
+			if wanted(drop.Name) and distance <= Range.Value and not (on(SkipGenerators) and onGenerator(position)) then
+				wantedDrops[#wantedDrops + 1] = {drop = drop, entry = entry, position = position, distance = distance,
+					amount = tonumber(drop:GetAttribute('Amount')) or 1}
+			else
+				hide(entry)
+			end
+		end
+	
+		if not on(Group) then
+			for _, item in wantedDrops do show(item.entry, item.drop, item.amount, item.distance, here) end
+			return
+		end
+		-- Nearest first, so each group's label sits on the drop closest to you.
+		table.sort(wantedDrops, function(a, b) return a.distance < b.distance end)
+		local taken = {}
+		for i, leader in wantedDrops do
+			if not taken[i] then
+				local total = leader.amount
+				for j = i + 1, #wantedDrops do
+					local other = wantedDrops[j]
+					if not taken[j] and other.drop.Name == leader.drop.Name and (other.position - leader.position).Magnitude <= GroupRadius.Value then
+						taken[j] = true
+						total += other.amount
+						hide(other.entry)
 					end
-					entry.highlight.FillColor = color
-					entry.highlight.OutlineColor = color
-					entry.highlight.Enabled = true
-				elseif entry.highlight then
-					entry.highlight.Enabled = false
 				end
-			elseif entry.highlight then
-				entry.highlight.Enabled = false
+				show(leader.entry, leader.drop, total, leader.distance, here)
 			end
 		end
 	end
@@ -9008,6 +9173,23 @@ run(function()
 		Name = 'Skip Generators',
 		Tooltip = 'Leaves out drops piled on generators',
 		Default = true
+	})
+	Group = ItemESP:CreateToggle({
+		Name = 'Group Nearby',
+		Tooltip = 'One label with the total for close drops',
+		Default = true,
+		Function = function(callback)
+			if GroupRadius and GroupRadius.Object then GroupRadius.Object.Visible = callback end
+		end
+	})
+	GroupRadius = ItemESP:CreateSlider({
+		Name = 'Group Radius',
+		Tooltip = 'How close drops have to be to share a label',
+		Min = 1,
+		Max = 20,
+		Default = 5,
+		Darker = true,
+		Suffix = function(val) return val == 1 and 'stud' or 'studs' end
 	})
 	ShowDistance = ItemESP:CreateToggle({Name = 'Distance', Tooltip = 'Shows how far away each one is', Default = true})
 	Outline = ItemESP:CreateToggle({Name = 'Outline', Tooltip = 'Outlines the item itself'})
@@ -34322,6 +34504,294 @@ run(function()
 		icons[i] = icon
 	end
 	layout()
+	
+end)
+
+run(function()
+	--[[
+		Team Health.
+	
+		A card with a row per teammate: their avatar, name in the team colour and a health bar
+		with the number (the Health and MaxHealth attributes, plus any shield), and if wanted
+		their kit (PlayingAsKit), what they hold and wear (the inventories the game replicates,
+		in store.inventories), their enchants (the shared enchants helper) and how far away
+		they are. Sorted the way you pick; a preview of yourself shows while the GUI is open.
+	]]
+	local TeamHealth
+	local ShowSelf, ShowKit, ShowEquipment, ShowEnchants, ShowDistance, SortMode, Scale, Background
+	local card, list, header, scaler
+	local rows = {}
+	
+	local ROW_HEIGHT = 26
+	local WIDTH = 210
+	
+	local function on(setting)
+		return setting ~= nil and setting.Enabled
+	end
+	
+	local function guiOpen()
+		local ok, open = pcall(function() return vain.gui.ScaledGui.ClickGui.Visible end)
+		return ok and open == true
+	end
+	
+	local function teammates()
+		local mine = lplr:GetAttribute('Team')
+		local list = {}
+		for _, player in playersService:GetPlayers() do
+			local character = player.Character
+			local sameTeam = mine ~= nil and tostring(player:GetAttribute('Team')) == tostring(mine)
+			if character and sameTeam and (player ~= lplr or on(ShowSelf)) then
+				local health = character:GetAttribute('Health')
+				if type(health) == 'number' and health > 0 then
+					list[#list + 1] = player
+				end
+			end
+		end
+		return list
+	end
+	
+	local function icon(parent, order, size)
+		local image = Instance.new('ImageLabel')
+		image.BackgroundTransparency = 1
+		image.Size = UDim2.fromOffset(size, size)
+		image.ScaleType = Enum.ScaleType.Fit
+		image.LayoutOrder = order
+		image.Visible = false
+		image.Parent = parent
+		return image
+	end
+	
+	local function row(index)
+		local entry = rows[index]
+		if entry then return entry end
+		local frame = Instance.new('Frame')
+		frame.BackgroundTransparency = 1
+		frame.Size = UDim2.new(1, 0, 0, ROW_HEIGHT)
+		frame.LayoutOrder = index
+		frame.Parent = list
+	
+		local avatar = Instance.new('ImageLabel')
+		avatar.Size = UDim2.fromOffset(20, 20)
+		avatar.Position = UDim2.fromOffset(0, 1)
+		avatar.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+		avatar.BorderSizePixel = 0
+		avatar.Parent = frame
+		Instance.new('UICorner', avatar).CornerRadius = UDim.new(1, 0)
+	
+		local name = Instance.new('TextLabel')
+		name.BackgroundTransparency = 1
+		name.Position = UDim2.fromOffset(26, 0)
+		name.Size = UDim2.new(1, -80, 0, 14)
+		name.Font = Enum.Font.GothamBold
+		name.TextSize = 12
+		name.TextXAlignment = Enum.TextXAlignment.Left
+		name.TextTruncate = Enum.TextTruncate.AtEnd
+		name.Parent = frame
+	
+		local value = Instance.new('TextLabel')
+		value.BackgroundTransparency = 1
+		value.AnchorPoint = Vector2.new(1, 0)
+		value.Position = UDim2.new(1, 0, 0, 0)
+		value.Size = UDim2.fromOffset(52, 14)
+		value.Font = Enum.Font.GothamBold
+		value.TextSize = 12
+		value.TextXAlignment = Enum.TextXAlignment.Right
+		value.Parent = frame
+	
+		local track = Instance.new('Frame')
+		track.Position = UDim2.fromOffset(26, 16)
+		track.Size = UDim2.new(1, -26, 0, 3)
+		track.BackgroundColor3 = Color3.new(1, 1, 1)
+		track.BackgroundTransparency = 0.85
+		track.BorderSizePixel = 0
+		track.Parent = frame
+		Instance.new('UICorner', track).CornerRadius = UDim.new(1, 0)
+		local fill = Instance.new('Frame')
+		fill.BorderSizePixel = 0
+		fill.Parent = track
+		Instance.new('UICorner', fill).CornerRadius = UDim.new(1, 0)
+	
+		-- Kit, held item, armour and enchants in a strip under the name.
+		local strip = Instance.new('Frame')
+		strip.BackgroundTransparency = 1
+		strip.Position = UDim2.fromOffset(26, 20)
+		strip.Size = UDim2.new(1, -26, 0, 14)
+		strip.Parent = frame
+		local layout = Instance.new('UIListLayout')
+		layout.FillDirection = Enum.FillDirection.Horizontal
+		layout.Padding = UDim.new(0, 2)
+		layout.SortOrder = Enum.SortOrder.LayoutOrder
+		layout.Parent = strip
+		local icons = {}
+		for i = 1, 9 do icons[i] = icon(strip, i, 14) end
+	
+		entry = {frame = frame, avatar = avatar, name = name, value = value, fill = fill, strip = strip, icons = icons}
+		rows[index] = entry
+		return entry
+	end
+	
+	local function setIcon(entry, index, image)
+		local slot = entry.icons[index]
+		slot.Image = image or ''
+		slot.Visible = image ~= nil and image ~= ''
+	end
+	
+	local function render(player, entry, here)
+		local character = player.Character
+		local health = (character:GetAttribute('Health') or 0) + getShieldAttribute(character)
+		local maxHealth = math.max(character:GetAttribute('MaxHealth') or 100, 1)
+		local fraction = math.clamp(health / maxHealth, 0, 1)
+		local color = player.Team and player.TeamColor.Color or Color3.fromRGB(230, 230, 230)
+	
+		entry.avatar.Image = 'rbxthumb://type=AvatarHeadShot&id=' .. player.UserId .. '&w=48&h=48'
+		entry.name.Text = player.DisplayName
+		entry.name.TextColor3 = color
+		local root = character:FindFirstChild('HumanoidRootPart')
+		local distance = (here and root) and (root.Position - here).Magnitude or nil
+		entry.value.Text = math.ceil(health) .. (on(ShowDistance) and distance and player ~= lplr and string.format('  %dm', math.floor(distance)) or '')
+		entry.value.TextColor3 = Color3.fromHSV(fraction / 3, 0.8, 0.95)
+		entry.fill.Size = UDim2.fromScale(fraction, 1)
+		entry.fill.BackgroundColor3 = Color3.fromHSV(fraction / 3, 0.8, 0.95)
+	
+		local kit = player:GetAttribute('PlayingAsKit')
+		local kitMeta = kit and kit ~= 'none' and bedwars.BedwarsKitMeta[kit]
+		setIcon(entry, 1, on(ShowKit) and kitMeta and kitMeta.renderImage or nil)
+		local inventory = on(ShowEquipment) and store.inventories[player]
+		setIcon(entry, 2, inventory and inventory.hand and bedwars.getIcon(inventory.hand, true) or nil)
+		for i, slot in {4, 5, 6} do
+			local piece = inventory and inventory.armor and inventory.armor[slot]
+			setIcon(entry, 2 + i, piece and bedwars.getIcon(piece, true) or nil)
+		end
+		local list = on(ShowEnchants) and enchants.of(character) or {}
+		for i = 6, 9 do
+			local enchant = list[i - 5]
+			setIcon(entry, i, enchant and enchant.image or nil)
+		end
+		local anyIcon = false
+		for _, slot in entry.icons do anyIcon = anyIcon or slot.Visible end
+		entry.strip.Visible = anyIcon
+		entry.frame.Size = UDim2.new(1, 0, 0, anyIcon and 36 or 22)
+		entry.frame.Visible = true
+		return anyIcon and 36 or 22
+	end
+	
+	local function update()
+		local here = entitylib.isAlive and entitylib.character.RootPart.Position
+		local players = teammates()
+		local preview = #players == 0 and guiOpen() and lplr.Character ~= nil
+		if preview then players = {lplr} end
+	
+		local function healthOf(player)
+			local character = player.Character
+			return character and (character:GetAttribute('Health') or 0) or 0
+		end
+		local function distanceOf(player)
+			local root = player.Character and player.Character:FindFirstChild('HumanoidRootPart')
+			return (here and root) and (root.Position - here).Magnitude or math.huge
+		end
+		table.sort(players, function(a, b)
+			if SortMode.Value == 'Health' then return healthOf(a) < healthOf(b) end
+			if SortMode.Value == 'Distance' then return distanceOf(a) < distanceOf(b) end
+			return a.DisplayName:lower() < b.DisplayName:lower()
+		end)
+	
+		local height = 22
+		for i, player in players do
+			height += render(player, row(i), here)
+		end
+		for i = #players + 1, #rows do rows[i].frame.Visible = false end
+		header.Text = preview and 'TEAM  ·  PREVIEW' or 'TEAM'
+		card.Visible = #players > 0
+		card.Size = UDim2.fromOffset(WIDTH, height + 6)
+		scaler.Scale = Scale.Value
+	end
+	
+	TeamHealth = vain.Legit:CreateModule({
+		Name = 'Team Health',
+		Function = function(callback)
+			if callback then
+				local last = 0
+				TeamHealth:Clean(runService.Heartbeat:Connect(function()
+					if os.clock() - last < 0.15 then return end
+					last = os.clock()
+					if not pcall(update) then card.Visible = false end
+				end))
+			else
+				card.Visible = false
+			end
+		end,
+		Size = UDim2.fromOffset(210, 80),
+		Tooltip = 'Your teammates\' health at a glance'
+	})
+	SortMode = TeamHealth:CreateDropdown({
+		Name = 'Sort',
+		List = {'Health', 'Distance', 'Name'},
+		Tooltips = {Health = 'Lowest health first', Distance = 'Nearest first', Name = 'By name'}
+	})
+	ShowSelf = TeamHealth:CreateToggle({Name = 'Include Self', Tooltip = 'Also lists you'})
+	ShowKit = TeamHealth:CreateToggle({Name = 'Kit', Tooltip = 'Shows their kit', Default = true})
+	ShowEquipment = TeamHealth:CreateToggle({Name = 'Equipment', Tooltip = 'Shows their held item and armour', Default = true})
+	ShowEnchants = TeamHealth:CreateToggle({Name = 'Enchants', Tooltip = 'Shows their enchants\' icons'})
+	ShowDistance = TeamHealth:CreateToggle({Name = 'Distance', Tooltip = 'Shows how far away they are', Default = true})
+	Scale = TeamHealth:CreateSlider({
+		Name = 'Scale',
+		Tooltip = 'How big the card is',
+		Min = 0.5,
+		Max = 1.5,
+		Default = 0.9,
+		Decimal = 100
+	})
+	Background = TeamHealth:CreateColorSlider({
+		Name = 'Background',
+		Tooltip = 'Colour of the card',
+		DefaultValue = 0.08,
+		DefaultOpacity = 0.6,
+		Function = function(hue, sat, val, opacity)
+			if card then
+				card.BackgroundColor3 = Color3.fromHSV(hue, sat, val)
+				card.BackgroundTransparency = 1 - opacity
+			end
+		end
+	})
+	
+	card = Instance.new('Frame')
+	card.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	card.BackgroundTransparency = 0.4
+	card.BorderSizePixel = 0
+	card.Visible = false
+	card.Size = UDim2.fromOffset(WIDTH, 80)
+	card.Parent = TeamHealth.Children
+	Instance.new('UICorner', card).CornerRadius = UDim.new(0, 8)
+	local stroke = Instance.new('UIStroke')
+	stroke.Color = Color3.new(1, 1, 1)
+	stroke.Transparency = 0.9
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Parent = card
+	local padding = Instance.new('UIPadding')
+	padding.PaddingLeft = UDim.new(0, 8)
+	padding.PaddingRight = UDim.new(0, 8)
+	padding.PaddingTop = UDim.new(0, 5)
+	padding.Parent = card
+	scaler = Instance.new('UIScale')
+	scaler.Parent = card
+	header = Instance.new('TextLabel')
+	header.BackgroundTransparency = 1
+	header.Size = UDim2.new(1, 0, 0, 16)
+	header.Font = Enum.Font.GothamBold
+	header.TextSize = 10
+	header.TextColor3 = Color3.fromRGB(150, 150, 150)
+	header.TextXAlignment = Enum.TextXAlignment.Left
+	header.Text = 'TEAM'
+	header.Parent = card
+	list = Instance.new('Frame')
+	list.BackgroundTransparency = 1
+	list.Position = UDim2.fromOffset(0, 18)
+	list.Size = UDim2.new(1, 0, 1, -18)
+	list.Parent = card
+	local layout = Instance.new('UIListLayout')
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Padding = UDim.new(0, 2)
+	layout.Parent = list
 	
 end)
 
