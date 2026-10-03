@@ -9875,20 +9875,51 @@ run(function()
 		arrows and fireballs you can step out of the way of, and the exact spot an enemy's pearl
 		is about to put them.
 	
-		Aim Preview does the same for whatever you are holding, worked out the way
-		ProjectileController:calculateImportantLaunchValues does at full draw, so it shows where
-		a fully charged shot lands.
+		Aim Preview works out your own shot exactly as the game will fire it, for anything with
+		a projectile source - bows, crossbows, fireballs, pearls, snowballs, kit items:
+	
+		- the projectile is the one your ammo makes, the ammo picked the way
+		  ProjectileSourceController:getAmmoType does (hotbar first, then inventory);
+		- the speed is its launch velocity (or the kit override) at full draw, or at
+		  minStrengthScalar for things that do not charge, as enableTargeting starts them;
+		- the aim is ProjectileController:calculateImportantLaunchValues: from the launch
+		  position, towards a point far along the cursor ray lifted by YTargetOffset;
+		- the flight starts where ProjectileUtil.fireProjectile puts the model - the launch
+		  position moved by the source's relative offset (0.8 right, 0.6 down by default) - and
+		  falls at the projectile's own gravity, nothing else acting on it.
+	
+		Players in the way are checked against their whole body, as the game's projectile hits
+		are not stopped by CanCollide, and whoever it would hit is highlighted for a moment.
+	
+		Lines are clipped where they pass behind the camera rather than dropped, so the start
+		of the path right under the camera still draws in first person.
 	]]
 	local Trajectories
-	local ShowOwn, ShowTeam, PearlOnly, Marker, Danger, AimPreview, MaxTime, Thickness
-	local LineColor, DangerColor, PearlColor, AimColor
+	local ShowOwn, ShowTeam, PearlOnly, Marker, Danger, AimPreview, AimHighlight, MaxTime, Thickness
+	local LineColor, DangerColor, PearlColor, AimColor, HighlightColor
 	local tracked = {}
 	local pools = {}
+	local highlights = {}
 	local STEP = 0.03
+	local HIGHLIGHT_FADE = 0.35
+	local NEAR = 0.1
+	
+	-- The game's launch constants (ProjectileController and ProjectileUtil).
+	local Y_TARGET_OFFSET = inputService.TouchEnabled and not inputService.KeyboardEnabled and 0.25 or 0.05
+	local CAMERA_MULTIPLIER = 10
+	local RELATIVE = Vector3.new(0.8, -0.6, 0)
+	
+	local HighlightFolder = Instance.new('Folder')
+	HighlightFolder.Name = 'TrajectoryHighlights'
+	HighlightFolder.Parent = vain.gui
 	
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 	rayParams.RespectCanCollide = true
+	
+	local bodyParams = RaycastParams.new()
+	bodyParams.FilterType = Enum.RaycastFilterType.Include
+	bodyParams.RespectCanCollide = false
 	
 	local function on(setting)
 		return setting ~= nil and setting.Enabled
@@ -9899,15 +9930,15 @@ run(function()
 		return Color3.fromHSV(setting.Hue or 0, setting.Sat or 0, setting.Value or 1)
 	end
 	
+	local function isPearl(name)
+		return (name or ''):lower():find('pearl', 1, true) ~= nil
+	end
+	
 	local function sameTeam(userId)
 		local plr = playersService:GetPlayerByUserId(userId or 0)
 		if not plr then return false end
 		local mine, theirs = lplr:GetAttribute('Team'), plr:GetAttribute('Team')
 		return mine ~= nil and theirs ~= nil and tostring(mine) == tostring(theirs)
-	end
-	
-	local function isPearl(name)
-		return (name or ''):lower():find('pearl', 1, true) ~= nil
 	end
 	
 	local function wanted(model)
@@ -9954,16 +9985,24 @@ run(function()
 	
 	local function refreshFilter()
 		local ignore = {gameCamera}
+		local bodies = {}
 		for _, plr in playersService:GetPlayers() do
-			if plr.Character then ignore[#ignore + 1] = plr.Character end
+			if plr.Character then
+				ignore[#ignore + 1] = plr.Character
+				if plr ~= lplr then bodies[#bodies + 1] = plr.Character end
+			end
 		end
 		for model in tracked do ignore[#ignore + 1] = model end
 		rayParams.FilterDescendantsInstances = ignore
+		bodyParams.FilterDescendantsInstances = bodies
 	end
 	
-	-- The flight from a point at a velocity under a gravity, until it hits something or the
-	-- time runs out. Returns the points along it and where it stopped.
-	local function simulate(origin, velocity, gravity)
+	--[[
+		The flight from a point at a velocity under a gravity, until it hits something or the
+		time runs out. Returns the points along it, where it stopped, and the character it hit
+		if checkBodies is set.
+	]]
+	local function simulate(origin, velocity, gravity, checkBodies)
 		local points = {origin}
 		local previous = origin
 		local limit = MaxTime and MaxTime.Value or 3
@@ -9971,7 +10010,19 @@ run(function()
 		while t < limit do
 			t += STEP
 			local point = origin + velocity * t - Vector3.new(0, 0.5 * gravity * t * t, 0)
-			local hit = workspace:Raycast(previous, point - previous, rayParams)
+			local delta = point - previous
+			local hit = workspace:Raycast(previous, delta, rayParams)
+			if checkBodies then
+				local body = workspace:Raycast(previous, delta, bodyParams)
+				if body and (not hit or (body.Position - previous).Magnitude <= (hit.Position - previous).Magnitude) then
+					points[#points + 1] = body.Position
+					local character = body.Instance:FindFirstAncestorOfClass('Model')
+					while character and not character:FindFirstChildOfClass('Humanoid') do
+						character = character.Parent and character.Parent:FindFirstAncestorOfClass('Model')
+					end
+					return points, body.Position, character
+				end
+			end
 			if hit then
 				points[#points + 1] = hit.Position
 				return points, hit.Position
@@ -9982,22 +10033,41 @@ run(function()
 		return points, nil
 	end
 	
+	-- A segment cut to the part in front of the camera, in screen space; nil if none of it is.
+	local function screenSegment(a, b)
+		local cf = gameCamera.CFrame
+		local la, lb = cf:PointToObjectSpace(a), cf:PointToObjectSpace(b)
+		-- The camera looks down -Z: in front means z below -NEAR.
+		local aFront, bFront = la.Z < -NEAR, lb.Z < -NEAR
+		if not (aFront or bFront) then return nil end
+		if not aFront then
+			a = cf:PointToWorldSpace(la:Lerp(lb, (-NEAR - la.Z) / (lb.Z - la.Z)))
+		elseif not bFront then
+			b = cf:PointToWorldSpace(lb:Lerp(la, (-NEAR - lb.Z) / (la.Z - lb.Z)))
+		end
+		local sa = gameCamera:WorldToViewportPoint(a)
+		local sb = gameCamera:WorldToViewportPoint(b)
+		return Vector2.new(sa.X, sa.Y), Vector2.new(sb.X, sb.Y)
+	end
+	
 	local function draw(key, points, landing, color)
 		local entry = pool(key)
 		local thickness = Thickness and Thickness.Value or 2
+		local viewport = gameCamera.ViewportSize
 		local used = 0
 		for i = 1, #points - 1 do
-			local a, aVisible = gameCamera:WorldToViewportPoint(points[i])
-			local b, bVisible = gameCamera:WorldToViewportPoint(points[i + 1])
-			if a.Z > 0 and b.Z > 0 and (aVisible or bVisible) then
+			local from, to = screenSegment(points[i], points[i + 1])
+			-- Skipped only when wholly off one side of the screen.
+			if from and not ((from.X < 0 and to.X < 0) or (from.Y < 0 and to.Y < 0)
+				or (from.X > viewport.X and to.X > viewport.X) or (from.Y > viewport.Y and to.Y > viewport.Y)) then
 				used += 1
 				local line = entry.lines[used]
 				if not line then
 					line = Drawing.new('Line')
 					entry.lines[used] = line
 				end
-				line.From = Vector2.new(a.X, a.Y)
-				line.To = Vector2.new(b.X, b.Y)
+				line.From = from
+				line.To = to
 				line.Color = color
 				line.Thickness = thickness
 				line.Visible = true
@@ -10045,39 +10115,107 @@ run(function()
 		return workspace.Gravity
 	end
 	
-	-- What you are holding, if it throws or fires something: speed and gravity from its meta,
-	-- with the overrides some kits put on them.
-	local function heldProjectile()
-		local tool = store.hand and store.hand.tool
-		local meta = tool and bedwars.ItemMeta[tool.Name]
-		local source = meta and meta.projectileSource
-		if not source then return nil end
-		local ok, name = pcall(function()
-			local ammo = source.ammoItemTypes and source.ammoItemTypes[1] or 'arrow'
-			return type(source.projectileType) == 'function' and source.projectileType(ammo) or source.projectileType
-		end)
-		local pmeta = ok and name and bedwars.ProjectileMeta[name]
-		if not pmeta then return nil end
-		local overrides
-		if pmeta.getProjectileOverridesFunction then
-			local fine, result = pcall(pmeta.getProjectileOverridesFunction, lplr)
-			overrides = fine and type(result) == 'table' and result or nil
+	-- The ammo the game would use: the first of the source's ammo types on the hotbar, then
+	-- in the inventory.
+	local function ammoFor(source)
+		local types = source.ammoItemTypes
+		if not types then return nil end
+		local inventory = store.inventory or {}
+		for _, ammo in types do
+			for _, slot in inventory.hotbar or {} do
+				if slot.item and slot.item.itemType == ammo then return ammo end
+			end
 		end
-		local speed = overrides and overrides.launchVelocityOverride or pmeta.launchVelocity or 100
-		return speed, pmeta.gravitationalAcceleration or 196.2, name, tool
+		for _, ammo in types do
+			for _, item in (inventory.inventory and inventory.inventory.items) or {} do
+				if item.itemType == ammo then return ammo end
+			end
+		end
+		return types[1]
 	end
-	
-	-- The game's launch constants (ProjectileController): the aim is lifted slightly above the
-	-- cursor ray and pointed at a spot far along it, not at whatever the cursor touches.
-	local Y_TARGET_OFFSET = inputService.TouchEnabled and not inputService.KeyboardEnabled and 0.25 or 0.05
-	local CAMERA_MULTIPLIER = 10
 	
 	local function launchPosition(tool)
 		local ok, position = pcall(function()
 			return bedwars.ProjectileController:getLaunchPosition(tool)
 		end)
 		if ok and typeof(position) == 'Vector3' then return position end
-		return entitylib.character.Head.Position
+		return entitylib.character.RootPart.Position
+	end
+	
+	-- Your shot as the game will fire it: where the model starts, its velocity, its gravity.
+	local function aimLaunch()
+		local tool = store.hand and store.hand.tool
+		local meta = tool and bedwars.ItemMeta[tool.Name]
+		local source = meta and meta.projectileSource
+		if not source then return nil end
+	
+		local ammo = ammoFor(source)
+		local ok, name = pcall(function()
+			return type(source.projectileType) == 'function' and source.projectileType(ammo) or source.projectileType
+		end)
+		local pmeta = ok and name and bedwars.ProjectileMeta[name]
+		if not pmeta then return nil end
+	
+		local overrides
+		if pmeta.getProjectileOverridesFunction then
+			local fine, result = pcall(pmeta.getProjectileOverridesFunction, lplr)
+			overrides = fine and type(result) == 'table' and result or nil
+		end
+		local speed = overrides and overrides.launchVelocityOverride or pmeta.launchVelocity or 100
+		local charges = (tonumber(source.maxStrengthChargeSec) or 0) > 0
+		speed *= charges and 1 or (source.minStrengthScalar or 1)
+	
+		local from = launchPosition(tool)
+		local camera = gameCamera.CFrame.Position
+		local mouse = cloneref(lplr:GetMouse())
+		local ray = gameCamera:ScreenPointToRay(mouse.X, mouse.Y)
+		local unit = (ray.Direction.Unit + Vector3.new(0, Y_TARGET_OFFSET, 0)).Unit
+		local direction = (camera + unit * ((camera - from).Magnitude * CAMERA_MULTIPLIER) - from).Unit
+		local velocity = direction * speed
+	
+		local relative = source.relativeOverride
+		local offset = relative and Vector3.new(relative.relX or 0, relative.relY or 0, relative.relZ or 0) or RELATIVE
+		local start = (CFrame.lookAt(from, from + velocity) * CFrame.new(offset)).Position
+		return start, velocity, pmeta.gravitationalAcceleration or 196.2, name
+	end
+	
+	-- Highlights who the shot would hit, held while aimed at and fading out after.
+	local function markHit(character)
+		local entity = character and entitylib.getEntity(character)
+		if not (entity and entity.Targetable) then return end
+		local entry = highlights[character]
+		if not entry then
+			local highlight = Instance.new('Highlight')
+			highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			highlight.Adornee = character
+			highlight.Parent = HighlightFolder
+			entry = {highlight = highlight}
+			highlights[character] = entry
+		end
+		entry.last = os.clock()
+	end
+	
+	local function updateHighlights()
+		local color = colorOf(HighlightColor, Color3.fromRGB(255, 80, 80))
+		local opacity = HighlightColor and HighlightColor.Opacity or 0.5
+		for character, entry in highlights do
+			local age = os.clock() - entry.last
+			if age > HIGHLIGHT_FADE or not character.Parent then
+				entry.highlight:Destroy()
+				highlights[character] = nil
+			else
+				local fade = age / HIGHLIGHT_FADE
+				entry.highlight.FillColor = color
+				entry.highlight.OutlineColor = color
+				entry.highlight.FillTransparency = 1 - opacity * (1 - fade)
+				entry.highlight.OutlineTransparency = fade
+			end
+		end
+	end
+	
+	local function clearHighlights()
+		for _, entry in highlights do entry.highlight:Destroy() end
+		table.clear(highlights)
 	end
 	
 	local function aimPreview()
@@ -10085,22 +10223,17 @@ run(function()
 			destroyPool('aim')
 			return
 		end
-		local speed, gravity, name, tool = heldProjectile()
-		if not speed or (on(PearlOnly) and not isPearl(name)) then
+		local start, velocity, gravity, name = aimLaunch()
+		if not start or (on(PearlOnly) and not isPearl(name)) then
 			local entry = pools.aim
 			if entry then hidePool(entry) end
 			return
 		end
 	
-		local origin = launchPosition(tool)
-		local mouse = cloneref(lplr:GetMouse())
-		local ray = gameCamera:ScreenPointToRay(mouse.X, mouse.Y)
-		local camera = gameCamera.CFrame.Position
-		local unit = (ray.Direction.Unit + Vector3.new(0, Y_TARGET_OFFSET, 0)).Unit
-		local direction = camera + unit * ((camera - origin).Magnitude * CAMERA_MULTIPLIER) - origin
-		if direction.Magnitude <= 0 then return end
-		local points, landing = simulate(origin, direction.Unit * speed, gravity)
-		draw('aim', points, landing, isPearl(name) and colorOf(PearlColor, Color3.fromRGB(200, 120, 255)) or colorOf(AimColor, Color3.fromRGB(120, 220, 255)))
+		local points, landing, character = simulate(start, velocity, gravity, true)
+		if character and on(AimHighlight) then markHit(character) end
+		local color = isPearl(name) and colorOf(PearlColor, Color3.fromRGB(200, 120, 255)) or colorOf(AimColor, Color3.fromRGB(120, 220, 255))
+		draw('aim', points, landing, color)
 	end
 	
 	local function step()
@@ -10136,7 +10269,8 @@ run(function()
 			end
 			draw(model, points, landing, color)
 		end
-		aimPreview()
+		pcall(aimPreview)
+		updateHighlights()
 	end
 	
 	Trajectories = vain.Categories.Render:CreateModule({
@@ -10152,6 +10286,7 @@ run(function()
 			else
 				for key in pools do destroyPool(key) end
 				table.clear(tracked)
+				clearHighlights()
 			end
 		end
 	})
@@ -10185,6 +10320,22 @@ run(function()
 		Tooltip = 'Draws where what you are holding will land',
 		Function = function(callback)
 			if AimColor and AimColor.Object then AimColor.Object.Visible = callback end
+			if AimHighlight and AimHighlight.Object then AimHighlight.Object.Visible = callback end
+			if HighlightColor and HighlightColor.Object then
+				HighlightColor.Object.Visible = callback and on(AimHighlight)
+			end
+		end
+	})
+	AimHighlight = Trajectories:CreateToggle({
+		Name = 'Aim Highlight',
+		Tooltip = 'Briefly highlights who your shot would hit',
+		Default = true,
+		Visible = false,
+		Function = function(callback)
+			if HighlightColor and HighlightColor.Object then
+				HighlightColor.Object.Visible = callback and on(AimPreview)
+			end
+			if not callback then clearHighlights() end
 		end
 	})
 	MaxTime = Trajectories:CreateSlider({
@@ -10231,6 +10382,16 @@ run(function()
 		DefaultHue = 0.55,
 		DefaultSat = 0.55,
 		DefaultValue = 1,
+		Darker = true,
+		Visible = false
+	})
+	HighlightColor = Trajectories:CreateColorSlider({
+		Name = 'Highlight Color',
+		Tooltip = 'Colour of the aim highlight',
+		DefaultHue = 0,
+		DefaultSat = 0.7,
+		DefaultValue = 1,
+		DefaultOpacity = 0.5,
 		Darker = true,
 		Visible = false
 	})
