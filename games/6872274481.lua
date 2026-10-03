@@ -677,6 +677,55 @@ local function getVoidHeight()
 	return voidHeightCache
 end
 
+--[[
+	Lands the Lani angel on a character, for Auto Lani and Team Health.
+
+	The paladin ability is not predicted on the client: using it asks the server, and the
+	ScepterController only reads its target once the answer comes back. Until then its
+	Heartbeat keeps rewriting the target to whoever is nearest the crosshair, or nothing,
+	so writing the target once worked only when you happened to be looking at them. The
+	target is pinned until the angel is gone (the controller's metatable swapped for one
+	that always hands back this character and ignores writes to it), and the ability is
+	only used once the game has actually enabled it - isAngel goes true a moment before.
+]]
+local laniLanding = false
+local function landLani(character)
+	local controller = bedwars.ScepterController
+	local abilities = bedwars.AbilityController
+	if laniLanding or not (controller and abilities and controller.isAngel and character) then return false end
+	local class = getmetatable(controller)
+	if type(class) ~= 'table' then return false end
+	laniLanding = true
+
+	rawset(controller, 'target', nil)
+	setmetatable(controller, {
+		__index = function(_, key)
+			if key == 'target' then return character end
+			return class[key]
+		end,
+		__newindex = function(self, key, value)
+			if key ~= 'target' then rawset(self, key, value) end
+		end
+	})
+
+	local ok = pcall(function()
+		local started = os.clock()
+		repeat
+			if abilities:canUseAbility('PALADIN_ABILITY', {disableBlockedAbilityAlert = true}) then break end
+			task.wait()
+		until os.clock() - started > 1.5 or not controller.isAngel
+		if controller.isAngel and character.Parent then
+			abilities:useAbility('PALADIN_ABILITY')
+		end
+		started = os.clock()
+		repeat task.wait() until not controller.isAngel or os.clock() - started > 3
+	end)
+
+	setmetatable(controller, class)
+	laniLanding = false
+	return ok
+end
+
 local matchHistory = {cache = {}, waiting = {}, queued = 0}
 do
 	local TIMEOUT = 6
@@ -1973,8 +2022,31 @@ run(function()
 		return best or ''
 	end
 
+	--[[
+		Where the first guess can move between game updates, the other places the same call
+		has lived, and failing those the name it has gone by. Kaliyah's punch moved out of
+		onKitLocalActivated, so the scrape came back empty and warned about it every load.
+	]]
+	local remoteFallbacks = {
+		KaliyahPunch = {
+			function() return debug.getproto(debug.getproto(Knit.Controllers.DragonSlayerController.KnitStart, 2), 1) end,
+			'RequestDragonPunch'
+		}
+	}
+
 	for i, v in remoteNames do
 		local remote = dumpRemote(debug.getconstants(v))
+		if remote == '' and remoteFallbacks[i] then
+			for _, fallback in remoteFallbacks[i] do
+				if type(fallback) == 'string' then
+					remote = fallback
+				else
+					local ok, proto = pcall(fallback)
+					remote = ok and proto and dumpRemote(debug.getconstants(proto)) or ''
+				end
+				if remote ~= '' then break end
+			end
+		end
 		if remote == '' then
 			notif('Vain', 'Failed to grab remote ('..i..')', 10, 'alert')
 		end
@@ -10309,6 +10381,7 @@ run(function()
 	local Rank
 	local Enchants
 	local Effects
+	local KitStats
 	local Strings, Sizes, Reference, Prefixes = {}, {}, {}, {}
 	local Folder = Instance.new('Folder')
 	Folder.Parent = vain.gui
@@ -10352,6 +10425,41 @@ run(function()
 	-- that the entity events would catch, so this is polled rather than driven; a fifth of a
 	-- second is quicker than anyone reacts and costs one table read per entity.
 	local STATUS_POLL = 0.2
+	
+	--[[
+		Kit progress the server writes onto the player as an attribute, so it replicates to
+		everyone: Void Knight's tier, Kaida's claw and spell levels, Ragnar's rage and so on.
+		Read off the player (or the character) whichever kit they are on - the attribute only
+		exists for the kit that uses it - and only shown once it is above zero.
+	]]
+	local KIT_STATS = {
+		{'VoidKnightTier', 'Tier'},
+		{'Summoner_ClawLevel', 'Claw'},
+		{'Summoner_SpellLevel', 'Spell'},
+		{'SpiritSummonerTier', 'Tier'},
+		{'BountyHunterLevel', 'Lv'},
+		{'TinkerMachineLevel', 'Lv'},
+		{'BarbarianRageLevel', 'Rage'},
+		{'WarlockEnergy', 'Energy'},
+		{'InfernalShieldEnergy', 'Shield'},
+		{'AeryStacks', 'Stacks'},
+		{'BullyStack', 'Stacks'},
+		{'SkeletonCount', 'Skeletons'},
+		{'Vacuum_GhostCount', 'Ghosts'}
+	}
+	
+	local function kitStatsOf(ent)
+		if not (KitStats and KitStats.Enabled and ent.Player) then return '' end
+		local parts = {}
+		for _, stat in KIT_STATS do
+			local value = ent.Player:GetAttribute(stat[1])
+			if value == nil and ent.Character then value = ent.Character:GetAttribute(stat[1]) end
+			if type(value) == 'number' and value > 0 then
+				parts[#parts + 1] = stat[2] .. ' ' .. math.floor(value)
+			end
+		end
+		return table.concat(parts, ' · ')
+	end
 	
 	--[[
 		Worked out once, from the game's own enum rather than a list written out here, so an
@@ -10625,7 +10733,7 @@ run(function()
 	-- re-read that found exactly the same thing and skip the rebuild.
 	local function statusSignature(ent)
 		local enchants, effects = statusOf(ent)
-		if not enchants then return '' end
+		if not enchants then return kitStatsOf(ent) end
 	
 		local parts = {}
 		for _, entry in enchants do
@@ -10635,6 +10743,7 @@ run(function()
 		for _, entry in effects do
 			parts[#parts + 1] = entry.label
 		end
+		parts[#parts + 1] = '|' .. kitStatsOf(ent)
 		return table.concat(parts, ',')
 	end
 	
@@ -10780,6 +10889,7 @@ run(function()
 			rankicon.Parent = row
 			newPiece(row, 'NameLabel', 3)
 			newPiece(row, 'HealthLabel', 4)
+			newPiece(row, 'KitStat', 5)
 	
 			if Equipment.Enabled then
 				for i, v in {'Hand', 'Helmet', 'Chestplate', 'Boots', 'Kit'} do
@@ -10837,6 +10947,8 @@ run(function()
 			end
 	
 			Strings[ent] = appendStatus(ent, Strings[ent], false)
+			local kitText = kitStatsOf(ent)
+			if kitText ~= '' then Strings[ent] = Strings[ent]..' ['..kitText..']' end
 	
 			if Distance.Enabled then
 				Strings[ent] = '[%s] '..Strings[ent]
@@ -10893,7 +11005,7 @@ run(function()
 			local font = FontOption.Value
 			local height = textHeight()
 			row.Size = UDim2.fromOffset(0, height)
-			for _, piece in {row.Distance, row.NameLabel, row.HealthLabel} do
+			for _, piece in {row.Distance, row.NameLabel, row.HealthLabel, row.KitStat} do
 				piece.TextSize = size
 				piece.FontFace = font
 			end
@@ -10907,6 +11019,11 @@ run(function()
 				row.HealthLabel.Text = tostring(math.round(ent.Health))
 				row.HealthLabel.TextColor3 = Color3.fromHSV(math.clamp(ent.Health / math.max(ent.MaxHealth, 1), 0, 1) / 2.5, 0.89, 0.75)
 			end
+	
+			local kitText = kitStatsOf(ent)
+			row.KitStat.Text = kitText
+			row.KitStat.TextColor3 = Color3.fromRGB(255, 200, 60)
+			row.KitStat.Visible = kitText ~= ''
 	
 			local image = Rank and Rank.Enabled and ent.Player and divisionImage(ent.Player) or nil
 			row.RankIcon.Image = image or ''
@@ -10946,6 +11063,8 @@ run(function()
 				end
 	
 				Strings[ent] = appendStatus(ent, Strings[ent], false)
+				local kitText = kitStatsOf(ent)
+				if kitText ~= '' then Strings[ent] = Strings[ent]..' ['..kitText..']' end
 	
 				if Distance.Enabled then
 					Strings[ent] = '[%s] '..Strings[ent]
@@ -11026,7 +11145,7 @@ run(function()
 				pcall(function()
 					-- Text that was never built would fail every frame; build it now.
 					if not Strings[ent] then Updated[methodused](ent) end
-					if due and ((Enchants and Enchants.Enabled) or (Effects and Effects.Enabled)) then
+					if due and ((Enchants and Enchants.Enabled) or (Effects and Effects.Enabled) or (KitStats and KitStats.Enabled)) then
 						local sig = statusSignature(ent)
 						if StatusSig[ent] ~= sig then
 							StatusSig[ent] = sig
@@ -11085,7 +11204,7 @@ run(function()
 				pcall(function()
 					-- Text that was never built would fail every frame; build it now.
 					if not Strings[ent] then Updated[methodused](ent) end
-					if due and ((Enchants and Enchants.Enabled) or (Effects and Effects.Enabled)) then
+					if due and ((Enchants and Enchants.Enabled) or (Effects and Effects.Enabled) or (KitStats and KitStats.Enabled)) then
 						local sig = statusSignature(ent)
 						if StatusSig[ent] ~= sig then
 							StatusSig[ent] = sig
@@ -11335,6 +11454,16 @@ run(function()
 	Effects = NameTags:CreateToggle({
 		Name = 'Effects',
 		Tooltip = 'Shows their active effects like jump, pie or gloop, as icons',
+		Function = function()
+			if NameTags.Enabled then
+				NameTags:Toggle()
+				NameTags:Toggle()
+			end
+		end
+	})
+	KitStats = NameTags:CreateToggle({
+		Name = 'Kit Stats',
+		Tooltip = 'Shows kit levels like Void Knight tier or Kaida claw',
 		Function = function()
 			if NameTags.Enabled then
 				NameTags:Toggle()
@@ -18534,7 +18663,7 @@ run(function()
 	    ]]
 	    local AutoLani
 	    local Mode, TargetMode, Teammate, TeammateHealth, Escape, SelfHealth
-	    local MinDistance, FireDelay, SkipFalling, AutoBuyScepter, AlwaysTarget
+	    local MinDistance, FireDelay, SkipFalling, AutoBuyScepter, RefreshButton
 	    local escaping = false
 	    local lastUse, lastBuy = 0, 0
 	    local wasAngel = false
@@ -18574,10 +18703,11 @@ run(function()
 	        return list
 	    end
 	
-	    -- The teammate picked under Always Target, while alive and in the game - chosen over
-	    -- every mode and filter.
-	    local function alwaysTarget()
-	        local name = AlwaysTarget and AlwaysTarget.Value
+	    -- The teammate picked under Priority, while alive and in the game - chosen over every
+	    -- filter; when they are not, the lowest on health stands in.
+	    local function priorityTarget()
+	        if TargetMode.Value ~= 'Priority' then return nil end
+	        local name = Teammate and Teammate.Value
 	        if not name or name == 'None' then return nil end
 	        local player = playersService:FindFirstChild(name)
 	        local humanoid = player and player.Character and player.Character:FindFirstChildOfClass('Humanoid')
@@ -18587,17 +18717,12 @@ run(function()
 	    end
 	
 	    local function pickTarget()
-	        local forced = alwaysTarget()
+	        local forced = not escaping and priorityTarget()
 	        if forced then return forced end
 	        local list = candidates()
 	        if #list == 0 then return nil end
 	        local mode = escaping and 'Safest' or TargetMode.Value
-	        if mode == 'Specific' then
-	            for _, entry in list do
-	                if entry.player.Name == Teammate.Value then return entry.player end
-	            end
-	            return nil
-	        end
+	        if mode == 'Priority' then mode = 'Lowest Health' end
 	        local best, bestScore
 	        for _, entry in list do
 	            local score
@@ -18618,14 +18743,13 @@ run(function()
 	        return best
 	    end
 	
-	    -- Writes the pick into the controller and uses the ability; the game sends the request.
+	    -- Pins the pick as the controller's target and uses the ability; the game sends the request.
 	    local function fire()
 	        local controller = bedwars.ScepterController
 	        if not (controller and controller.isAngel) then return end
 	        local target = pickTarget()
 	        if not (target and target.Character) then return end
-	        controller.target = target.Character
-	        bedwars.AbilityController:useAbility('PALADIN_ABILITY')
+	        landLani(target.Character)
 	    end
 	
 	    -- Auto: whether it is time to use the scepter, and whether that is to escape.
@@ -18691,7 +18815,7 @@ run(function()
 	                    if on(AutoBuyScepter) then pcall(buyScepter) end
 	                    if Mode.Value == 'Auto' and not angel and os.clock() - lastUse >= USE_COOLDOWN then
 	                        local use, isEscape = shouldUse()
-	                        if use and (#candidates() > 0 or alwaysTarget()) then
+	                        if use and (#candidates() > 0 or priorityTarget()) then
 	                            escaping = isEscape
 	                            pcall(useScepter)
 	                        end
@@ -18720,16 +18844,18 @@ run(function()
 	    })
 	    TargetMode = AutoLani:CreateDropdown({
 	        Name = 'Target',
-	        List = {'Lowest Health', 'Closest', 'Furthest', 'Most Enemies', 'Specific'},
+	        List = {'Lowest Health', 'Closest', 'Furthest', 'Most Enemies', 'Priority'},
 	        Tooltips = {
 	            ['Lowest Health'] = 'The teammate lowest on health',
 	            Closest = 'The nearest teammate',
 	            Furthest = 'The furthest teammate',
 	            ['Most Enemies'] = 'The teammate with the most enemies round them',
-	            Specific = 'The teammate you pick below'
+	            Priority = 'Always the teammate you pick, while alive'
 	        },
 	        Function = function(val)
-	            if Teammate and Teammate.Object then Teammate.Object.Visible = val == 'Specific' end
+	            for _, setting in {Teammate, RefreshButton} do
+	                if setting and setting.Object then setting.Object.Visible = val == 'Priority' end
+	            end
 	        end
 	    })
 	    local function teammateList()
@@ -18737,31 +18863,21 @@ run(function()
 	        if #list == 0 then list = {'None'} end
 	        return list
 	    end
-	    local function alwaysList()
-	        local list = {'None'}
-	        for _, name in getTeammates(true) do list[#list + 1] = name end
-	        return list
-	    end
 	    Teammate = AutoLani:CreateDropdown({
-	        Tooltip = 'The teammate for Specific',
+	        Tooltip = 'The teammate Priority goes to',
 	        Name = 'Teammate',
 	        List = teammateList(),
 	        Darker = true,
 	        Visible = false
 	    })
-	    AutoLani:CreateButton({
+	    RefreshButton = AutoLani:CreateButton({
 	        Name = 'Refresh Teammates',
 	        Tooltip = 'Updates the teammate list',
 	        Function = function()
 	            pcall(function() Teammate:Change(teammateList()) end)
-	            pcall(function() AlwaysTarget:Change(alwaysList()) end)
 	        end
 	    })
-	    AlwaysTarget = AutoLani:CreateDropdown({
-	        Name = 'Always Target',
-	        List = alwaysList(),
-	        Tooltip = 'This teammate always gets it while alive'
-	    })
+	    if RefreshButton and RefreshButton.Object then RefreshButton.Object.Visible = TargetMode.Value == 'Priority' end
 	    TeammateHealth = AutoLani:CreateSlider({
 	        Name = 'Teammate Health',
 	        Tooltip = 'Uses it when a teammate drops below this',
@@ -32009,7 +32125,19 @@ run(function()
 	local lastScan = 0
 	
 	local CROPS = {'carrot', 'melon', 'pumpkin'}
-	local ROW_HEIGHT = 20
+	-- The icon each crop is shown with. The melon item's own image is the old round melon,
+	-- not the striped one Cletus grows, so it borrows the watermelon's.
+	local ICONS = {carrot = {'carrot'}, melon = {'watermelon', 'melon_seeds', 'melon'}, pumpkin = {'pumpkin'}}
+	local ROW_HEIGHT = 18
+	local textService = cloneref(game:GetService('TextService'))
+	
+	local function cropIcon(crop)
+		for _, item in ICONS[crop] do
+			local meta = bedwars.ItemMeta[item]
+			if meta and meta.image then return meta.image end
+		end
+		return ''
+	end
 	
 	local function on(setting)
 		return setting ~= nil and setting.Enabled
@@ -32063,23 +32191,23 @@ run(function()
 		if entry then return entry end
 		local frame = Instance.new('Frame')
 		frame.BackgroundTransparency = 1
-		frame.Size = UDim2.new(1, 0, 0, ROW_HEIGHT)
+		frame.AutomaticSize = Enum.AutomaticSize.X
+		frame.Size = UDim2.fromOffset(0, ROW_HEIGHT)
 		frame.LayoutOrder = index
 		frame.Parent = list
 		local layout = Instance.new('UIListLayout')
 		layout.FillDirection = Enum.FillDirection.Horizontal
 		layout.VerticalAlignment = Enum.VerticalAlignment.Center
-		layout.Padding = UDim.new(0, 6)
+		layout.Padding = UDim.new(0, 5)
 		layout.SortOrder = Enum.SortOrder.LayoutOrder
 		layout.Parent = frame
 	
 		local name = Instance.new('TextLabel')
 		name.BackgroundTransparency = 1
-		name.Size = UDim2.fromOffset(52, ROW_HEIGHT)
+		name.Size = UDim2.fromOffset(40, ROW_HEIGHT)
 		name.Font = Enum.Font.GothamBold
-		name.TextSize = 12
+		name.TextSize = 11
 		name.TextXAlignment = Enum.TextXAlignment.Left
-		name.TextTruncate = Enum.TextTruncate.AtEnd
 		name.LayoutOrder = 0
 		name.Parent = frame
 	
@@ -32094,15 +32222,14 @@ run(function()
 			local cellLayout = Instance.new('UIListLayout')
 			cellLayout.FillDirection = Enum.FillDirection.Horizontal
 			cellLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-			cellLayout.Padding = UDim.new(0, 2)
+			cellLayout.Padding = UDim.new(0, 1)
 			cellLayout.SortOrder = Enum.SortOrder.LayoutOrder
 			cellLayout.Parent = cell
 			local icon = Instance.new('ImageLabel')
 			icon.BackgroundTransparency = 1
-			icon.Size = UDim2.fromOffset(16, 16)
+			icon.Size = UDim2.fromOffset(14, 14)
 			icon.ScaleType = Enum.ScaleType.Fit
-			local meta = bedwars.ItemMeta[crop]
-			icon.Image = meta and meta.image or ''
+			icon.Image = cropIcon(crop)
 			icon.LayoutOrder = 1
 			icon.Parent = cell
 			local count = Instance.new('TextLabel')
@@ -32110,7 +32237,7 @@ run(function()
 			count.AutomaticSize = Enum.AutomaticSize.X
 			count.Size = UDim2.fromOffset(0, ROW_HEIGHT)
 			count.Font = Enum.Font.GothamBold
-			count.TextSize = 12
+			count.TextSize = 11
 			count.RichText = true
 			count.TextColor3 = Color3.new(1, 1, 1)
 			count.LayoutOrder = 2
@@ -32156,15 +32283,23 @@ run(function()
 			teams = {{team = 'preview', data = {crops = {carrot = 4, melon = 2}, ready = {carrot = 1}}, total = 6, preview = true}}
 		end
 	
+		-- The name column is as wide as the longest team name, so the counts line up without
+		-- leaving room for names nobody has.
+		local nameWidth = 0
 		for i, item in teams do
 			local player = item.data.player
-			local name = item.preview and 'Preview' or (player and player.Team and player.Team.Name or ('Team ' .. item.team))
+			item.name = item.preview and 'Preview' or (player and player.Team and player.Team.Name or ('Team ' .. item.team))
+			nameWidth = math.max(nameWidth, textService:GetTextSize(item.name, 11, Enum.Font.GothamBold, Vector2.new(1000, ROW_HEIGHT)).X)
+		end
+		for i, item in teams do
+			local player = item.data.player
 			local color = item.preview and Color3.fromRGB(200, 200, 200) or (player and player.Team and player.TeamColor.Color or Color3.new(1, 1, 1))
-			render(row(i), name, color, item.data)
+			local entry = row(i)
+			entry.name.Size = UDim2.fromOffset(math.ceil(nameWidth), ROW_HEIGHT)
+			render(entry, item.name, color, item.data)
 		end
 		for i = #teams + 1, #rows do rows[i].frame.Visible = false end
 		card.Visible = #teams > 0
-		card.Size = UDim2.fromOffset(250, 24 + #teams * ROW_HEIGHT)
 		scaler.Scale = Scale.Value
 	end
 	
@@ -32183,7 +32318,7 @@ run(function()
 				card.Visible = false
 			end
 		end,
-		Size = UDim2.fromOffset(250, 60),
+		Size = UDim2.fromOffset(170, 50),
 		Tooltip = 'How many crops each team is growing'
 	})
 	FadeEmpty = CropTracker:CreateToggle({
@@ -32234,34 +32369,43 @@ run(function()
 	card.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 	card.BackgroundTransparency = 0.4
 	card.BorderSizePixel = 0
+	card.AutomaticSize = Enum.AutomaticSize.XY
+	card.Size = UDim2.fromOffset(0, 0)
 	card.Visible = false
 	card.Parent = CropTracker.Children
-	Instance.new('UICorner', card).CornerRadius = UDim.new(0, 8)
+	Instance.new('UICorner', card).CornerRadius = UDim.new(0, 6)
 	local stroke = Instance.new('UIStroke')
 	stroke.Color = Color3.new(1, 1, 1)
 	stroke.Transparency = 0.9
 	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	stroke.Parent = card
 	local padding = Instance.new('UIPadding')
-	padding.PaddingLeft = UDim.new(0, 8)
-	padding.PaddingRight = UDim.new(0, 8)
-	padding.PaddingTop = UDim.new(0, 4)
+	padding.PaddingLeft = UDim.new(0, 6)
+	padding.PaddingRight = UDim.new(0, 6)
+	padding.PaddingTop = UDim.new(0, 3)
+	padding.PaddingBottom = UDim.new(0, 3)
 	padding.Parent = card
+	local cardLayout = Instance.new('UIListLayout')
+	cardLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	cardLayout.Parent = card
 	scaler = Instance.new('UIScale')
 	scaler.Parent = card
 	header = Instance.new('TextLabel')
 	header.BackgroundTransparency = 1
-	header.Size = UDim2.new(1, 0, 0, 16)
+	header.Size = UDim2.fromOffset(0, 12)
+	header.AutomaticSize = Enum.AutomaticSize.X
 	header.Font = Enum.Font.GothamBold
-	header.TextSize = 10
+	header.TextSize = 9
+	header.LayoutOrder = 0
 	header.TextColor3 = Color3.fromRGB(150, 150, 150)
 	header.TextXAlignment = Enum.TextXAlignment.Left
 	header.Text = 'CROPS'
 	header.Parent = card
 	list = Instance.new('Frame')
 	list.BackgroundTransparency = 1
-	list.Position = UDim2.fromOffset(0, 18)
-	list.Size = UDim2.new(1, 0, 1, -18)
+	list.AutomaticSize = Enum.AutomaticSize.XY
+	list.Size = UDim2.fromOffset(0, 0)
+	list.LayoutOrder = 1
 	list.Parent = card
 	local layout = Instance.new('UIListLayout')
 	layout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -35021,8 +35165,8 @@ run(function()
 	
 	--[[
 		Click a teammate to send your Lani scepter to them: the scepter is used, and once the
-		angel is up the teammate is written into the ScepterController's target and the
-		ability used, so the game sends its own request (the way Auto Lani does it). Legit
+		angel is up the teammate is pinned as the ScepterController's target and the
+		ability used, so the game sends its own request (landLani, shared with Auto Lani). Legit
 		switches to the scepter first and leaves human-like pauses between the steps.
 	]]
 	local function laniTo(player)
@@ -35042,8 +35186,7 @@ run(function()
 				repeat task.wait() until controller.isAngel or os.clock() - started > 2.5
 				if not controller.isAngel or not player.Character then return end
 				if legit then task.wait(0.25 + math.random() * 0.25) end
-				controller.target = player.Character
-				bedwars.AbilityController:useAbility('PALADIN_ABILITY')
+				landLani(player.Character)
 			end)
 			using = false
 		end)

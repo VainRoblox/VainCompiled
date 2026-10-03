@@ -657,6 +657,9 @@ components = {
 		optionsettings.Function = optionsettings.Function or function() end
 		
 		button.MouseButton1Click:Connect(function() optionsettings.Function() end)
+		
+		return {Type = 'Button', Object = button}
+		
 	end,
 	ColorSlider = function(optionsettings, children, api)
 		local optionapi = {
