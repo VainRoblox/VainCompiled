@@ -9904,7 +9904,7 @@ run(function()
 		a fully charged shot lands.
 	]]
 	local Trajectories
-	local ShowOwn, ShowTeam, Marker, Danger, AimPreview, MaxTime, Thickness
+	local ShowOwn, ShowTeam, PearlOnly, Marker, Danger, AimPreview, MaxTime, Thickness
 	local LineColor, DangerColor, PearlColor, AimColor
 	local tracked = {}
 	local pools = {}
@@ -9930,9 +9930,14 @@ run(function()
 		return mine ~= nil and theirs ~= nil and tostring(mine) == tostring(theirs)
 	end
 	
+	local function isPearl(name)
+		return (name or ''):lower():find('pearl', 1, true) ~= nil
+	end
+	
 	local function wanted(model)
 		local shooter = model:GetAttribute('ProjectileShooter')
 		if shooter == nil then return false end
+		if on(PearlOnly) and not isPearl(model.Name) then return false end
 		if shooter == lplr.UserId then return on(ShowOwn) end
 		if sameTeam(shooter) then return on(ShowTeam) end
 		return true
@@ -10105,7 +10110,7 @@ run(function()
 			return
 		end
 		local speed, gravity, name, tool = heldProjectile()
-		if not speed then
+		if not speed or (on(PearlOnly) and not isPearl(name)) then
 			local entry = pools.aim
 			if entry then hidePool(entry) end
 			return
@@ -10119,7 +10124,7 @@ run(function()
 		local direction = camera + unit * ((camera - origin).Magnitude * CAMERA_MULTIPLIER) - origin
 		if direction.Magnitude <= 0 then return end
 		local points, landing = simulate(origin, direction.Unit * speed, gravity)
-		draw('aim', points, landing, (name or ''):find('pearl') and colorOf(PearlColor, Color3.fromRGB(200, 120, 255)) or colorOf(AimColor, Color3.fromRGB(120, 220, 255)))
+		draw('aim', points, landing, isPearl(name) and colorOf(PearlColor, Color3.fromRGB(200, 120, 255)) or colorOf(AimColor, Color3.fromRGB(120, 220, 255)))
 	end
 	
 	local function step()
@@ -10146,7 +10151,7 @@ run(function()
 	
 			local points, landing = simulate(root.Position, velocity, projectileGravity(root))
 			local color
-			if model.Name:lower():find('pearl', 1, true) then
+			if isPearl(model.Name) then
 				color = colorOf(PearlColor, Color3.fromRGB(200, 120, 255))
 			elseif on(Danger) and threatens(points) then
 				color = colorOf(DangerColor, Color3.fromRGB(255, 70, 70))
@@ -10181,6 +10186,10 @@ run(function()
 	ShowTeam = Trajectories:CreateToggle({
 		Name = 'Show Teammates',
 		Tooltip = 'Also draws your teammates\' projectiles'
+	})
+	PearlOnly = Trajectories:CreateToggle({
+		Name = 'Telepearl Only',
+		Tooltip = 'Only draws telepearls'
 	})
 	Marker = Trajectories:CreateToggle({
 		Name = 'Landing Marker',
