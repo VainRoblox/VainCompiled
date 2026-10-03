@@ -10937,6 +10937,20 @@ run(function()
 		end)
 	end
 	
+	-- Your own party, exactly: the game keeps it in its party store (leader and members) for
+	-- the whole match - the hotbar's party list reads the same - so it needs no history.
+	local function ownParty()
+		local ids = {}
+		local ok, players = pcall(function()
+			return bedwars.PartyController:getLocalPartyPlayers()
+		end)
+		for _, member in (ok and type(players) == 'table' and players or {}) do
+			local id = type(member) == 'table' and tonumber(member.userId)
+			if id then ids[id] = true end
+		end
+		return ids
+	end
+	
 	-- In how many of the compared matches two players queued together, from either side.
 	local function shared(a, b)
 		local best = 0
@@ -10967,6 +10981,16 @@ run(function()
 		end
 		for _, player in players do parent[player.UserId] = player.UserId end
 		table.clear(confidence)
+	
+		-- Your own party first, straight from the game.
+		local own = ownParty()
+		for _, player in players do
+			if player ~= lplr and own[player.UserId] then
+				local ra, rb = find(player.UserId), find(lplr.UserId)
+				if ra ~= rb then parent[ra] = rb end
+				confidence[lplr.UserId .. ':' .. player.UserId] = math.huge
+			end
+		end
 		for _, a in players do
 			for _, b in players do
 				if a ~= b and teamOf(a) and teamOf(a) == teamOf(b) then
@@ -11007,6 +11031,7 @@ run(function()
 				end
 			end
 			group.seen = best
+			group.exact = best == math.huge
 		end
 	end
 	
@@ -11044,7 +11069,7 @@ run(function()
 								label.Parent = tag
 								tags[player] = tag
 							end
-							tag.Label.Text = Matches.Value > 1
+							tag.Label.Text = (Matches.Value > 1 and not group.exact)
 								and string.format('Party %d (%d)  %d/%d', index, #group.members, group.seen, Matches.Value)
 								or string.format('Party %d (%d)', index, #group.members)
 							tag.Label.TextColor3 = group.color
