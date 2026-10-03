@@ -3554,9 +3554,9 @@ run(function()
 	
 		A charged weapon's strength comes from how long it has been drawn: the game takes the
 		draw time against the projectile source's maxStrengthChargeSec and scales the launch
-		from there, every time it works out a launch. So the draw time is raised to the share of
-		a full charge you set, at that moment - the shot leaves as strong as if you had held it
-		that long, and the aim arc shows it too.
+		from there into velocityMultiplier, which is what the launch reads. So both are raised to
+		the share of a full charge you set whenever a launch is worked out - the shot leaves as
+		strong as if you had held it that long, and the aim arc shows it too.
 	]]
 	local FastCharge
 	local ChargeSpeed
@@ -3574,6 +3574,12 @@ run(function()
 		local wanted = maxcharge * (ChargeSpeed.Value / 100)
 		if projmeta.drawDurationSeconds < wanted then
 			projmeta.drawDurationSeconds = wanted
+		end
+		-- The same scale the game's charge loop uses; without it the launch keeps last frame's.
+		local ratio = maxcharge > 0 and math.min(1, projmeta.drawDurationSeconds / maxcharge) or 1
+		local multiplier = ratio + (1 - ratio) * (source.minStrengthScalar or 0.5)
+		if (projmeta.velocityMultiplier or 0) < multiplier then
+			projmeta.velocityMultiplier = multiplier
 		end
 	end
 	
@@ -6086,10 +6092,10 @@ run(function()
 		return aimpos + (right * math.cos(angle) + up * math.sin(angle)) * miss
 	end
 	
-	-- The game builds the draw strength itself, every frame, from drawDurationSeconds:
-	-- ratio = min(1, drawDurationSeconds / maxStrengthChargeSec), and the launch speed is
-	-- scaled from minStrengthScalar up to full at ratio 1. Writing the draw time is enough -
-	-- the game recomputes the speed and fires its own max charge handling from there.
+	-- The game builds the draw strength each frame from drawDurationSeconds:
+	-- ratio = min(1, drawDurationSeconds / maxStrengthChargeSec), and velocityMultiplier runs
+	-- from minStrengthScalar up to 1 at ratio 1. The launch reads velocityMultiplier, which
+	-- would still be last frame's, so it is written here too.
 	local function applyCharge(projmeta)
 		if not InstantCharge.Enabled or projmeta.drawDurationSeconds == nil then return end
 	
@@ -6102,6 +6108,11 @@ run(function()
 		local wanted = maxcharge * (ChargeSpeed.Value / 100)
 		if projmeta.drawDurationSeconds < wanted then
 			projmeta.drawDurationSeconds = wanted
+		end
+		local ratio = maxcharge > 0 and math.min(1, projmeta.drawDurationSeconds / maxcharge) or 1
+		local multiplier = ratio + (1 - ratio) * (source.minStrengthScalar or 0.5)
+		if (projmeta.velocityMultiplier or 0) < multiplier then
+			projmeta.velocityMultiplier = multiplier
 		end
 	end
 	
@@ -6982,9 +6993,10 @@ run(function()
 		Generator ESP.
 	
 		Every diamond and emerald generator on the map is a GlobalOreGeneratorModel carrying the
-		game's own label - "Diamond Generator [10]", the seconds to the next spawn in brackets -
-		and each team generator a label with its own timer. The game hides those labels a short
-		way off. This reads them and shows them over every generator, through walls and at any
+		game's own label - "Diamond Generator [10]", the seconds to the next spawn in brackets.
+		Base generators are parts tagged Generator, with an Id, a GeneratorLevel and the game's
+		TeamOreGeneratorApp label (Title and Countdown) under them. The game hides those labels a
+		short way off. This reads them and shows them over every generator, through walls and at any
 		distance, together with how many of its resource are piled up on it waiting to be taken.
 	]]
 	local GeneratorESP
@@ -6998,7 +7010,7 @@ run(function()
 	local KINDS = {
 		diamond = {color = Color3.fromRGB(110, 210, 255), item = 'diamond'},
 		emerald = {color = Color3.fromRGB(90, 230, 120), item = 'emerald'},
-		team = {color = Color3.fromRGB(235, 235, 235)}
+		team = {color = Color3.fromRGB(235, 235, 235), item = 'iron'}
 	}
 	
 	local function on(setting)
@@ -7025,8 +7037,8 @@ run(function()
 	-- Seconds to the next spawn, as the game's own label has it.
 	local function secondsOf(model, kind)
 		if kind == 'team' then
-			local text = textOf(model, 'Timer')
-			return text and tonumber(text:match('([%d%.]+)')) or nil
+			local text = textOf(model, 'Countdown') or textOf(model, 'Timer')
+			return text and tonumber(text:match('%[([%d%.]+)%]') or text:match('([%d%.]+)')) or nil
 		end
 		local text = textOf(model, 'Countdown')
 		return text and tonumber(text:match('%[(%d+)%]')) or nil
@@ -7048,7 +7060,8 @@ run(function()
 	end
 	
 	local function add(model)
-		if generators[model] or not (model:IsA('Model') and model.Name == 'GlobalOreGeneratorModel') then return end
+		if generators[model] then return end
+		if not (model:IsA('Model') and model.Name == 'GlobalOreGeneratorModel') and not collectionService:HasTag(model, 'Generator') then return end
 		local adornee = model:FindFirstChild('GeneratorAdornee') or model.PrimaryPart or model:FindFirstChildWhichIsA('BasePart', true)
 		if not adornee then return end
 	
@@ -7071,6 +7084,18 @@ run(function()
 		label.Parent = billboard
 	
 		generators[model] = {billboard = billboard, adornee = adornee}
+	end
+	
+	-- Base generators: every Generator part that is not one of the diamond or emerald ones,
+	-- which come in through their GlobalOreGeneratorModel instead.
+	local function addTeam(part)
+		if generators[part] or not part:IsA('BasePart') then return end
+		local id = tostring(part:GetAttribute('Id') or ''):lower()
+		if id:find('diamond', 1, true) or id:find('emerald', 1, true) then return end
+		local app = part:FindFirstChild('TeamOreGeneratorApp', true)
+		if app and app:FindFirstChild('GlobalOreGenerator') then return end
+		add(part)
+		if generators[part] then generators[part].kind = 'team' end
 	end
 	
 	-- How many of each generator's resource are lying on it. Item drops carry the CollectionService
@@ -7118,7 +7143,7 @@ run(function()
 			if kind and enabledKind(kind) and inRange then
 				local parts = {}
 				local seconds = secondsOf(model, kind)
-				local name = kind == 'diamond' and 'Diamond' or kind == 'emerald' and 'Emerald' or (textOf(model, 'Title') or 'Generator')
+				local name = kind == 'diamond' and 'Diamond' or kind == 'emerald' and 'Emerald' or (textOf(model, 'Title') or 'Base Generator')
 				parts[1] = name
 				if seconds then
 					parts[#parts + 1] = (kind == 'team' and string.format('%.1fs', seconds) or (seconds .. 's'))
@@ -7128,7 +7153,12 @@ run(function()
 				end
 				if on(ShowTier) then
 					local tier = textOf(model, 'GenTier') or textOf(model, 'Tier')
-					if tier then parts[#parts + 1] = tier:upper() end
+					local level = model:GetAttribute('GeneratorLevel')
+					if tier then
+						parts[#parts + 1] = tier:upper()
+					elseif level then
+						parts[#parts + 1] = 'T' .. level
+					end
 				end
 				billboard.Label.Text = table.concat(parts, '  ')
 				billboard.Label.TextColor3 = KINDS[kind].color
@@ -7156,6 +7186,10 @@ run(function()
 					if descendant.Name == 'GlobalOreGeneratorModel' then
 						task.defer(add, descendant)
 					end
+				end))
+				for _, part in collectionService:GetTagged('Generator') do addTeam(part) end
+				GeneratorESP:Clean(collectionService:GetInstanceAddedSignal('Generator'):Connect(function(part)
+					task.defer(addTeam, part)
 				end))
 				GeneratorESP:Clean(runService.RenderStepped:Connect(function()
 					pcall(update)
@@ -9865,8 +9899,9 @@ run(function()
 		arrows and fireballs you can step out of the way of, and the exact spot an enemy's pearl
 		is about to put them.
 	
-		Aim Preview does the same for whatever you are holding, from your cursor, so a pearl or
-		a fireball lands where you meant it to.
+		Aim Preview does the same for whatever you are holding, worked out the way
+		ProjectileController:calculateImportantLaunchValues does at full draw, so it shows where
+		a fully charged shot lands.
 	]]
 	local Trajectories
 	local ShowOwn, ShowTeam, Marker, Danger, AimPreview, MaxTime, Thickness
@@ -9962,7 +9997,6 @@ run(function()
 			end
 			points[#points + 1] = point
 			previous = point
-			if #points > 160 then break end
 		end
 		return points, nil
 	end
@@ -10030,7 +10064,8 @@ run(function()
 		return workspace.Gravity
 	end
 	
-	-- What you are holding, if it throws or fires something: speed and gravity from its meta.
+	-- What you are holding, if it throws or fires something: speed and gravity from its meta,
+	-- with the overrides some kits put on them.
 	local function heldProjectile()
 		local tool = store.hand and store.hand.tool
 		local meta = tool and bedwars.ItemMeta[tool.Name]
@@ -10042,7 +10077,26 @@ run(function()
 		end)
 		local pmeta = ok and name and bedwars.ProjectileMeta[name]
 		if not pmeta then return nil end
-		return pmeta.launchVelocity or 100, pmeta.gravitationalAcceleration or 196.2, name
+		local overrides
+		if pmeta.getProjectileOverridesFunction then
+			local fine, result = pcall(pmeta.getProjectileOverridesFunction, lplr)
+			overrides = fine and type(result) == 'table' and result or nil
+		end
+		local speed = overrides and overrides.launchVelocityOverride or pmeta.launchVelocity or 100
+		return speed, pmeta.gravitationalAcceleration or 196.2, name, tool
+	end
+	
+	-- The game's launch constants (ProjectileController): the aim is lifted slightly above the
+	-- cursor ray and pointed at a spot far along it, not at whatever the cursor touches.
+	local Y_TARGET_OFFSET = inputService.TouchEnabled and not inputService.KeyboardEnabled and 0.25 or 0.05
+	local CAMERA_MULTIPLIER = 10
+	
+	local function launchPosition(tool)
+		local ok, position = pcall(function()
+			return bedwars.ProjectileController:getLaunchPosition(tool)
+		end)
+		if ok and typeof(position) == 'Vector3' then return position end
+		return entitylib.character.Head.Position
 	end
 	
 	local function aimPreview()
@@ -10050,18 +10104,19 @@ run(function()
 			destroyPool('aim')
 			return
 		end
-		local speed, gravity, name = heldProjectile()
+		local speed, gravity, name, tool = heldProjectile()
 		if not speed then
 			local entry = pools.aim
 			if entry then hidePool(entry) end
 			return
 		end
 	
-		local origin = entitylib.character.Head.Position
-		local ray = cloneref(lplr:GetMouse()).UnitRay
-		local hit = workspace:Raycast(ray.Origin, ray.Direction * 1000, rayParams)
-		local aimAt = hit and hit.Position or (ray.Origin + ray.Direction * 1000)
-		local direction = aimAt - origin
+		local origin = launchPosition(tool)
+		local mouse = cloneref(lplr:GetMouse())
+		local ray = gameCamera:ScreenPointToRay(mouse.X, mouse.Y)
+		local camera = gameCamera.CFrame.Position
+		local unit = (ray.Direction.Unit + Vector3.new(0, Y_TARGET_OFFSET, 0)).Unit
+		local direction = camera + unit * ((camera - origin).Magnitude * CAMERA_MULTIPLIER) - origin
 		if direction.Magnitude <= 0 then return end
 		local points, landing = simulate(origin, direction.Unit * speed, gravity)
 		draw('aim', points, landing, (name or ''):find('pearl') and colorOf(PearlColor, Color3.fromRGB(200, 120, 255)) or colorOf(AimColor, Color3.fromRGB(120, 220, 255)))
@@ -10149,7 +10204,7 @@ run(function()
 	})
 	MaxTime = Trajectories:CreateSlider({
 		Name = 'Max Time',
-		Tooltip = 'How far ahead each path is drawn',
+		Tooltip = 'Seconds of flight each path shows',
 		Min = 0.5,
 		Max = 6,
 		Default = 3,
@@ -29092,6 +29147,64 @@ run(function()
 			end
 		end
 	})
+end)
+
+run(function()
+	--[[
+		Static FOV.
+	
+		Most of the zoom when eating, drinking or drawing a bow is the sprint ending: the
+		SprintController tweens the camera to FovController:getFOV() * RUN_FOV_MULT while
+		sprinting and back to getFOV() when it stops, which those items do. Items and kits also
+		push modifiers into FovController.fovMultiplier, and menus tween the camera out and back.
+	
+		So the camera is held at one field of view every frame instead - your FOV setting (or
+		the FOV module's), widened by the sprint multiplier if Sprint FOV is on. Scripted
+		cameras (cutscenes, drones, the satellite) are left alone.
+	]]
+	local StaticFOV
+	local SprintFOV
+	
+	local RUN_FOV_MULT = 1.1
+	
+	-- The FOV with no multiplier on it. getFOV is the controller's stored fov, which already
+	-- has the item multiplier in it - unless the FOV module replaced getFOV, which then
+	-- returns its plain value.
+	local function baseFOV()
+		local controller = bedwars.FovController
+		local fov = controller:getFOV()
+		if fov == controller.fov then
+			fov /= (controller.fovMultiplier or 1)
+		end
+		return fov
+	end
+	
+	StaticFOV = vain.Legit:CreateModule({
+		Name = 'Static FOV',
+		Function = function(callback)
+			if callback then
+				StaticFOV:Clean(runService.RenderStepped:Connect(function()
+					if gameCamera.CameraType ~= Enum.CameraType.Custom then return end
+					local ok, fov = pcall(baseFOV)
+					if not ok or type(fov) ~= 'number' then return end
+					gameCamera.FieldOfView = fov * (SprintFOV.Enabled and RUN_FOV_MULT or 1)
+				end))
+			else
+				pcall(function()
+					local controller = bedwars.FovController
+					local sprinting = bedwars.SprintController and bedwars.SprintController.sprinting
+					gameCamera.FieldOfView = controller:getFOV() * (sprinting and RUN_FOV_MULT or 1)
+				end)
+			end
+		end,
+		Tooltip = 'Stops the zoom when eating or drawing a bow'
+	})
+	SprintFOV = StaticFOV:CreateToggle({
+		Name = 'Sprint FOV',
+		Tooltip = 'Keeps the wider sprinting FOV',
+		Default = true
+	})
+	
 end)
 
 run(function()
