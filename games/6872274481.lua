@@ -12632,16 +12632,20 @@ run(function()
 		your own movement, and a jump's speed on top, since jumping just before launching goes
 		furthest. Other cannons are drawn from beside them, as someone standing there would go.
 	
-		Holding TNT shows where each cannon would fire it instead, from the barrel at the
-		speed and fall measured for cannon TNT (the shot is made on the server).
+		Holding TNT shows where each cannon would fire it instead, from the barrel, with the
+		launch measured for cannon TNT (the shot is made on the server).
 	]]
 	local CANNON_SPEED = 200
 	local CANNON_TIME = 8
 	local CANNON_REACH = 10
 	local cannonBlocks = {}
-	-- Cannon TNT is fired by the server; its speed and fall are set from measurements.
-	local TNT_SPEED = CANNON_SPEED
-	local TNT_GRAVITY = nil
+	--[[
+		Cannon TNT, measured: the server fires it at the cannon's aim times 44.35 plus 36.84
+		straight up, whatever the elevation (aims of 8, 26 and 45 degrees all fit to within a
+		tenth), and from there it is an ordinary physics part falling at the world's gravity.
+	]]
+	local TNT_SPEED = 44.35
+	local TNT_LIFT = 36.84
 	
 	local function watchBlock(block)
 		if block.Name == 'cannon' then cannonBlocks[block] = true end
@@ -12668,19 +12672,63 @@ run(function()
 		return attachment and attachment.WorldPosition or (barrel and barrel.Position) or cannon.Position
 	end
 	
+	--[[
+		Once you are actually flying out of a cannon, the arc follows you instead: worked out
+		from where you are and how fast you are going each frame, the way a pearl's path is,
+		until you are back on the ground. The cannon you left stops drawing its own arc meanwhile,
+		which would otherwise snap back to a launch from beside it the moment you were gone.
+	]]
+	local selfFlight, lastRootVelocity
+	
+	local function followFlight(root)
+		if root then
+			local velocity = root.AssemblyLinearVelocity
+			if not selfFlight and lastRootVelocity and (velocity - lastRootVelocity).Magnitude > 100 then
+				local nearest, nearestGap
+				for cannon in cannonBlocks do
+					local gap = cannon.Parent and (cannon.Position - root.Position).Magnitude
+					if gap and gap <= CANNON_REACH + 4 and (not nearestGap or gap < nearestGap) then
+						nearest, nearestGap = cannon, gap
+					end
+				end
+				if nearest then selfFlight = {cannon = nearest, started = os.clock()} end
+			end
+			lastRootVelocity = velocity
+		else
+			lastRootVelocity = nil
+		end
+	
+		if not selfFlight then return end
+		local humanoid = root and entitylib.character.Humanoid
+		local elapsed = os.clock() - selfFlight.started
+		local landed = humanoid and elapsed > 0.3 and (humanoid.FloorMaterial ~= Enum.Material.Air or root.AssemblyLinearVelocity.Magnitude < 5)
+		if not root or landed or elapsed > CANNON_TIME then
+			selfFlight = nil
+			destroyPool('cannonflight')
+			return
+		end
+		local hip = entitylib.character.HipHeight or 3
+		local points, landing = simulate(root.Position - Vector3.new(0, hip, 0), root.AssemblyLinearVelocity, workspace.Gravity, false, CANNON_TIME)
+		draw('cannonflight', points, landing, colorOf(CannonColor, Color3.fromRGB(255, 170, 60)))
+	end
+	
 	local cannonTime = 0
 	local function cannonPaths()
 		local seen = {}
 		if not on(Cannons) then
 			for cannon in cannonCache do destroyPool(cannon) end
 			table.clear(cannonCache)
+			selfFlight = nil
+			destroyPool('cannonflight')
 			return
 		end
+		local flightRoot = entitylib.isAlive and entitylib.character.RootPart or nil
+		followFlight(flightRoot)
 		local tnt = holdingTnt()
 		local color = tnt and colorOf(TntColor, Color3.fromRGB(255, 80, 60)) or colorOf(CannonColor, Color3.fromRGB(255, 170, 60))
 		local root = entitylib.isAlive and entitylib.character.RootPart
 		local mine, mineGap
-		if root and not tnt then
+		if root and not tnt and not selfFlight then
 			for cannon in cannonBlocks do
 				if cannon.Parent then
 					local gap = (cannon.Position - root.Position).Magnitude
@@ -12699,14 +12747,15 @@ run(function()
 			end
 			local look = cannon:GetAttribute('LookVector')
 			if typeof(look) ~= 'Vector3' or look.Magnitude == 0 then continue end
+			if selfFlight and selfFlight.cannon == cannon and not tnt then continue end
 			seen[cannon] = true
 			local cache = cannonCache[cannon]
 			if refresh or not cache or cache.look ~= look or cache.tnt ~= tnt then
 				local start, velocity, gravity
 				if tnt then
 					start = barrelPoint(cannon)
-					velocity = look * TNT_SPEED
-					gravity = TNT_GRAVITY or workspace.Gravity
+					velocity = look.Unit * TNT_SPEED + Vector3.new(0, TNT_LIFT, 0)
+					gravity = workspace.Gravity
 				else
 					local up = Vector3.new(0, jumpSpeed(), 0)
 					if cannon == mine then
@@ -12796,6 +12845,7 @@ run(function()
 				table.clear(tracked)
 				table.clear(cannonCache)
 				table.clear(cannonBlocks)
+				selfFlight, lastRootVelocity = nil, nil
 				clearHighlights()
 				if impactBox then
 					impactBox:Destroy()
