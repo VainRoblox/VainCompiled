@@ -440,13 +440,6 @@ local function addEditPlaceholder(frame, name)
 		clickgui:GetPropertyChangedSignal('Visible'):Connect(function()
 			setEditPlaceholders(editOpen())
 		end)
-		-- Re-synced a few times a second as well, so a missed visibility event can never
-		-- leave the placeholders up with the GUI closed.
-		task.spawn(function()
-			while task.wait(0.2) and clickgui and clickgui.Parent do
-				pcall(function() setEditPlaceholders(editOpen()) end)
-			end
-		end)
 	end
 end
 

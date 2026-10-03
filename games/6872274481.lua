@@ -17982,7 +17982,7 @@ run(function()
 	    ]]
 	    local AutoLani
 	    local Mode, TargetMode, Teammate, TeammateHealth, Escape, SelfHealth
-	    local MinDistance, FireDelay, SkipFalling, AutoBuyScepter
+	    local MinDistance, FireDelay, SkipFalling, AutoBuyScepter, AlwaysTarget
 	    local escaping = false
 	    local lastUse, lastBuy = 0, 0
 	    local wasAngel = false
@@ -18022,7 +18022,21 @@ run(function()
 	        return list
 	    end
 	
+	    -- The teammate picked under Always Target, while alive and in the game - chosen over
+	    -- every mode and filter.
+	    local function alwaysTarget()
+	        local name = AlwaysTarget and AlwaysTarget.Value
+	        if not name or name == 'None' then return nil end
+	        local player = playersService:FindFirstChild(name)
+	        local humanoid = player and player.Character and player.Character:FindFirstChildOfClass('Humanoid')
+	        if player and player ~= lplr and humanoid and humanoid.Health > 0 and player.Character:FindFirstChild('HumanoidRootPart') then
+	            return player
+	        end
+	    end
+	
 	    local function pickTarget()
+	        local forced = alwaysTarget()
+	        if forced then return forced end
 	        local list = candidates()
 	        if #list == 0 then return nil end
 	        local mode = escaping and 'Safest' or TargetMode.Value
@@ -18125,7 +18139,7 @@ run(function()
 	                    if on(AutoBuyScepter) then pcall(buyScepter) end
 	                    if Mode.Value == 'Auto' and not angel and os.clock() - lastUse >= USE_COOLDOWN then
 	                        local use, isEscape = shouldUse()
-	                        if use and #candidates() > 0 then
+	                        if use and (#candidates() > 0 or alwaysTarget()) then
 	                            escaping = isEscape
 	                            pcall(useScepter)
 	                        end
@@ -18171,6 +18185,11 @@ run(function()
 	        if #list == 0 then list = {'None'} end
 	        return list
 	    end
+	    local function alwaysList()
+	        local list = {'None'}
+	        for _, name in getTeammates(true) do list[#list + 1] = name end
+	        return list
+	    end
 	    Teammate = AutoLani:CreateDropdown({
 	        Name = 'Teammate',
 	        List = teammateList(),
@@ -18182,7 +18201,13 @@ run(function()
 	        Tooltip = 'Updates the teammate list',
 	        Function = function()
 	            pcall(function() Teammate:Change(teammateList()) end)
+	            pcall(function() AlwaysTarget:Change(alwaysList()) end)
 	        end
+	    })
+	    AlwaysTarget = AutoLani:CreateDropdown({
+	        Name = 'Always Target',
+	        List = alwaysList(),
+	        Tooltip = 'This teammate always gets it while alive'
 	    })
 	    TeammateHealth = AutoLani:CreateSlider({
 	        Name = 'Teammate Health',
@@ -32098,9 +32123,7 @@ run(function()
 	
 		-- Back in the game: off the list.
 		entry.connection = player.CharacterAdded:Connect(function()
-			task.delay(0.5, function()
-				if dead[player] == entry then forget(player) end
-			end)
+			if dead[player] == entry then forget(player) end
 		end)
 		dead[player] = entry
 	end
@@ -32215,7 +32238,8 @@ run(function()
 			local respawnAt = player:GetAttribute('RespawningAtTime')
 			if type(respawnAt) == 'number' and respawnAt > entry.diedAt then entry.respawnAt = respawnAt end
 			local remaining = entry.respawnAt - now
-			if (entry.final and now - entry.diedAt > FINAL_HOLD) or (not entry.final and remaining < -1) then
+			-- Gone the moment the timer runs out, not a second later.
+			if (entry.final and now - entry.diedAt > FINAL_HOLD) or (not entry.final and remaining <= 0) then
 				forget(player)
 				continue
 			end
@@ -32800,6 +32824,7 @@ run(function()
 	]]
 	local TargetHUD
 	local Mode, Range, Angle, Linger, ShowEquipment, WinIndicator, Compact, Accent, ShowKitName, ShowEnchants, Background
+	local WinMode
 	local card, stroke, avatar, nameLabel, winLabel, infoLabel, extraLabel, barBack, barFill, barGhost, equipment
 	local icons = {}
 	local target, lastSeen = nil, 0
@@ -32950,6 +32975,38 @@ run(function()
 		return health
 	end
 	
+	-- Swings a second for what is held: the sword's attackSpeed is the gap between swings.
+	local function swingRate(itemType)
+		local meta = itemType and bedwars.ItemMeta[itemType]
+		local gap = meta and meta.sword and tonumber(meta.sword.attackSpeed)
+		return gap and gap > 0 and math.clamp(1 / gap, 0.5, 5) or 2
+	end
+	
+	-- Both sides of the fight as the item meta has it: effective health, damage a hit and
+	-- swings a second, for you and for them.
+	local function fightNumbers(player, theirHealth)
+		local character = lplr.Character
+		if not (entitylib.isAlive and character and player.Character) then return nil end
+		local myHealth = (character:GetAttribute('Health') or 0) + getShieldAttribute(character)
+		local myMax = character:GetAttribute('MaxHealth') or 100
+		local theirMax = player.Character:GetAttribute('MaxHealth') or 100
+	
+		local mySet, theirSet = enchantSet(character), enchantSet(player.Character)
+		local myTool = store.hand and store.hand.tool
+		local inventory = store.inventories[player]
+		local theirItem = inventory and inventory.hand and inventory.hand.itemType
+		local myArmor = store.inventory and store.inventory.inventory and store.inventory.inventory.armor
+		local theirArmor = inventory and inventory.armor
+		return {
+			myHealth = effectiveHealth(myHealth, myMax, mySet),
+			theirHealth = effectiveHealth(theirHealth, theirMax, theirSet),
+			myHit = hitDamage(myTool and myTool.Name, mySet, theirArmor, theirSet, theirHealth / math.max(theirMax, 1)),
+			theirHit = hitDamage(theirItem, theirSet, myArmor, mySet, myHealth / math.max(myMax, 1)),
+			myRate = swingRate(myTool and myTool.Name),
+			theirRate = swingRate(theirItem)
+		}
+	end
+	
 	hitsToKill = function(player, theirHealth)
 		local character = lplr.Character
 		if not (entitylib.isAlive and character and player.Character) then return nil end
@@ -32972,6 +33029,93 @@ run(function()
 		return math.max(mine, 1), math.max(theirs, 1)
 	end
 	
+	--[[
+		Live Damage: the damage you and your target actually take, read from each character's
+		Health attribute as it drops - so crits, kit buffs, real enchant numbers and how fast
+		each of you is really hitting are all in it. Damage per second over the last few
+		seconds gives each side's time to finish the other off. Until a few hits have landed it
+		leans on the item-based estimate, and the verdict only flips once the gap is clear.
+	]]
+	local LIVE_WINDOW = 6
+	local live = {taken = {}, dealt = {}, conns = {}, verdict = 'EVEN'}
+	
+	local function watchHealth(character, log)
+		local last = character:GetAttribute('Health')
+		return character:GetAttributeChangedSignal('Health'):Connect(function()
+			local now = character:GetAttribute('Health')
+			if type(now) == 'number' and type(last) == 'number' and now < last then
+				table.insert(log, {time = os.clock(), amount = last - now})
+			end
+			last = now
+		end)
+	end
+	
+	local function liveReset()
+		for _, conn in live.conns do conn:Disconnect() end
+		table.clear(live.conns)
+		table.clear(live.taken)
+		table.clear(live.dealt)
+		live.myChar, live.theirChar = nil, nil
+		live.verdict = 'EVEN'
+	end
+	
+	-- Keeps the two health watchers on the right characters.
+	local function liveTrack(player)
+		local mine, theirs = lplr.Character, player and player.Character
+		if mine == live.myChar and theirs == live.theirChar then return end
+		liveReset()
+		live.myChar, live.theirChar = mine, theirs
+		if mine then table.insert(live.conns, watchHealth(mine, live.taken)) end
+		if theirs then table.insert(live.conns, watchHealth(theirs, live.dealt)) end
+	end
+	
+	-- Damage a second from a log, and how many hits it is based on.
+	local function liveRate(log)
+		local now = os.clock()
+		local total, hits, first = 0, 0, nil
+		for i = #log, 1, -1 do
+			local hit = log[i]
+			if now - hit.time > LIVE_WINDOW then
+				table.remove(log, i)
+			else
+				total += hit.amount
+				hits += 1
+				first = math.min(first or hit.time, hit.time)
+			end
+		end
+		if hits == 0 then return 0, 0 end
+		return total / math.max(now - first, 1.5), hits
+	end
+	
+	local function liveVerdict(player, theirHealth)
+		local numbers = fightNumbers(player, theirHealth)
+		if not numbers then return nil end
+		local dealt, dealtHits = liveRate(live.dealt)
+		local taken, takenHits = liveRate(live.taken)
+		-- Blended from the estimate to the real numbers over the first three hits each way.
+		local myWeight, theirWeight = math.min(dealtHits / 3, 1), math.min(takenHits / 3, 1)
+		local myDps = myWeight * dealt + (1 - myWeight) * numbers.myHit * numbers.myRate
+		local theirDps = theirWeight * taken + (1 - theirWeight) * numbers.theirHit * numbers.theirRate
+		local myTime = numbers.theirHealth / math.max(myDps, 0.1)
+		local theirTime = numbers.myHealth / math.max(theirDps, 0.1)
+		local gap = (theirTime - myTime) / math.max(myTime, theirTime, 0.1)
+		-- Close is even; a clear gap is needed before it flips from one side to the other.
+		if math.abs(gap) < 0.08 then
+			live.verdict = 'EVEN'
+		elseif gap > 0.15 or (gap > 0 and live.verdict == 'WINNING') then
+			live.verdict = 'WINNING'
+		elseif gap < -0.15 or (gap < 0 and live.verdict == 'LOSING') then
+			live.verdict = 'LOSING'
+		end
+		return live.verdict
+	end
+	
+	local VERDICT_COLORS = {
+		EVEN = Color3.fromRGB(230, 230, 230),
+		WINNING = Color3.fromRGB(110, 230, 120),
+		LOSING = Color3.fromRGB(255, 90, 90)
+	}
+	
 	local function show(entity, player)
 		local color = player.Team and player.TeamColor.Color or Color3.new(1, 1, 1)
 		avatar.Image = 'rbxthumb://type=AvatarHeadShot&id=' .. player.UserId .. '&w=150&h=150'
@@ -32989,7 +33133,12 @@ run(function()
 		barFill.BackgroundColor3 = Color3.fromHSV(fraction / 3, 0.85, 0.95)
 	
 		winLabel.Visible = on(WinIndicator) and player ~= lplr
-		if winLabel.Visible then
+		if winLabel.Visible and WinMode and WinMode.Value == 'Live Damage' then
+			liveTrack(player)
+			local verdict = liveVerdict(player, health)
+			winLabel.Text = verdict or ''
+			winLabel.TextColor3 = VERDICT_COLORS[verdict or 'EVEN']
+		elseif winLabel.Visible then
 			-- Who needs fewer hits to finish the other, with what each of you is holding.
 			local mineLeft, theirsLeft = hitsToKill(player, health)
 			if not mineLeft then
@@ -33069,6 +33218,7 @@ run(function()
 			else
 				target = nil
 				card.Visible = false
+				liveReset()
 			end
 		end,
 		Size = UDim2.fromOffset(240, 96),
@@ -33114,7 +33264,22 @@ run(function()
 	WinIndicator = TargetHUD:CreateToggle({
 		Name = 'Win Indicator',
 		Tooltip = 'Compares their health with yours',
-		Default = true
+		Default = true,
+		Function = function(callback)
+			if WinMode and WinMode.Object then WinMode.Object.Visible = callback end
+		end
+	})
+	WinMode = TargetHUD:CreateDropdown({
+		Name = 'Win Mode',
+		List = {'Estimate', 'Live Damage'},
+		Tooltips = {
+			Estimate = 'From weapons, armor and enchants',
+			['Live Damage'] = 'From the damage you both really deal'
+		},
+		Darker = true,
+		Function = function()
+			liveReset()
+		end
 	})
 	Compact = TargetHUD:CreateToggle({
 		Name = 'Compact',
