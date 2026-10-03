@@ -30843,18 +30843,45 @@ run(function()
 		return part and part:IsA('BasePart') and part or nil
 	end
 	
-	local function isOwn(bed)
-		local team = lplr:GetAttribute('Team')
-		return team ~= nil and bed:GetAttribute('Team' .. tostring(team) .. 'NoBreak') ~= nil
+	-- Yours when it carries your team's NoBreak attribute, or its blanket is your team's
+	-- colour - the attribute is not always there.
+	local function isOwn(bed, team)
+		local id = lplr:GetAttribute('Team')
+		if id ~= nil and bed:GetAttribute('Team' .. tostring(id) .. 'NoBreak') ~= nil then return true end
+		if not team then return false end
+		if team.id ~= nil and id ~= nil then return tostring(team.id) == tostring(id) end
+		-- The game's own bed code matches its teams to players by name.
+		if lplr.Team and team.name == lplr.Team.Name then return true end
+		return team.team ~= nil and team.team == lplr.Team
 	end
 	
-	-- The team whose colour is nearest the blanket's.
+	--[[
+		The team whose colour is nearest the blanket's, from the game's own team list
+		(Game.teams in its store, each with an id, name and colour) - the Roblox Teams are often
+		empty in BedWars. Falls back to the Roblox Teams if the store has none.
+	]]
+	local function teamList()
+		local list = {}
+		local ok, teams = pcall(function() return bedwars.Store:getState().Game.teams end)
+		for _, team in (ok and type(teams) == 'table' and teams or {}) do
+			if typeof(team.color) == 'Color3' then
+				list[#list + 1] = {id = team.id, name = team.name, color = team.color}
+			end
+		end
+		if #list == 0 then
+			for _, team in game:GetService('Teams'):GetTeams() do
+				list[#list + 1] = {name = team.Name, color = team.TeamColor.Color, team = team}
+			end
+		end
+		return list
+	end
+	
 	local function teamOf(bed)
 		local blanket = blanketOf(bed)
 		if not blanket then return nil end
 		local best, bestDiff
-		for _, team in game:GetService('Teams'):GetTeams() do
-			local c, b = team.TeamColor.Color, blanket.Color
+		for _, team in teamList() do
+			local c, b = team.color, blanket.Color
 			local diff = math.abs(c.R - b.R) + math.abs(c.G - b.G) + math.abs(c.B - b.B)
 			if not bestDiff or diff < bestDiff then
 				best, bestDiff = team, diff
@@ -30863,17 +30890,24 @@ run(function()
 		return best
 	end
 	
-	-- Every bed seen this match, kept after it is broken.
+	--[[
+		Every bed seen this match, kept after it is broken. Whose it is gets worked out again
+		each time rather than once, as teams are often not handed out yet when the beds first
+		appear - which left your own bed counted as an enemy's, and pointed at as the nearest.
+	]]
+	local lastRemember = 0
 	local function remember()
+		if os.clock() - lastRemember < 0.5 then return end
+		lastRemember = os.clock()
 		for _, bed in collectionService:GetTagged('bed') do
-			if bed:IsA('PVInstance') and not known[bed] then
+			if bed:IsA('PVInstance') then
 				local team = teamOf(bed)
-				known[bed] = {
-					position = bed:GetPivot().Position,
-					own = isOwn(bed),
-					name = team and team.Name or 'Enemy',
-					color = team and team.TeamColor.Color or Color3.new(1, 1, 1)
-				}
+				local info = known[bed] or {}
+				info.position = bed:GetPivot().Position
+				info.own = isOwn(bed, team)
+				info.name = team and team.name or 'Enemy'
+				info.color = team and team.color or Color3.new(1, 1, 1)
+				known[bed] = info
 			end
 		end
 		for bed, info in known do
