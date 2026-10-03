@@ -7389,7 +7389,7 @@ run(function()
 	local Diamond, Emerald, Team, ShowItems, ShowTier, ShowTimer, ProgressBar, Icons
 	local Background, BackgroundColor, Outline, FontOption, Range, Scale
 	local ShowDistance, Compact, HideEmpty, FullAlert, FullAmount, FullColor, ShowTierUp
-	local ReplaceGame, ShrinkFar, FullSizeWithin, MinSize, ShowOccupants
+	local ReplaceGame, ShrinkFar, FullSizeWithin, MinSize, ShowOccupants, ThroughWalls
 	
 	--[[
 		When the diamond and emerald generators level up: the game's BWOreGenLevelSystem steps
@@ -7875,6 +7875,8 @@ run(function()
 		entry.occupants.Size = UDim2.fromOffset(0, math.max(6, math.floor(size * 0.6)))
 	
 		billboard.Size = UDim2.fromOffset(size * 22, size * 6)
+		-- Off, and walls and blocks in front hide the card like anything else in the world.
+		billboard.AlwaysOnTop = on(ThroughWalls)
 		billboard.Enabled = true
 	end
 	
@@ -7946,6 +7948,11 @@ run(function()
 	ShowTier = GeneratorESP:CreateToggle({
 		Name = 'Show Tier',
 		Tooltip = 'Shows each generator\'s tier'
+	})
+	ThroughWalls = GeneratorESP:CreateToggle({
+		Name = 'Through Walls',
+		Tooltip = 'Shows cards through walls and blocks',
+		Default = true
 	})
 	ReplaceGame = GeneratorESP:CreateToggle({
 		Name = 'Replace Game Label',
@@ -8063,9 +8070,9 @@ run(function()
 	Range = GeneratorESP:CreateSlider({
 		Name = 'Range',
 		Tooltip = 'How far away generators are shown',
-		Min = 50,
+		Min = 20,
 		Max = 2000,
-		Default = 2000,
+		Default = 300,
 		Suffix = function(val) return val == 1 and 'stud' or 'studs' end
 	})
 	Scale = GeneratorESP:CreateSlider({
