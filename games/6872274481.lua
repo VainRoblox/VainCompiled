@@ -17868,430 +17868,280 @@ run(function()
 	end)
 	
 	kitRun(function()
+	    --[[
+	        Auto Lani.
+	
+	        How the kit works now (ScepterController): consuming the scepter summons the angel
+	        0.8s later and turns on the PALADIN_ABILITY; while it is up (5s) the controller
+	        picks the teammate nearest your aim every frame into its target field, and using
+	        the ability makes the game send PaladinAbilityRequest with that target - you land
+	        on them and drop a healing aura (8% health a second for 8s).
+	
+	        So rather than sending the request itself, this picks the teammate, writes it into
+	        the controller's target and uses the ability in the same step - no frame between
+	        for the aim to overwrite it - and the game sends its own request.
+	
+	        Assist does that whenever you use the scepter. Auto also uses the scepter for you:
+	        when a teammate drops below the health you set, or - with Escape - when you do, in
+	        which case it goes to the teammate with the fewest enemies round them.
+	    ]]
 	    local AutoLani
-	    local PlayerDropdown
-	    local RefreshButton
-	    local DelaySlider
-	    local AutoBuyToggle
-	    local GUICheck
-	    local DelayBuySlider
-	    local LimitItems
-		local HandCheck
-	    local TargetModeDropdown
-	    local HealthActivationToggle
-	    local HealthThresholdSlider
-	    local TeammateHealthToggle
-	    local TeammateHealthSlider
-	    local running = false
-	    local buyRunning = false
-	    local buyLoopThread = nil
+	    local Mode, TargetMode, Teammate, TeammateHealth, Escape, SelfHealth
+	    local MinDistance, FireDelay, SkipFalling, AutoBuyScepter
+	    local escaping = false
+	    local lastUse, lastBuy = 0, 0
+	    local wasAngel = false
+	    local ENEMY_RANGE = 25
+	    local USE_COOLDOWN = 3
 	
-	    local function isHoldingScepter()
-	        if not entitylib.isAlive then return false end
-	        local inventory = store.inventory
-	        if inventory and inventory.inventory and inventory.inventory.hand then
-	            local handItem = inventory.inventory.hand
-	            if handItem and handItem.itemType == "scepter" then
-	                return true
+	    local function on(setting)
+	        return setting ~= nil and setting.Enabled
+	    end
+	
+	    local function enemiesNear(position)
+	        local count = 0
+	        for _, entity in entitylib.List do
+	            if entity.Targetable and entity.RootPart and (entity.RootPart.Position - position).Magnitude <= ENEMY_RANGE then
+	                count += 1
 	            end
 	        end
-	        return false
+	        return count
 	    end
 	
-	    local function isPlayerAlive(player)
-	        if not player or not player.Character then return false end
-	        local humanoid = player.Character:FindFirstChild("Humanoid")
-	        return humanoid and humanoid.Health > 0
-	    end
-	
-	    local function isPlayerInVoid(player)
-	        if not player or not player.Character then return true end
-	        local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
-	        if rootPart then return rootPart.Position.Y < 0 end
-	        return true
-	    end
-	
-	    local function getTargetPlayer()
-	        local myTeam = lplr:GetAttribute('Team')
-	        if not myTeam then return nil end
-	        local mode = TargetModeDropdown.Value
-	
-	        if mode == "Specific Player" then
-	            local targetName = PlayerDropdown.Value
-	            if not targetName or targetName == "" then return nil end
-	            local targetPlayer = playersService:FindFirstChild(targetName)
-	            if targetPlayer and targetPlayer:GetAttribute('Team') == myTeam then
-	                if isPlayerAlive(targetPlayer) and not isPlayerInVoid(targetPlayer) then
-	                    return targetPlayer
+	    -- Teammates worth landing on: alive, far enough away, and not falling into the void.
+	    local function candidates()
+	        local list = {}
+	        if not entitylib.isAlive then return list end
+	        local here = entitylib.character.RootPart.Position
+	        local floor = AntiFallPart and AntiFallPart.Parent and AntiFallPart.Position.Y or nil
+	        for _, player in getTeammates(false) do
+	            local root = player.Character and player.Character:FindFirstChild('HumanoidRootPart')
+	            if root then
+	                local falling = root.AssemblyLinearVelocity.Y < -60 or (floor and root.Position.Y < floor + 3)
+	                local distance = (root.Position - here).Magnitude
+	                if distance >= MinDistance.Value and not (on(SkipFalling) and falling) then
+	                    list[#list + 1] = {player = player, root = root, distance = distance, health = getPlayerHealthPercent(player)}
 	                end
 	            end
-	            return nil
-	
-	        elseif mode == "Lowest Health" then
-	            local lowestHealth = math.huge
-	            local lowestPlayer = nil
-	            for _, player in playersService:GetPlayers() do
-	                if player ~= lplr and player:GetAttribute('Team') == myTeam then
-	                    if isPlayerAlive(player) and not isPlayerInVoid(player) then
-	                        local hp = getPlayerHealthPercent(player)
-	                        if hp < lowestHealth and hp > 0 then
-	                            lowestHealth = hp
-	                            lowestPlayer = player
-	                        end
-	                    end
-	                end
-	            end
-	            return lowestPlayer
-	
-	        elseif mode == "Closest" then
-	            if not entitylib.isAlive then return nil end
-	            local myPos = entitylib.character.RootPart.Position
-	            local closestDist = math.huge
-	            local closestPlayer = nil
-	            for _, player in playersService:GetPlayers() do
-	                if player ~= lplr and player:GetAttribute('Team') == myTeam then
-	                    if isPlayerAlive(player) and not isPlayerInVoid(player) then
-	                        if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-	                            local dist = (player.Character.HumanoidRootPart.Position - myPos).Magnitude
-	                            if dist < closestDist then
-	                                closestDist = dist
-	                                closestPlayer = player
-	                            end
-	                        end
-	                    end
-	                end
-	            end
-	            return closestPlayer
-	
-	        elseif mode == "Furthest" then
-	            if not entitylib.isAlive then return nil end
-	            local myPos = entitylib.character.RootPart.Position
-	            local furthestDist = 0
-	            local furthestPlayer = nil
-	            for _, player in playersService:GetPlayers() do
-	                if player ~= lplr and player:GetAttribute('Team') == myTeam then
-	                    if isPlayerAlive(player) and not isPlayerInVoid(player) then
-	                        if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-	                            local dist = (player.Character.HumanoidRootPart.Position - myPos).Magnitude
-	                            if dist > furthestDist then
-	                                furthestDist = dist
-	                                furthestPlayer = player
-	                            end
-	                        end
-	                    end
-	                end
-	            end
-	            return furthestPlayer
-	
-	        elseif mode == "Random" then
-	            local valid = {}
-	            for _, player in playersService:GetPlayers() do
-	                if player ~= lplr and player:GetAttribute('Team') == myTeam then
-	                    if isPlayerAlive(player) and not isPlayerInVoid(player) then
-	                        table.insert(valid, player)
-	                    end
-	                end
-	            end
-	            if #valid > 0 then return valid[math.random(1, #valid)] end
-	            return nil
-	        end
-	
-	        return nil
-	    end
-	
-	    local function shouldActivateByHealth()
-	        if not HealthActivationToggle.Enabled then return true end
-	        if not entitylib.isAlive then return false end
-	        local myHp = getPlayerHealthPercent(lplr)
-	        if myHp <= HealthThresholdSlider.Value then return true end
-	        if TeammateHealthToggle.Enabled then
-	            local target = getTargetPlayer()
-	            if target then
-	                local targetHp = getPlayerHealthPercent(target)
-	                if targetHp <= TeammateHealthSlider.Value then return true end
-	            end
-	        end
-	        return false
-	    end
-	
-	    local function buyScepter()
-	        pcall(function()
-	            bedwars.Client:Get(remotes.BedwarsPurchaseItem).instance:InvokeServer({
-	                shopItem = {
-	                    currency = "iron",
-	                    itemType = "scepter",
-	                    amount = 1,
-	                    price = 45,
-	                    category = "Combat",
-	                    requiresKit = {"paladin"},
-	                    lockAfterPurchase = true
-	                },
-	                shopId = "1_item_shop"
-	            })
-	        end)
-	    end
-	
-	    local function startBuyLoop()
-	        if buyLoopThread then
-	            task.cancel(buyLoopThread)
-	            buyLoopThread = nil
-	        end
-	        buyRunning = true
-	        buyLoopThread = task.spawn(function()
-	            while buyRunning and AutoBuyToggle.Enabled and AutoLani.Enabled do
-	                local canBuy = GUICheck.Enabled
-	                    and bedwars.AppController:isAppOpen('BedwarsItemShopApp')
-	                    or (not GUICheck.Enabled and getShopNPC())
-	                if canBuy then
-	                    buyScepter()
-	                end
-	                task.wait(DelayBuySlider.Value)
-	            end
-	            buyLoopThread = nil
-	        end)
-	    end
-	
-	    local function stopBuyLoop()
-	        buyRunning = false
-	        if buyLoopThread then
-	            task.cancel(buyLoopThread)
-	            buyLoopThread = nil
-	        end
-	    end
-	
-	    AutoLani = vain.Categories.Kit:CreateModule({
-	        Name = "Auto Lani",
-	        Function = function(callback)
-	            running = callback
-	            if callback then
-	                task.spawn(function()
-	                    AutoLani:Clean(lplr:GetAttributeChangedSignal("PaladinStartTime"):Connect(function()
-	                        if not running then return end
-	                        if not shouldActivateByHealth() then return end
-	                        if LimitItems.Enabled and not isHoldingScepter() then
-	                            notif("AutoLani", "bro u aint even holding the scepter 💀", 3)
-	                            return
-	                        end
-	
-	                        pcall(function()
-	                            local handItem = store.inventory and store.inventory.inventory and store.inventory.inventory.hand
-	                            if handItem then
-	                                bedwars.Client:Get(remotes.ConsumeItem).instance:InvokeServer({ item = handItem.tool })
-	                            end
-	                        end)
-	
-	                        task.wait(DelaySlider.Value)
-	
-	                        if bedwars.AbilityController:canUseAbility('PALADIN_ABILITY') then
-	                            local targetPlayer = getTargetPlayer()
-	                            if targetPlayer and targetPlayer.Character then
-	                                bedwars.Client:Get(remotes.PaladinAbilityRequest):SendToServer({ target = targetPlayer })
-	                                notif("AutoLani", "tp'd to " .. targetPlayer.Name .. " don't die lol", 2)
-	                            else
-	                                bedwars.Client:Get(remotes.PaladinAbilityRequest):SendToServer({})
-	                                notif("AutoLani", "used ability on self fr fr", 2)
-	                            end
-	                            task.wait(0.022)
-	                            bedwars.AbilityController:useAbility('PALADIN_ABILITY')
-	                        else
-	                            notif("AutoLani", "ability on cooldown rn 😭", 2)
-	                        end
-	                    end))
-	                end)
-	
-	                if AutoBuyToggle.Enabled then startBuyLoop() end
-	
-	                AutoLani:Clean(playersService.PlayerAdded:Connect(function()
-	                    task.wait(0.5)
-	                    if PlayerDropdown and type(PlayerDropdown.SetList) == 'function' then PlayerDropdown:SetList(getTeammates(true)) end
-	                end))
-	                AutoLani:Clean(playersService.PlayerRemoving:Connect(function()
-	                    task.wait(0.5)
-	                    if PlayerDropdown and type(PlayerDropdown.SetList) == 'function' then PlayerDropdown:SetList(getTeammates(true)) end
-	                end))
-	                AutoLani:Clean(lplr:GetAttributeChangedSignal('Team'):Connect(function()
-	                    task.wait(1)
-	                    if PlayerDropdown and type(PlayerDropdown.SetList) == 'function' then PlayerDropdown:SetList(getTeammates(true)) end
-	                end))
-	            else
-	                running = false
-	                stopBuyLoop()
-	            end
-	        end,
-	        Tooltip = "auto tp to teammates w paladin scepter"
-	    })
-	
-	    TargetModeDropdown = AutoLani:CreateDropdown({
-	        Name = "Target Mode",
-	        List = {"Specific Player", "Lowest Health", "Closest", "Furthest", "Random"},
-	        Default = "Specific Player",
-	        Function = function(val)
-	            if PlayerDropdown then
-	                PlayerDropdown.Object.Visible = (val == "Specific Player")
-	            end
-	        end,
-	        Tooltip = "who to tp to"
-	    })
-	
-	    local function teammateListWithNone()
-	        local list = {"None"}
-	        for _, name in ipairs(getTeammates(true)) do
-	            table.insert(list, name)
 	        end
 	        return list
 	    end
 	
-	    PlayerDropdown = AutoLani:CreateDropdown({
-	        Name = "Teammate",
-	        List = teammateListWithNone(),
-	        Tooltip = "pick ur teammate"
-	    })
-	
-	    RefreshButton = AutoLani:CreateButton({
-	        Name = "Refresh Teammates",
-	        Tooltip = "Re-scans your team for the teammate dropdown above",
-	        Function = function()
-	            task.spawn(function()
-	                local newNames = getTeammates(true)
-	                local newList = {"None"}
-	                for _, name in ipairs(newNames) do
-	                    table.insert(newList, name)
-	                end
-	                if PlayerDropdown then
-	                    pcall(function()
-	                        PlayerDropdown:Change(newList)
-	                        if #newList > 1 then
-	                            if not PlayerDropdown.Value or PlayerDropdown.Value == "" or not table.find(newList, PlayerDropdown.Value) then
-	                                PlayerDropdown:SetValue(newList[2] or "None")
-	                            else
-	                                PlayerDropdown:SetValue(PlayerDropdown.Value)
-	                            end
-	                        end
-	                    end)
-	                end
-	                notif("AutoLani", #newList > 0 and "refreshed, got " .. #newList .. " teammates 👍" or "no teammates found bro 💀", 2)
-	            end)
-	        end,
-	        Tooltip = "refresh the teammate list"
-	    })
-	
-	    DelaySlider = AutoLani:CreateSlider({
-	        Name = "Teleport Delay",
-	        Min = 0,
-	        Max = 2,
-	        Default = 0.5,
-	        Decimal = 10,
-	        Suffix = "s",
-	        Tooltip = "delay before tping"
-	    })
-	
-	    LimitItems = AutoLani:CreateToggle({
-	        Name = "Limit to Scepter",
-	        Default = true,
-	        Tooltip = "only tp when u holdin the scepter"
-	    })
-	
-	    HealthActivationToggle = AutoLani:CreateToggle({
-	        Name = "Health Activation",
-	        Default = false,
-	        Function = function(val)
-	            if HealthThresholdSlider then HealthThresholdSlider.Object.Visible = val end
-	            if TeammateHealthToggle then TeammateHealthToggle.Object.Visible = val end
-	
-	            if not val then
-	                if TeammateHealthSlider and TeammateHealthSlider.Object then
-	                    TeammateHealthSlider.Object.Visible = false
-	                end
+	    local function pickTarget()
+	        local list = candidates()
+	        if #list == 0 then return nil end
+	        local mode = escaping and 'Safest' or TargetMode.Value
+	        if mode == 'Specific' then
+	            for _, entry in list do
+	                if entry.player.Name == Teammate.Value then return entry.player end
+	            end
+	            return nil
+	        end
+	        local best, bestScore
+	        for _, entry in list do
+	            local score
+	            if mode == 'Lowest Health' then
+	                score = entry.health
+	            elseif mode == 'Closest' then
+	                score = entry.distance
+	            elseif mode == 'Furthest' then
+	                score = -entry.distance
+	            elseif mode == 'Most Enemies' then
+	                score = -enemiesNear(entry.root.Position)
 	            else
-	                if TeammateHealthToggle and TeammateHealthToggle.Enabled then
-	                    if TeammateHealthSlider and TeammateHealthSlider.Object then
-	                        TeammateHealthSlider.Object.Visible = true
+	                -- Safest: the fewest enemies round them, the healthier one breaking a tie.
+	                score = enemiesNear(entry.root.Position) * 1000 - entry.health
+	            end
+	            if not bestScore or score < bestScore then best, bestScore = entry.player, score end
+	        end
+	        return best
+	    end
+	
+	    -- Writes the pick into the controller and uses the ability; the game sends the request.
+	    local function fire()
+	        local controller = bedwars.ScepterController
+	        if not (controller and controller.isAngel) then return end
+	        local target = pickTarget()
+	        if not (target and target.Character) then return end
+	        controller.target = target.Character
+	        bedwars.AbilityController:useAbility('PALADIN_ABILITY')
+	    end
+	
+	    -- Auto: whether it is time to use the scepter, and whether that is to escape.
+	    local function shouldUse()
+	        if not entitylib.isAlive then return false end
+	        if on(Escape) and getPlayerHealthPercent(lplr) <= SelfHealth.Value then return true, true end
+	        for _, entry in candidates() do
+	            if entry.health <= TeammateHealth.Value then return true, false end
+	        end
+	        return false
+	    end
+	
+	    local function useScepter()
+	        local scepter = getItem('scepter')
+	        if not (scepter and scepter.tool) then return end
+	        switchItem(scepter.tool, 0.1)
+	        pcall(function()
+	            bedwars.Client:Get(remotes.ConsumeItem).instance:InvokeServer({item = scepter.tool})
+	        end)
+	        lastUse = os.clock()
+	    end
+	
+	    -- Buys one when you have none, standing at your shop.
+	    local function buyScepter()
+	        if getItem('scepter') or os.clock() - lastBuy < 2 or not entitylib.isAlive then return end
+	        local item = bedwars.Shop.getShopItem('scepter', lplr)
+	        if not item then return end
+	        local here = entitylib.character.RootPart.Position
+	        local shopId
+	        for _, shop in store.shop do
+	            if shop.Shop and shop.RootPart and (shop.RootPart.Position - here).Magnitude <= 20 then
+	                shopId = shop.Id
+	                break
+	            end
+	        end
+	        local currency = getItem(item.currency)
+	        if not (shopId and currency and currency.amount >= item.price) then return end
+	        lastBuy = os.clock()
+	        bedwars.Client:Get('BedwarsPurchaseItem'):CallServerAsync({shopItem = item, shopId = shopId})
+	    end
+	
+	    AutoLani = vain.Categories.Kit:CreateModule({
+	        Name = 'Auto Lani',
+	        Tooltip = 'Lands your Lani scepter on the right teammate',
+	        Function = function(callback)
+	            if callback then
+	                local lastCheck = 0
+	                AutoLani:Clean(runService.Heartbeat:Connect(function()
+	                    if store.equippedKit ~= 'paladin' then return end
+	                    local controller = bedwars.ScepterController
+	                    local angel = controller ~= nil and controller.isAngel == true
+	                    -- The angel just came up: pick and land after the delay.
+	                    if angel and not wasAngel then
+	                        task.delay(FireDelay.Value, function()
+	                            pcall(fire)
+	                            escaping = false
+	                        end)
 	                    end
-	                end
-	            end
-	        end,
-	        Tooltip = "only use ability based on hp"
-	    })
+	                    wasAngel = angel
 	
-	    HealthThresholdSlider = AutoLani:CreateSlider({
-	        Name = "Self Health %",
-	        Min = 1,
-	        Max = 100,
-	        Default = 50,
-	        Suffix = "%",
-	        Tooltip = "use ability when ur hp is below this",
-	        Visible = false
-	    })
-	
-	    TeammateHealthToggle = AutoLani:CreateToggle({
-	        Name = "Teammate Health Check",
-	        Default = false,
-	        Function = function(val)
-	            if TeammateHealthSlider then TeammateHealthSlider.Object.Visible = val end
-	        end,
-	        Tooltip = "also check teammate hp",
-	        Visible = false
-	    })
-	
-	    TeammateHealthSlider = AutoLani:CreateSlider({
-	        Name = "Teammate Health %",
-	        Min = 1,
-	        Max = 100,
-	        Default = 30,
-	        Suffix = "%",
-	        Tooltip = "use ability when teammate hp is below this",
-	        Visible = false
-	    })
-	
-	    AutoBuyToggle = AutoLani:CreateToggle({
-	        Name = "Auto Buy Scepter",
-	        Default = false,
-	        Function = function(val)
-	            if GUICheck then GUICheck.Object.Visible = val end
-	            if DelayBuySlider then DelayBuySlider.Object.Visible = val end
-	            if val and AutoLani.Enabled then
-	                startBuyLoop()
+	                    if os.clock() - lastCheck < 0.25 then return end
+	                    lastCheck = os.clock()
+	                    if on(AutoBuyScepter) then pcall(buyScepter) end
+	                    if Mode.Value == 'Auto' and not angel and os.clock() - lastUse >= USE_COOLDOWN then
+	                        local use, isEscape = shouldUse()
+	                        if use and #candidates() > 0 then
+	                            escaping = isEscape
+	                            pcall(useScepter)
+	                        end
+	                    end
+	                end))
 	            else
-	                stopBuyLoop()
+	                escaping, wasAngel = false, false
 	            end
-	        end,
-	        Tooltip = "auto cop scepters from shop"
+	        end
 	    })
-	
-	    GUICheck = AutoLani:CreateToggle({
-	        Name = "GUI Check",
-	        Default = false,
-	        Tooltip = "only buy when shop is open",
+	    Mode = AutoLani:CreateDropdown({
+	        Name = 'Mode',
+	        List = {'Assist', 'Auto'},
+	        Tooltips = {
+	            Assist = 'Picks the teammate when you use the scepter',
+	            Auto = 'Also uses the scepter for you'
+	        },
+	        Function = function(val)
+	            for _, setting in {TeammateHealth, Escape, SelfHealth} do
+	                if setting and setting.Object then setting.Object.Visible = val == 'Auto' end
+	            end
+	            if val == 'Auto' and SelfHealth and SelfHealth.Object then
+	                SelfHealth.Object.Visible = on(Escape)
+	            end
+	        end
+	    })
+	    TargetMode = AutoLani:CreateDropdown({
+	        Name = 'Target',
+	        List = {'Lowest Health', 'Closest', 'Furthest', 'Most Enemies', 'Specific'},
+	        Tooltips = {
+	            ['Lowest Health'] = 'The teammate lowest on health',
+	            Closest = 'The nearest teammate',
+	            Furthest = 'The furthest teammate',
+	            ['Most Enemies'] = 'The teammate with the most enemies round them',
+	            Specific = 'The teammate you pick below'
+	        },
+	        Function = function(val)
+	            if Teammate and Teammate.Object then Teammate.Object.Visible = val == 'Specific' end
+	        end
+	    })
+	    local function teammateList()
+	        local list = getTeammates(true)
+	        if #list == 0 then list = {'None'} end
+	        return list
+	    end
+	    Teammate = AutoLani:CreateDropdown({
+	        Name = 'Teammate',
+	        List = teammateList(),
+	        Darker = true,
 	        Visible = false
 	    })
-	
-	    DelayBuySlider = AutoLani:CreateSlider({
-	        Name = "Buy Delay",
-	        Min = 0.1,
-	        Max = 2,
-	        Default = 0.3,
+	    AutoLani:CreateButton({
+	        Name = 'Refresh Teammates',
+	        Tooltip = 'Updates the teammate list',
+	        Function = function()
+	            pcall(function() Teammate:Change(teammateList()) end)
+	        end
+	    })
+	    TeammateHealth = AutoLani:CreateSlider({
+	        Name = 'Teammate Health',
+	        Tooltip = 'Uses it when a teammate drops below this',
+	        Min = 5,
+	        Max = 95,
+	        Default = 40,
+	        Visible = false,
+	        Suffix = function() return '%' end
+	    })
+	    Escape = AutoLani:CreateToggle({
+	        Name = 'Escape',
+	        Tooltip = 'Uses it to get away when you are low',
+	        Visible = false,
+	        Function = function(callback)
+	            if SelfHealth and SelfHealth.Object then SelfHealth.Object.Visible = callback and Mode.Value == 'Auto' end
+	        end
+	    })
+	    SelfHealth = AutoLani:CreateSlider({
+	        Name = 'Escape Health',
+	        Tooltip = 'Your health that counts as low',
+	        Min = 5,
+	        Max = 90,
+	        Default = 30,
+	        Darker = true,
+	        Visible = false,
+	        Suffix = function() return '%' end
+	    })
+	    MinDistance = AutoLani:CreateSlider({
+	        Name = 'Min Distance',
+	        Tooltip = 'Skips teammates closer than this',
+	        Min = 0,
+	        Max = 100,
+	        Default = 15,
+	        Suffix = function(val) return val == 1 and 'stud' or 'studs' end
+	    })
+	    FireDelay = AutoLani:CreateSlider({
+	        Name = 'Fire Delay',
+	        Tooltip = 'Wait after the angel appears',
+	        Min = 0,
+	        Max = 3,
+	        Default = 0.1,
 	        Decimal = 10,
-	        Suffix = "s",
-	        Tooltip = "delay between buys",
-	        Visible = false
+	        Suffix = function() return 's' end
 	    })
-	
-	    task.defer(function()
-	        if PlayerDropdown and PlayerDropdown.Object then
-	            PlayerDropdown.Object.Visible = true
-	        end
-	        if HealthThresholdSlider and HealthThresholdSlider.Object then
-	            HealthThresholdSlider.Object.Visible = false
-	        end
-	        if TeammateHealthToggle and TeammateHealthToggle.Object then
-	            TeammateHealthToggle.Object.Visible = false
-	        end
-	        if TeammateHealthSlider and TeammateHealthSlider.Object then
-	            TeammateHealthSlider.Object.Visible = false
-	        end
-	        if GUICheck and GUICheck.Object then GUICheck.Object.Visible = false end
-	        if DelayBuySlider and DelayBuySlider.Object then DelayBuySlider.Object.Visible = false end
-	    end)
+	    SkipFalling = AutoLani:CreateToggle({
+	        Name = 'Skip Falling',
+	        Tooltip = 'Never picks a teammate falling into the void',
+	        Default = true
+	    })
+	    AutoBuyScepter = AutoLani:CreateToggle({
+	        Name = 'Auto Buy Scepter',
+	        Tooltip = 'Buys a scepter at your shop when you have none'
+	    })
 	end)
 	
 	kitRun(function()
