@@ -2757,6 +2757,35 @@ run(function()
 		})
 	end))
 
+	--[[
+		Who was hit last, for Target HUD's Last Hit mode, from every way you hit someone:
+		the sword path records it where the attack is sent, damage of any kind you deal
+		comes through EntityDamageEvent (fromEntity is you), and your projectiles report
+		what they hit through the game's LocalProjectileImpact - which covers a lasso or
+		anything else that lands without dealing damage.
+	]]
+	local function recordHit(character)
+		if character and character ~= lplr.Character then
+			store.lastHitCharacter = character
+			store.lastHitAt = tick()
+		end
+	end
+	vain:Clean(vainEvents.EntityDamageEvent.Event:Connect(function(damageTable)
+		if type(damageTable) == 'table' and lplr.Character and damageTable.fromEntity == lplr.Character then
+			recordHit(damageTable.entityInstance)
+		end
+	end))
+	pcall(function()
+		local ClientSyncEvents = require(lplr.PlayerScripts.TS['client-sync-events']).ClientSyncEvents
+		local connection = ClientSyncEvents.LocalProjectileImpact:connect(function(_, _, entity)
+			local character = entity and entity.getInstance and entity:getInstance()
+			recordHit(character)
+		end)
+		vain:Clean(function()
+			pcall(function() connection:Disconnect() end)
+		end)
+	end)
+
 	for _, event in {'PlaceBlockEvent', 'BreakBlockEvent'} do
 		vain:Clean(bedwars.ZapNetworking[event..'Zap'].On(function(...)
 			local data = {
@@ -34261,6 +34290,7 @@ run(function()
 	local Mode, Range, Angle, Linger, ShowEquipment, WinIndicator, Compact, Accent, ShowKitName, ShowEnchants, Background
 	local WinMode, ShowCombo, ShowLastHit, HudScale
 	local card, stroke, avatar, nameLabel, winLabel, infoLabel, extraLabel, barBack, barFill, barGhost, equipment
+	local accent, avatarRing
 	local icons = {}
 	local target, lastSeen = nil, 0
 	local hitsToKill
@@ -34329,19 +34359,20 @@ run(function()
 		local compact = on(Compact)
 		avatar.Visible = not compact
 		infoLabel.Visible = not compact
-		local left = compact and 8 or 62
-		nameLabel.Position = UDim2.fromOffset(left, 6)
-		nameLabel.Size = UDim2.new(1, -left - 96, 0, 18)
-		barBack.Position = UDim2.fromOffset(left, 27)
-		barBack.Size = UDim2.new(1, -left - 8, 0, 8)
-		infoLabel.Position = UDim2.fromOffset(left, 38)
-		infoLabel.Size = UDim2.new(1, -left - 8, 0, 16)
+		local left = compact and 14 or 60
+		nameLabel.Position = UDim2.fromOffset(left, 8)
+		nameLabel.Size = UDim2.new(1, -left - 82, 0, 16)
+		barBack.Position = UDim2.fromOffset(left, 28)
+		barBack.Size = UDim2.new(1, -left - 12, 0, 6)
+		infoLabel.Position = UDim2.fromOffset(left, 37)
+		infoLabel.Size = UDim2.new(1, -left - 12, 0, 14)
 		local extra = not compact and on(ShowKitName)
 		extraLabel.Visible = extra
-		extraLabel.Position = UDim2.fromOffset(left, 54)
-		equipment.Visible = not compact and (on(ShowEquipment) or on(ShowEnchants))
-		equipment.Position = UDim2.fromOffset(8, extra and 74 or 58)
-		local height = compact and 42 or (58 + (extra and 16 or 0) + ((on(ShowEquipment) or on(ShowEnchants)) and 20 or 0))
+		extraLabel.Position = UDim2.fromOffset(left, 51)
+		local chips = not compact and (on(ShowEquipment) or on(ShowEnchants))
+		equipment.Visible = chips
+		equipment.Position = UDim2.fromOffset(14, extra and 70 or 56)
+		local height = compact and 42 or (56 + (extra and 14 or 0) + (chips and 28 or 4))
 		card.Size = UDim2.new(1, 0, 0, height)
 	end
 	
@@ -34579,9 +34610,12 @@ run(function()
 		local color = player.Team and player.TeamColor.Color or Color3.new(1, 1, 1)
 		avatar.Image = 'rbxthumb://type=AvatarHeadShot&id=' .. player.UserId .. '&w=150&h=150'
 		nameLabel.Text = player.DisplayName
-		nameLabel.TextColor3 = color
-		stroke.Enabled = on(Accent)
-		stroke.Color = color
+		nameLabel.TextColor3 = Color3.fromRGB(240, 240, 240)
+		-- The team colour as a thin bar down the left and a ring round the avatar.
+		accent.Visible = on(Accent)
+		accent.BackgroundColor3 = color
+		avatarRing.Color = color
+		avatarRing.Enabled = on(Accent)
 	
 		local health, maxHealth = entity.Health or 0, math.max(entity.MaxHealth or 100, 1)
 		local fraction = math.clamp(health / maxHealth, 0, 1)
@@ -34597,6 +34631,7 @@ run(function()
 			local verdict = liveVerdict(player, health)
 			winLabel.Text = verdict or ''
 			winLabel.TextColor3 = VERDICT_COLORS[verdict or 'EVEN']
+			winLabel.BackgroundColor3 = winLabel.TextColor3
 		elseif winLabel.Visible then
 			-- Who needs fewer hits to finish the other, with what each of you is holding.
 			local mineLeft, theirsLeft = hitsToKill(player, health)
@@ -34608,6 +34643,7 @@ run(function()
 				-- you deals against the health each of you has left.
 				winLabel.Text = diff == 0 and 'EVEN' or (diff > 0 and 'WINNING' or 'LOSING')
 				winLabel.TextColor3 = diff == 0 and Color3.fromRGB(230, 230, 230) or (diff > 0 and Color3.fromRGB(110, 230, 120) or Color3.fromRGB(255, 90, 90))
+				winLabel.BackgroundColor3 = winLabel.TextColor3
 			end
 		end
 	
@@ -34804,55 +34840,77 @@ run(function()
 	
 	card = Instance.new('Frame')
 	card.Size = UDim2.fromScale(1, 1)
-	card.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-	card.BackgroundTransparency = 0.3
+	card.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+	card.BackgroundTransparency = 0.15
 	card.BorderSizePixel = 0
+	card.ClipsDescendants = true
 	card.Visible = false
 	card.Parent = TargetHUD.Children
 	local cardScale = Instance.new('UIScale')
 	cardScale.Scale = HudScale.Value
 	cardScale.Parent = card
-	Instance.new('UICorner', card).CornerRadius = UDim.new(0, 8)
+	Instance.new('UICorner', card).CornerRadius = UDim.new(0, 10)
+	-- A faint sheen from the top.
+	local sheen = Instance.new('UIGradient')
+	sheen.Rotation = 90
+	sheen.Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(205, 205, 210))
+	sheen.Parent = card
 	stroke = Instance.new('UIStroke')
 	stroke.Thickness = 1
-	stroke.Transparency = 0.35
+	stroke.Color = Color3.new(1, 1, 1)
+	stroke.Transparency = 0.88
 	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	stroke.Parent = card
 	
+	accent = Instance.new('Frame')
+	accent.BorderSizePixel = 0
+	accent.Size = UDim2.new(0, 3, 1, 0)
+	accent.Parent = card
+	
 	avatar = Instance.new('ImageLabel')
-	avatar.Position = UDim2.fromOffset(8, 8)
-	avatar.Size = UDim2.fromOffset(46, 46)
-	avatar.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	avatar.Position = UDim2.fromOffset(12, 9)
+	avatar.Size = UDim2.fromOffset(38, 38)
+	avatar.BackgroundColor3 = Color3.fromRGB(36, 36, 42)
 	avatar.BorderSizePixel = 0
 	avatar.Parent = card
-	Instance.new('UICorner', avatar).CornerRadius = UDim.new(0, 6)
+	Instance.new('UICorner', avatar).CornerRadius = UDim.new(1, 0)
+	avatarRing = Instance.new('UIStroke')
+	avatarRing.Thickness = 1.5
+	avatarRing.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	avatarRing.Parent = avatar
 	
 	nameLabel = Instance.new('TextLabel')
 	nameLabel.BackgroundTransparency = 1
 	nameLabel.Font = Enum.Font.GothamBold
-	nameLabel.TextSize = 15
+	nameLabel.TextSize = 14
 	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
 	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	nameLabel.Parent = card
 	
+	-- The verdict as a small pill in its own colour.
 	winLabel = Instance.new('TextLabel')
-	winLabel.BackgroundTransparency = 1
+	winLabel.BackgroundTransparency = 0.82
 	winLabel.AnchorPoint = Vector2.new(1, 0)
-	winLabel.Position = UDim2.new(1, -8, 0, 6)
-	winLabel.Size = UDim2.fromOffset(90, 18)
+	winLabel.Position = UDim2.new(1, -10, 0, 8)
+	winLabel.AutomaticSize = Enum.AutomaticSize.X
+	winLabel.Size = UDim2.fromOffset(0, 16)
 	winLabel.Font = Enum.Font.GothamBold
-	winLabel.TextSize = 11
-	winLabel.TextXAlignment = Enum.TextXAlignment.Right
+	winLabel.TextSize = 10
 	winLabel.Parent = card
+	Instance.new('UICorner', winLabel).CornerRadius = UDim.new(1, 0)
+	local winPadding = Instance.new('UIPadding')
+	winPadding.PaddingLeft = UDim.new(0, 7)
+	winPadding.PaddingRight = UDim.new(0, 7)
+	winPadding.Parent = winLabel
 	
 	barBack = Instance.new('Frame')
-	barBack.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+	barBack.BackgroundColor3 = Color3.fromRGB(40, 40, 46)
 	barBack.BorderSizePixel = 0
 	barBack.Parent = card
 	Instance.new('UICorner', barBack).CornerRadius = UDim.new(1, 0)
 	barGhost = Instance.new('Frame')
 	barGhost.BackgroundColor3 = Color3.fromRGB(235, 235, 235)
-	barGhost.BackgroundTransparency = 0.4
+	barGhost.BackgroundTransparency = 0.55
 	barGhost.BorderSizePixel = 0
 	barGhost.Parent = barBack
 	Instance.new('UICorner', barGhost).CornerRadius = UDim.new(1, 0)
@@ -34860,28 +34918,32 @@ run(function()
 	barFill.BorderSizePixel = 0
 	barFill.Parent = barBack
 	Instance.new('UICorner', barFill).CornerRadius = UDim.new(1, 0)
+	local barSheen = Instance.new('UIGradient')
+	barSheen.Rotation = 90
+	barSheen.Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(190, 190, 190))
+	barSheen.Parent = barFill
 	
 	infoLabel = Instance.new('TextLabel')
 	infoLabel.BackgroundTransparency = 1
 	infoLabel.Font = Enum.Font.Gotham
-	infoLabel.TextSize = 12
-	infoLabel.TextColor3 = Color3.fromRGB(210, 210, 210)
+	infoLabel.TextSize = 11
+	infoLabel.TextColor3 = Color3.fromRGB(165, 165, 172)
 	infoLabel.TextXAlignment = Enum.TextXAlignment.Left
 	infoLabel.Parent = card
 	
 	extraLabel = Instance.new('TextLabel')
 	extraLabel.BackgroundTransparency = 1
-	extraLabel.Size = UDim2.new(1, -70, 0, 16)
+	extraLabel.Size = UDim2.new(1, -70, 0, 14)
 	extraLabel.Font = Enum.Font.Gotham
 	extraLabel.TextSize = 11
-	extraLabel.TextColor3 = Color3.fromRGB(180, 180, 255)
+	extraLabel.TextColor3 = Color3.fromRGB(175, 175, 255)
 	extraLabel.TextXAlignment = Enum.TextXAlignment.Left
 	extraLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	extraLabel.Parent = card
 	
 	equipment = Instance.new('Frame')
 	equipment.BackgroundTransparency = 1
-	equipment.Size = UDim2.new(1, -16, 0, 16)
+	equipment.Size = UDim2.new(1, -28, 0, 22)
 	equipment.Parent = card
 	local equipmentLayout = Instance.new('UIListLayout')
 	equipmentLayout.FillDirection = Enum.FillDirection.Horizontal
@@ -34889,14 +34951,17 @@ run(function()
 	equipmentLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	equipmentLayout.Parent = equipment
 	-- Kit, held item, helmet, chestplate, boots, then up to four enchants.
+	-- Each in a small rounded chip.
 	for i = 1, 9 do
 		local icon = Instance.new('ImageLabel')
-		icon.BackgroundTransparency = 1
-		icon.Size = UDim2.fromOffset(16, 16)
+		icon.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+		icon.BackgroundTransparency = 0.2
+		icon.Size = UDim2.fromOffset(22, 22)
 		icon.ScaleType = Enum.ScaleType.Fit
 		icon.LayoutOrder = i
 		icon.Visible = false
 		icon.Parent = equipment
+		Instance.new('UICorner', icon).CornerRadius = UDim.new(0, 5)
 		icons[i] = icon
 	end
 	layout()
