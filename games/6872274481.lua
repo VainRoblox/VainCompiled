@@ -580,6 +580,91 @@ local kitorder = {
 -- (see the event wiring below) and cleared when a match ends.
 local brokenbeds = {}
 
+--[[
+	Match histories, shared by everything that reads them (Kit Render, Party Finder), so a
+	player is only ever asked for once per session.
+
+	Asked for the way the game's Match History app does it -
+	MatchHistoryController:requestMatchHistory with the player's name, resolving to
+	{player, matchHistory} - which answers for any player, private profiles included; then
+	the user id as text, then the profile's own history (RequestProfileData). Each request
+	has a time limit, and requests for many players at once are spread out a little.
+	Callbacks get the list of matches, newest first, or an empty list.
+]]
+local matchHistory = {cache = {}, waiting = {}, queued = 0}
+do
+	local TIMEOUT = 6
+
+	local function within(seconds, request)
+		local result, finished = nil, false
+		local thread = task.spawn(function()
+			local ok, value = pcall(request)
+			result = ok and value or nil
+			finished = true
+		end)
+		local started = os.clock()
+		while not finished and os.clock() - started < seconds do
+			task.wait(0.1)
+		end
+		if not finished then pcall(task.cancel, thread) end
+		return result
+	end
+
+	local function listFrom(data)
+		if type(data) == 'table' and type(data.matchHistory) == 'table' and #data.matchHistory > 0 then
+			return data.matchHistory
+		end
+	end
+
+	local function request(player)
+		for _, query in {player.Name, tostring(player.UserId)} do
+			local list = listFrom(within(TIMEOUT, function()
+				local ok, value = bedwars.MatchHistoryController:requestMatchHistory(query):await()
+				return ok and value or nil
+			end))
+			if list then return list end
+		end
+		return listFrom(within(TIMEOUT, function()
+			return bedwars.Client:Get('RequestProfileData'):CallServer(player)
+		end))
+	end
+
+	function matchHistory.fetch(player, callback)
+		local userId = player.UserId
+		local cached = matchHistory.cache[userId]
+		if type(cached) == 'table' then
+			callback(cached)
+			return
+		end
+		matchHistory.waiting[userId] = matchHistory.waiting[userId] or {}
+		table.insert(matchHistory.waiting[userId], callback)
+		if cached == 'pending' then return end
+		matchHistory.cache[userId] = 'pending'
+
+		matchHistory.queued += 1
+		task.delay((matchHistory.queued - 1) * 0.15, function()
+			matchHistory.queued = math.max(matchHistory.queued - 1, 0)
+			local list = table.clone(request(player) or {})
+			table.sort(list, function(a, b)
+				return (tonumber(a.matchStartTime) or 0) > (tonumber(b.matchStartTime) or 0)
+			end)
+			matchHistory.cache[userId] = list
+			for _, waiting in matchHistory.waiting[userId] or {} do
+				task.spawn(pcall, waiting, list)
+			end
+			matchHistory.waiting[userId] = nil
+		end)
+	end
+
+	-- A player's own entry in a match: the one whose playerInfo.userId is theirs.
+	function matchHistory.entryFor(match, userId)
+		for _, entry in (type(match.players) == 'table' and match.players or {}) do
+			local info = type(entry) == 'table' and entry.playerInfo
+			if info and tonumber(info.userId) == userId then return entry end
+		end
+	end
+end
+
 -- Total damage reduction from everything the player is wearing. Mirrors getStrength,
 -- but reads the armor list instead of held swords, so it answers "who dies fastest".
 local function getArmor(plr)
@@ -9058,57 +9143,10 @@ run(function()
 	local showsPlayer
 	
 	--[[
-		The kits someone played in their last matches, from their match history.
-	
-		Asked for the way the game's Match History app does it -
-		MatchHistoryController:requestMatchHistory with the player's name, which resolves to
-		{player, matchHistory} - as that answers for any player, private profiles included.
-		The user id as text is tried next, then the profile's own history (RequestProfileData),
-		which comes back empty when the profile is friends only or hidden. Each match lists
-		every player with the kit they played under bedwars.kit.
-	
-		Every request has a time limit, so one the server never answers still ends in "no
-		history" instead of leaving the card waiting. Asked for once per player and kept for
-		the session; the draft screen asks for everyone at once, so the requests are spread out.
+		The kits someone played in their last matches, from their match history (fetched once
+		per player by the shared matchHistory helper). Each match lists every player with the
+		kit they played under bedwars.kit, and the teams with their placement.
 	]]
-	local REQUEST_TIMEOUT = 6
-	
-	-- Runs a yielding request with a time limit; nil if it errors or takes too long.
-	local function within(seconds, request)
-		local result, finished = nil, false
-		local thread = task.spawn(function()
-			local ok, value = pcall(request)
-			result = ok and value or nil
-			finished = true
-		end)
-		local started = os.clock()
-		while not finished and os.clock() - started < seconds do
-			task.wait(0.1)
-		end
-		if not finished then pcall(task.cancel, thread) end
-		return result
-	end
-	
-	local function historyFrom(data)
-		if type(data) == 'table' and type(data.matchHistory) == 'table' and #data.matchHistory > 0 then
-			return data.matchHistory
-		end
-	end
-	
-	local function requestMatches(player)
-		local controller = bedwars.MatchHistoryController
-		for _, query in {player.Name, tostring(player.UserId)} do
-			local history = historyFrom(within(REQUEST_TIMEOUT, function()
-				local promise = controller:requestMatchHistory(query)
-				local ok, value = promise:await()
-				return ok and value or nil
-			end))
-			if history then return history end
-		end
-		return historyFrom(within(REQUEST_TIMEOUT, function()
-			return bedwars.Client:Get('RequestProfileData'):CallServer(player)
-		end))
-	end
 	
 	-- Whether they won: their team in match.teams is the one placed first (placement 0).
 	-- Nil when the match does not say.
@@ -9124,51 +9162,19 @@ run(function()
 		return nil
 	end
 	
-	local historyCache, historyWaiters = {}, {}
-	local historyQueue = 0
-	
 	local function fetchHistory(player, callback)
 		local userId = player.UserId
-		local cached = historyCache[userId]
-		if type(cached) == 'table' then
-			callback(cached)
-			return
-		end
-		historyWaiters[userId] = historyWaiters[userId] or {}
-		table.insert(historyWaiters[userId], callback)
-		if cached == 'pending' then return end
-		historyCache[userId] = 'pending'
-	
-		historyQueue += 1
-		local delay = (historyQueue - 1) * 0.15
-		task.delay(delay, function()
-			historyQueue = math.max(historyQueue - 1, 0)
+		matchHistory.fetch(player, function(matches)
 			local kits = {}
-			local history = requestMatches(player)
-			if history then
-				local matches = table.clone(history)
-				table.sort(matches, function(a, b)
-					return (tonumber(a.matchStartTime) or 0) > (tonumber(b.matchStartTime) or 0)
-				end)
-				for _, match in matches do
-					if #kits >= 10 then break end
-					for _, entry in (type(match.players) == 'table' and match.players or {}) do
-						local info = type(entry) == 'table' and entry.playerInfo
-						if info and tonumber(info.userId) == userId then
-							local kit = entry.bedwars and entry.bedwars.kit
-							if type(kit) == 'string' and kit ~= '' then
-								kits[#kits + 1] = {kit = kit, won = wonMatch(match, userId)}
-							end
-							break
-						end
-					end
+			for _, match in matches do
+				if #kits >= 10 then break end
+				local entry = matchHistory.entryFor(match, userId)
+				local kit = entry and entry.bedwars and entry.bedwars.kit
+				if type(kit) == 'string' and kit ~= '' then
+					kits[#kits + 1] = {kit = kit, won = wonMatch(match, userId)}
 				end
 			end
-			historyCache[userId] = kits
-			for _, waiting in historyWaiters[userId] or {} do
-				pcall(waiting, kits)
-			end
-			historyWaiters[userId] = nil
+			callback(kits)
 		end)
 	end
 	
@@ -9228,7 +9234,8 @@ run(function()
 		label.Parent = row
 	end
 	
-	-- Show Team off leaves your own team's cards, yours included, alone.
+	-- Show Team off leaves out kit history on your own team's cards, yours included; their
+	-- kits still show, as the game shows them anyway.
 	showsPlayer = function(player)
 		if not ShowTeam or ShowTeam.Enabled then return true end
 		if player == lplr then return false end
@@ -9418,13 +9425,11 @@ run(function()
 			end
 	
 			roact.Image = kitImage.renderImage
-			roact.Visible = showsPlayer(player)
 			roact.Position = UDim2.fromScale(1.05, 0)
 			tweenService:Create(roact, TweenInfo.new(0.2, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {Position = UDim2.fromScale(1.05, 0.4)}):Play()
 	
 			local function update()
 				roact.Image = getKitMeta(player).renderImage
-				roact.Visible = showsPlayer(player)
 			end
 	
 			-- Re-bind the kit listener to whichever player the card currently shows.
@@ -9478,7 +9483,6 @@ run(function()
 	
 			local function update()
 				Roact.Image = getKitMeta(player).renderImage
-				Roact.Visible = showsPlayer(player)
 			end
 	
 			-- Keep the kit listener bound to whichever player this card now shows.
@@ -9658,7 +9662,7 @@ run(function()
 	})
 	ShowTeam = KitDisplay:CreateToggle({
 		Name = 'Show Team',
-		Tooltip = 'Also shows your own team\'s cards',
+		Tooltip = 'Also shows kit history for your team',
 		Default = true,
 		Function = function()
 			if KitDisplay.Enabled then
@@ -10754,6 +10758,328 @@ run(function()
 			end
 		end
 	})
+end)
+
+run(function()
+	--[[
+		Party Finder.
+	
+		Who queued together. The match in progress is not in anyone's history yet, but every
+		match in it lists each player with the partyId they queued under (the game only shows it
+		to moderators). So each player's most recent matches are read - fetched once per player
+		by the shared matchHistory helper - and anyone who shared their partyId there and is on
+		their team now is taken as their party. Parties formed only this match cannot show.
+	
+		Partied players get a tag over their head in their party's colour, and a panel lists each
+		team's parties, marking a team that is one whole party as a full queue.
+	]]
+	local PartyFinder
+	local Matches, ShowTags, ShowPanel, Teammates, Corner
+	local panel, list, rows = nil, nil, {}
+	local mates = {}
+	local groups = {}
+	local tags = {}
+	local Folder = Instance.new('Folder')
+	Folder.Name = 'PartyFinder'
+	Folder.Parent = vain.gui
+	
+	local COLORS = {
+		Color3.fromRGB(255, 200, 70), Color3.fromRGB(110, 220, 255), Color3.fromRGB(255, 120, 200),
+		Color3.fromRGB(140, 255, 140), Color3.fromRGB(200, 150, 255), Color3.fromRGB(255, 150, 90)
+	}
+	local CORNERS = {
+		['Top Left'] = {Vector2.new(0, 0), UDim2.new(0, 12, 0, 60)},
+		['Top Right'] = {Vector2.new(1, 0), UDim2.new(1, -12, 0, 60)},
+		['Bottom Left'] = {Vector2.new(0, 1), UDim2.new(0, 12, 1, -110)},
+		['Bottom Right'] = {Vector2.new(1, 1), UDim2.new(1, -12, 1, -110)}
+	}
+	
+	local function on(setting)
+		return setting ~= nil and setting.Enabled
+	end
+	
+	local function teamOf(player)
+		local team = player:GetAttribute('Team')
+		return team ~= nil and tostring(team) or nil
+	end
+	
+	-- Everyone who shared a party with them in their last few matches, by user id.
+	local function learn(player)
+		matchHistory.fetch(player, function(matches)
+			local found = {}
+			for i = 1, math.min(Matches.Value, #matches) do
+				local match = matches[i]
+				local mine = matchHistory.entryFor(match, player.UserId)
+				local partyId = mine and mine.partyId
+				if partyId ~= nil then
+					for _, entry in (type(match.players) == 'table' and match.players or {}) do
+						local info = type(entry) == 'table' and entry.playerInfo
+						local userId = info and tonumber(info.userId)
+						if userId and userId ~= player.UserId and entry.partyId == partyId then
+							found[userId] = true
+						end
+					end
+				end
+			end
+			mates[player.UserId] = found
+		end)
+	end
+	
+	--[[
+		Groups the players in this match into parties: two players are together when either
+		lists the other and they are on the same team now. Parties of one are left out.
+	]]
+	local function regroup()
+		local players = playersService:GetPlayers()
+		local parent = {}
+		local function find(id)
+			while parent[id] and parent[id] ~= id do id = parent[id] end
+			return id
+		end
+		for _, player in players do parent[player.UserId] = player.UserId end
+		for _, a in players do
+			for _, b in players do
+				if a ~= b and teamOf(a) and teamOf(a) == teamOf(b) then
+					local known = (mates[a.UserId] and mates[a.UserId][b.UserId]) or (mates[b.UserId] and mates[b.UserId][a.UserId])
+					if known then
+						local ra, rb = find(a.UserId), find(b.UserId)
+						if ra ~= rb then parent[ra] = rb end
+					end
+				end
+			end
+		end
+	
+		local byRoot = {}
+		for _, player in players do
+			local root = find(player.UserId)
+			byRoot[root] = byRoot[root] or {}
+			table.insert(byRoot[root], player)
+		end
+		table.clear(groups)
+		for _, members in byRoot do
+			if #members > 1 then
+				table.sort(members, function(a, b) return a.UserId < b.UserId end)
+				groups[#groups + 1] = {members = members, team = teamOf(members[1])}
+			end
+		end
+		table.sort(groups, function(a, b)
+			if a.team ~= b.team then return tostring(a.team) < tostring(b.team) end
+			return a.members[1].UserId < b.members[1].UserId
+		end)
+		for i, group in groups do group.color = COLORS[(i - 1) % #COLORS + 1] end
+	end
+	
+	local function clearTags()
+		for _, tag in tags do tag:Destroy() end
+		table.clear(tags)
+	end
+	
+	local function updateTags()
+		local wanted = {}
+		if on(ShowTags) then
+			for index, group in groups do
+				local own = teamOf(lplr) ~= nil and group.team == teamOf(lplr)
+				if not own or on(Teammates) then
+					for _, player in group.members do
+						local head = player.Character and player.Character:FindFirstChild('Head')
+						if head then
+							wanted[player] = true
+							local tag = tags[player]
+							if not tag or tag.Adornee ~= head then
+								if tag then tag:Destroy() end
+								tag = Instance.new('BillboardGui')
+								tag.Size = UDim2.fromOffset(120, 18)
+								tag.StudsOffsetWorldSpace = Vector3.new(0, 3.4, 0)
+								tag.AlwaysOnTop = true
+								tag.Adornee = head
+								tag.Parent = Folder
+								local label = Instance.new('TextLabel')
+								label.Name = 'Label'
+								label.Size = UDim2.fromScale(1, 1)
+								label.BackgroundTransparency = 1
+								label.Font = Enum.Font.GothamBold
+								label.TextSize = 12
+								label.TextStrokeTransparency = 0.4
+								label.Parent = tag
+								tags[player] = tag
+							end
+							tag.Label.Text = string.format('Party %d (%d)', index, #group.members)
+							tag.Label.TextColor3 = group.color
+						end
+					end
+				end
+			end
+		end
+		for player, tag in tags do
+			if not wanted[player] then
+				tag:Destroy()
+				tags[player] = nil
+			end
+		end
+	end
+	
+	local function row(index)
+		local label = rows[index]
+		if label then return label end
+		label = Instance.new('TextLabel')
+		label.BackgroundTransparency = 1
+		label.Size = UDim2.new(1, 0, 0, 18)
+		label.Font = Enum.Font.GothamBold
+		label.TextSize = 13
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.TextStrokeTransparency = 0.5
+		label.RichText = true
+		label.LayoutOrder = index
+		label.Parent = list
+		rows[index] = label
+		return label
+	end
+	
+	local function updatePanel()
+		if not panel then return end
+		panel.Visible = on(ShowPanel)
+		if not panel.Visible then return end
+	
+		-- Team sizes now, to tell a full queue from a partial one.
+		local sizes = {}
+		for _, player in playersService:GetPlayers() do
+			local team = teamOf(player)
+			if team then sizes[team] = (sizes[team] or 0) + 1 end
+		end
+	
+		local lines = {}
+		for index, group in groups do
+			local own = teamOf(lplr) ~= nil and group.team == teamOf(lplr)
+			if not own or on(Teammates) then
+				local first = group.members[1]
+				local teamColor = first.Team and first.TeamColor.Color or Color3.new(1, 1, 1)
+				local names = {}
+				for _, player in group.members do names[#names + 1] = player.DisplayName end
+				local full = sizes[group.team] and #group.members >= sizes[group.team]
+				lines[#lines + 1] = {
+					color = teamColor,
+					text = string.format('%s  <font color="#%s">P%d</font> %s%s',
+						first.Team and first.Team.Name or 'Team', group.color:ToHex(), index, table.concat(names, ', '),
+						full and '  <font color="#ff6060">FULL QUEUE</font>' or '')
+				}
+			end
+		end
+		if #lines == 0 then
+			lines[1] = {color = Color3.fromRGB(150, 150, 150), text = 'No parties found yet'}
+		end
+		for i, line in lines do
+			local label = row(i)
+			label.TextColor3 = line.color
+			label.Text = line.text
+			label.Visible = true
+		end
+		for i = #lines + 1, #rows do rows[i].Visible = false end
+		panel.Size = UDim2.fromOffset(300, #lines * 18 + 30)
+	end
+	
+	local function place()
+		if not panel then return end
+		local corner = CORNERS[Corner.Value] or CORNERS['Top Left']
+		panel.AnchorPoint = corner[1]
+		panel.Position = corner[2]
+	end
+	
+	local function build()
+		panel = Instance.new('Frame')
+		panel.Name = 'PartyFinder'
+		panel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+		panel.BackgroundTransparency = 0.4
+		panel.BorderSizePixel = 0
+		panel.Parent = vain.gui
+		Instance.new('UICorner', panel).CornerRadius = UDim.new(0, 6)
+		local padding = Instance.new('UIPadding')
+		padding.PaddingLeft = UDim.new(0, 8)
+		padding.PaddingRight = UDim.new(0, 8)
+		padding.PaddingTop = UDim.new(0, 4)
+		padding.Parent = panel
+		local title = Instance.new('TextLabel')
+		title.BackgroundTransparency = 1
+		title.Size = UDim2.new(1, 0, 0, 20)
+		title.Font = Enum.Font.GothamBold
+		title.TextSize = 13
+		title.TextColor3 = Color3.fromRGB(170, 170, 170)
+		title.TextXAlignment = Enum.TextXAlignment.Left
+		title.Text = 'Parties'
+		title.Parent = panel
+		list = Instance.new('Frame')
+		list.BackgroundTransparency = 1
+		list.Position = UDim2.fromOffset(0, 20)
+		list.Size = UDim2.new(1, 0, 1, -20)
+		list.Parent = panel
+		local layout = Instance.new('UIListLayout')
+		layout.SortOrder = Enum.SortOrder.LayoutOrder
+		layout.Parent = list
+		place()
+	end
+	
+	PartyFinder = vain.Categories.Render:CreateModule({
+		Name = 'Party Finder',
+		Tooltip = 'Shows who queued together',
+		Function = function(callback)
+			if callback then
+				build()
+				PartyFinder:Clean(panel)
+				for _, player in playersService:GetPlayers() do learn(player) end
+				PartyFinder:Clean(playersService.PlayerAdded:Connect(learn))
+				-- Grouping is cheap; redone twice a second as answers and teams come in.
+				local last = 0
+				PartyFinder:Clean(runService.Heartbeat:Connect(function()
+					if os.clock() - last < 0.5 then return end
+					last = os.clock()
+					pcall(regroup)
+					pcall(updateTags)
+					pcall(updatePanel)
+				end))
+			else
+				clearTags()
+				table.clear(rows)
+				panel, list = nil, nil
+			end
+		end
+	})
+	Matches = PartyFinder:CreateSlider({
+		Name = 'Matches Checked',
+		Tooltip = 'How many recent matches to look at',
+		Min = 1,
+		Max = 5,
+		Default = 1
+	})
+	ShowTags = PartyFinder:CreateToggle({
+		Name = 'Tags',
+		Tooltip = 'Tags partied players with their party',
+		Default = true
+	})
+	ShowPanel = PartyFinder:CreateToggle({
+		Name = 'Panel',
+		Tooltip = 'Lists every team\'s parties',
+		Default = true,
+		Function = function(callback)
+			if Corner and Corner.Object then Corner.Object.Visible = callback end
+		end
+	})
+	Corner = PartyFinder:CreateDropdown({
+		Name = 'Position',
+		List = {'Top Left', 'Top Right', 'Bottom Left', 'Bottom Right'},
+		Tooltips = {
+			['Top Left'] = 'Top left of the screen',
+			['Top Right'] = 'Top right of the screen',
+			['Bottom Left'] = 'Bottom left of the screen',
+			['Bottom Right'] = 'Bottom right of the screen'
+		},
+		Darker = true,
+		Function = place
+	})
+	Teammates = PartyFinder:CreateToggle({
+		Name = 'Own Team',
+		Tooltip = 'Also shows your own team\'s parties',
+		Default = true
+	})
+	
 end)
 
 run(function()
