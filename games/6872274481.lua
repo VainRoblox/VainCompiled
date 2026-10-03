@@ -28716,6 +28716,41 @@ run(function()
 		Default = true,
 		Tooltip = 'Saves everything for iron armor first\nNeeds Buy Armor on'
 	})
+	--[[
+		Custom items: priority/item/amount/after, where "after" (anything in the fourth field)
+		buys it after the sword, armor and tools instead of before.
+	
+		Topped up to the amount you set, a stack at a time: whatever is short is rounded up to
+		whole stacks - rounding down left it never topping up once you had used less than a
+		stack - and as many of those as you can afford are bought now, rather than nothing at
+		all until you could afford every one. Entries run in priority order, and two with the
+		same priority both run instead of one replacing the other.
+	]]
+	local function customBuyer(itemType, amount)
+		return function(currencytable, shop)
+			if not shop then return end
+			-- Held back too: these are bought with the same iron the armor needs, so buying
+			-- them first is why there was none left for it.
+			if savingForArmor() then return end
+	
+			local v = bedwars.Shop.getShopItem(itemType, lplr)
+			if not (v and amount) then return end
+			-- getTeamWool was renamed getTeamWoolById upstream; same signature (team id in,
+			-- wool ItemType out).
+			local held = getItem(itemType == 'wool_white' and bedwars.Shop.getTeamWoolById(lplr:GetAttribute('Team')) or itemType)
+			local short = amount - (held and held.amount or 0)
+			if short <= 0 then return end
+	
+			local stacks = math.ceil(short / math.max(v.amount or 1, 1))
+			local bought = 0
+			while bought < stacks and canBuy(v, currencytable) do
+				buyItem(v, currencytable)
+				bought += 1
+			end
+			return bought > 0
+		end
+	end
+	
 	AutoBuy:CreateTextList({
 		Name = 'Item',
 		Tooltip = 'Which items this applies to',
@@ -28723,34 +28758,22 @@ run(function()
 		Function = function(list)
 			table.clear(Custom)
 			table.clear(CustomPost)
+			local before, after = {}, {}
 			for _, entry in list do
 				local tab = entry:split('/')
-				local ind = tonumber(tab[1])
-				if ind then
-					(tab[4] and CustomPost or Custom)[ind] = function(currencytable, shop)
-						if not shop then return end
-						-- Held back too: these are bought with the same iron the armor needs,
-						-- so buying them first is why there was none left for it.
-						if savingForArmor() then return end
-	
-						local v = bedwars.Shop.getShopItem(tab[2], lplr)
-						if v then
-							-- getTeamWool was renamed getTeamWoolById upstream; same signature
-							-- (team id in, wool ItemType out).
-							local item = getItem(tab[2] == 'wool_white' and bedwars.Shop.getTeamWoolById(lplr:GetAttribute('Team')) or tab[2])
-							item = (item and tonumber(tab[3]) - item.amount or tonumber(tab[3])) // v.amount
-							if item > 0 and canBuy(v, currencytable, item) then
-								for _ = 1, item do
-									buyItem(v, currencytable)
-								end
-								return true
-							end
-						end
-					end
+				local priority = tonumber(tab[1])
+				if priority and tab[2] then
+					table.insert(tab[4] and after or before, {priority = priority, buy = customBuyer(tab[2], tonumber(tab[3]))})
 				end
 			end
+			for target, entries in {[Custom] = before, [CustomPost] = after} do
+				table.sort(entries, function(a, b) return a.priority < b.priority end)
+				for i, entry in entries do target[i] = entry.buy end
+			end
+			npctick = tick()
 		end
 	})
+	
 end)
 
 local AutoConsume
@@ -32566,6 +32589,7 @@ run(function()
 	local card, stroke, avatar, nameLabel, winLabel, infoLabel, extraLabel, barBack, barFill, barGhost, equipment
 	local icons = {}
 	local target, lastSeen = nil, 0
+	local hitsToKill
 	local ghost = 1
 	local LAST_HIT_HOLD = 6
 	
@@ -32647,7 +32671,7 @@ run(function()
 		infoLabel.Visible = not compact
 		local left = compact and 8 or 62
 		nameLabel.Position = UDim2.fromOffset(left, 6)
-		nameLabel.Size = UDim2.new(1, -left - 70, 0, 18)
+		nameLabel.Size = UDim2.new(1, -left - 96, 0, 18)
 		barBack.Position = UDim2.fromOffset(left, 27)
 		barBack.Size = UDim2.new(1, -left - 8, 0, 8)
 		infoLabel.Position = UDim2.fromOffset(left, 38)
@@ -32659,6 +32683,32 @@ run(function()
 		equipment.Position = UDim2.fromOffset(8, extra and 74 or 58)
 		local height = compact and 42 or (58 + (extra and 16 or 0) + (on(ShowEquipment) and 20 or 0))
 		card.Size = UDim2.new(1, 0, 0, height)
+	end
+	
+	--[[
+		The win check: how many hits each of you needs to finish the other. Your own health is
+		read straight off your character (Health plus any shield) - the entity list's copy of it
+		did not follow your own damage, which is why it said winning while losing. Damage is the
+		sword damage of what each of you holds, from the item meta; anything that is not a sword
+		counts as a fist.
+	]]
+	local FIST_DAMAGE = 1
+	
+	local function swordDamage(itemType)
+		local meta = itemType and bedwars.ItemMeta[itemType]
+		return meta and meta.sword and tonumber(meta.sword.damage) or FIST_DAMAGE
+	end
+	
+	hitsToKill = function(player, theirHealth)
+		local character = lplr.Character
+		if not (entitylib.isAlive and character) then return nil end
+		local myHealth = (character:GetAttribute('Health') or 0) + getShieldAttribute(character)
+		local myTool = store.hand and store.hand.tool
+		local inventory = store.inventories[player]
+		local theirItem = inventory and inventory.hand and inventory.hand.itemType
+		local mine = math.max(math.ceil(theirHealth / swordDamage(myTool and myTool.Name)), 1)
+		local theirs = math.max(math.ceil(myHealth / swordDamage(theirItem)), 1)
+		return mine, theirs
 	end
 	
 	local function show(entity, player)
@@ -32677,12 +32727,17 @@ run(function()
 		barGhost.Size = UDim2.fromScale(ghost, 1)
 		barFill.BackgroundColor3 = Color3.fromHSV(fraction / 3, 0.85, 0.95)
 	
-		local mine = entitylib.isAlive and entitylib.character.Health or 0
 		winLabel.Visible = on(WinIndicator) and player ~= lplr
 		if winLabel.Visible then
-			local diff = mine - health
-			winLabel.Text = math.abs(diff) < 1 and 'EVEN' or (diff > 0 and 'WINNING' or 'LOSING')
-			winLabel.TextColor3 = math.abs(diff) < 1 and Color3.fromRGB(230, 230, 230) or (diff > 0 and Color3.fromRGB(110, 230, 120) or Color3.fromRGB(255, 90, 90))
+			-- Who needs fewer hits to finish the other, with what each of you is holding.
+			local mineLeft, theirsLeft = hitsToKill(player, health)
+			if not mineLeft then
+				winLabel.Text = ''
+			else
+				local diff = theirsLeft - mineLeft
+				winLabel.Text = string.format('%s %dv%d', diff == 0 and 'EVEN' or (diff > 0 and 'WINNING' or 'LOSING'), mineLeft, theirsLeft)
+				winLabel.TextColor3 = diff == 0 and Color3.fromRGB(230, 230, 230) or (diff > 0 and Color3.fromRGB(110, 230, 120) or Color3.fromRGB(255, 90, 90))
+			end
 		end
 	
 		local distance = (entitylib.isAlive and entity.RootPart) and (entity.RootPart.Position - entitylib.character.RootPart.Position).Magnitude or 0
@@ -32861,7 +32916,7 @@ run(function()
 	winLabel.BackgroundTransparency = 1
 	winLabel.AnchorPoint = Vector2.new(1, 0)
 	winLabel.Position = UDim2.new(1, -8, 0, 6)
-	winLabel.Size = UDim2.fromOffset(64, 18)
+	winLabel.Size = UDim2.fromOffset(90, 18)
 	winLabel.Font = Enum.Font.GothamBold
 	winLabel.TextSize = 11
 	winLabel.TextXAlignment = Enum.TextXAlignment.Right
