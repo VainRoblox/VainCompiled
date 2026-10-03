@@ -35246,14 +35246,12 @@ run(function()
 	local function teammates()
 		local mine = lplr:GetAttribute('Team')
 		local list = {}
+		-- Dead or respawning teammates stay listed at 0, so the card keeps its rows and
+		-- order instead of jumping every time somebody dies.
 		for _, player in playersService:GetPlayers() do
-			local character = player.Character
 			local sameTeam = mine ~= nil and tostring(player:GetAttribute('Team')) == tostring(mine)
-			if character and sameTeam and (player ~= lplr or on(ShowSelf)) then
-				local health = character:GetAttribute('Health')
-				if type(health) == 'number' and health > 0 then
-					list[#list + 1] = player
-				end
+			if sameTeam and (player ~= lplr or on(ShowSelf)) then
+				list[#list + 1] = player
 			end
 		end
 		return list
@@ -35358,20 +35356,23 @@ run(function()
 	
 	local function render(player, entry, here)
 		entry.player = player
-		entry.button.Visible = ClickLani.Enabled and store.equippedKit == 'paladin' and player ~= lplr
 		local character = player.Character
-		local health = (character:GetAttribute('Health') or 0) + getShieldAttribute(character)
-		local maxHealth = math.max(character:GetAttribute('MaxHealth') or 100, 1)
+		local health = character and ((character:GetAttribute('Health') or 0) + getShieldAttribute(character)) or 0
+		local maxHealth = character and math.max(character:GetAttribute('MaxHealth') or 100, 1) or 100
 		local fraction = math.clamp(health / maxHealth, 0, 1)
+		local dead = health <= 0
+		entry.button.Visible = ClickLani.Enabled and store.equippedKit == 'paladin' and player ~= lplr and not dead
+		entry.avatar.ImageTransparency = dead and 0.6 or 0
+		entry.name.TextTransparency = dead and 0.5 or 0
 		local color = player.Team and player.TeamColor.Color or Color3.fromRGB(230, 230, 230)
 	
 		entry.avatar.Image = 'rbxthumb://type=AvatarHeadShot&id=' .. player.UserId .. '&w=48&h=48'
 		entry.name.Text = player.DisplayName
 		entry.name.TextColor3 = color
-		local root = character:FindFirstChild('HumanoidRootPart')
+		local root = character and character:FindFirstChild('HumanoidRootPart')
 		local distance = (here and root) and (root.Position - here).Magnitude or nil
 		entry.value.Text = math.ceil(health) .. (on(ShowDistance) and distance and player ~= lplr and string.format('  %dm', math.floor(distance)) or '')
-		entry.value.TextColor3 = Color3.fromHSV(fraction / 3, 0.8, 0.95)
+		entry.value.TextColor3 = dead and Color3.fromRGB(140, 140, 140) or Color3.fromHSV(fraction / 3, 0.8, 0.95)
 		entry.fill.Size = UDim2.fromScale(fraction, 1)
 		entry.fill.BackgroundColor3 = Color3.fromHSV(fraction / 3, 0.8, 0.95)
 	
@@ -35384,7 +35385,7 @@ run(function()
 			local piece = inventory and inventory.armor and inventory.armor[slot]
 			setIcon(entry, 2 + i, piece and bedwars.getIcon(piece, true) or nil)
 		end
-		local list = on(ShowEnchants) and enchants.of(character) or {}
+		local list = on(ShowEnchants) and character and enchants.of(character) or {}
 		for i = 6, 9 do
 			local enchant = list[i - 5]
 			setIcon(entry, i, enchant and enchant.image or nil)
