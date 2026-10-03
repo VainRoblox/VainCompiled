@@ -13243,6 +13243,14 @@ run(function()
 		return (store.queueType or ''):find('ranked') ~= nil
 	end
 	
+	-- The name players see (black_market_dealer is Wren), from the kit meta; the id tidied
+	-- up when the meta has no name for it.
+	local function kitName(kit)
+		local meta = bedwars.BedwarsKitMeta and bedwars.BedwarsKitMeta[kit]
+		if meta and type(meta.name) == 'string' and meta.name ~= '' then return meta.name end
+		return (kit:gsub('_', ' '):gsub('(%a)(%w*)', function(first, rest) return first:upper() .. rest end))
+	end
+	
 	-- Says which way the swap went either way. Silence would be worse than a notification
 	-- here: a failed swap looks exactly like a successful one right up until the next round
 	-- starts and your kit is on show.
@@ -13256,9 +13264,9 @@ run(function()
 		if worn == '' then return end
 	
 		if activate(NONE) then
-			notif('AntiRender', 'Unequipped '..worn, 3)
+			notif('AntiRender', 'Unequipped '..kitName(worn), 3)
 		else
-			notif('AntiRender', 'Could not unequip '..worn, 3)
+			notif('AntiRender', 'Could not unequip '..kitName(worn), 3)
 		end
 	end
 	
