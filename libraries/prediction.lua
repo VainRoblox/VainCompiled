@@ -571,6 +571,26 @@ local function buildMotion(origin, rootPos, offset, velocity, fall, playerHeight
 	if flying or fall <= 0 then
 		hopSpeed = nil
 	end
+	--[[
+		Landed and stayed down: done hopping.
+
+		A chain of hops touches the ground for a few hundredths of a second between jumps,
+		but the takeoff history above keeps calling it a chain for up to a second after the
+		last one - long enough that somebody who hopped in and stopped dead was aimed a
+		jump's height over. On the ground for longer than any hop chain stays there ends it.
+	]]
+	if hopSpeed and grounded and track then
+		local downFor = 0
+		local samples = track.samples
+		for i = #samples, 1, -1 do
+			local sample = samples[i]
+			if math.abs(velocityOf(track, sample).Y) > 3 then break end
+			downFor = now - sample.at
+		end
+		if downFor > 0.2 then
+			hopSpeed = nil
+		end
+	end
 
 	-- A jump only clears its own apex above the ground, so the prediction is never allowed
 	-- higher than that - the fix for a far shot sailing over a target who can, at most, jump.

@@ -6572,6 +6572,24 @@ run(function()
 		end
 	end
 	
+	-- The muzzle offset a skin gives the item in hand, if it gives one.
+	local skinMetaFunction
+	local function skinMuzzle(tool)
+		local skin = tool and tool:GetAttribute('ItemSkin')
+		if not skin then return nil end
+		if skinMetaFunction == nil then
+			local ok, result = pcall(function()
+				return require(replicatedStorage.TS.games.bedwars['item-skin']['item-skin-meta']).getItemSkinMeta
+			end)
+			skinMetaFunction = ok and result or false
+		end
+		if not skinMetaFunction then return nil end
+		local ok, meta = pcall(skinMetaFunction, skin)
+		local overrides = ok and meta and meta.projectileSourceOverrides
+		local relative = type(overrides) == 'table' and overrides.relativeOverride
+		return type(relative) == 'table' and relative or nil
+	end
+	
 	-- Returns the launch values to use, or nil to let the game work it out itself.
 	local function solve(self, projmeta, worldmeta, origin, shootpos)
 		-- The game returns nil for a missing projmeta before touching it, so match that
@@ -6711,6 +6729,10 @@ run(function()
 			local tool = store.hand and store.hand.tool
 			local itemMeta = tool and bedwars.ItemMeta[tool.Name]
 			local relative = itemMeta and itemMeta.projectileSource and itemMeta.projectileSource.relativeOverride
+			-- A skin can move the muzzle: launchProjectile lays the skin's projectile source
+			-- overrides over the item's before the arrow is placed.
+			local skinRelative = skinMuzzle(tool)
+			if skinRelative then relative = skinRelative end
 			if relative and relative.relX then
 				muzzleOffset = Vector3.new(relative.relX, relative.relY or 0, relative.relZ or 0)
 			else
@@ -6778,12 +6800,23 @@ run(function()
 		end
 	
 		targetinfo.Targets[plr] = tick() + 1
+		--[[
+			The draw the shot is fired at, not a full one.
+	
+			This used to claim 5 seconds of draw on every shot while firing at the speed the bow
+			was really drawn to. The draw goes to the server with the shot, so a half drawn arrow
+			was reported as a full one flying at half speed - and when the two disagree the
+			server's idea of the flight is not the arrow you watched hit, which is how a shot
+			at somebody standing still landed on screen and did nothing. The speed was solved
+			from velocityMultiplier, which the game derives from this same draw, so sending it
+			as it is keeps the two in step. Instant Charge raises both together.
+		]]
 		return {
 			initialVelocity = CFrame.new(launchFrom, calc).LookVector * projSpeed,
 			positionFrom = offsetpos,
 			deltaT = lifetime,
 			gravitationalAcceleration = gravity,
-			drawDurationSeconds = 5
+			drawDurationSeconds = projmeta.drawDurationSeconds
 		}
 	end
 	
