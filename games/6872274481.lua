@@ -7733,8 +7733,11 @@ run(function()
 		entry.stroke.Enabled = on(Outline) or full
 		if full then
 			local pulse = 0.5 + 0.5 * math.sin(os.clock() * 6)
-			entry.stroke.Color = Color3.fromHSV(FullColor.Hue, FullColor.Sat, FullColor.Value)
+			local alert = Color3.fromHSV(FullColor.Hue, FullColor.Sat, FullColor.Value)
+			entry.stroke.Color = alert
 			entry.stroke.Thickness = 1 + pulse
+			-- A gentle flash: the background leans only a little towards the alert colour.
+			entry.card.BackgroundColor3 = Color3.fromHSV(bg.Hue, bg.Sat, bg.Value):Lerp(alert, 0.22 * pulse)
 		else
 			entry.stroke.Color = info.color
 			entry.stroke.Thickness = 1
@@ -34531,6 +34534,38 @@ run(function()
 	]]
 	local TeamHealth
 	local ShowSelf, ShowKit, ShowEquipment, ShowEnchants, ShowDistance, SortMode, Scale, Background
+	local ClickLani, LaniLegit
+	local using = false
+	
+	--[[
+		Click a teammate to send your Lani scepter to them: the scepter is used, and once the
+		angel is up the teammate is written into the ScepterController's target and the
+		ability used, so the game sends its own request (the way Auto Lani does it). Legit
+		switches to the scepter first and leaves human-like pauses between the steps.
+	]]
+	local function laniTo(player)
+		if using or store.equippedKit ~= 'paladin' or not (player and player.Character) then return end
+		local scepter = getItem('scepter')
+		local controller = bedwars.ScepterController
+		if not (scepter and scepter.tool and controller) then return end
+		using = true
+		task.spawn(function()
+			pcall(function()
+				local legit = LaniLegit.Enabled
+				switchItem(scepter.tool, legit and 0.2 or 0)
+				if legit then task.wait(0.1 + math.random() * 0.15) end
+				bedwars.Client:Get(remotes.ConsumeItem).instance:InvokeServer({item = scepter.tool})
+				-- The angel comes up 0.8s after the scepter is used.
+				local started = os.clock()
+				repeat task.wait() until controller.isAngel or os.clock() - started > 2.5
+				if not controller.isAngel or not player.Character then return end
+				if legit then task.wait(0.25 + math.random() * 0.25) end
+				controller.target = player.Character
+				bedwars.AbilityController:useAbility('PALADIN_ABILITY')
+			end)
+			using = false
+		end)
+	end
 	local card, list, header, scaler
 	local rows = {}
 	
@@ -34637,7 +34672,18 @@ run(function()
 		local icons = {}
 		for i = 1, 9 do icons[i] = icon(strip, i, 14) end
 	
-		entry = {frame = frame, avatar = avatar, name = name, value = value, fill = fill, strip = strip, icons = icons}
+		-- The whole row clickable, for sending the scepter.
+		local button = Instance.new('TextButton')
+		button.BackgroundTransparency = 1
+		button.Text = ''
+		button.Size = UDim2.fromScale(1, 1)
+		button.ZIndex = 5
+		button.Parent = frame
+	
+		entry = {frame = frame, avatar = avatar, name = name, value = value, fill = fill, strip = strip, icons = icons, button = button}
+		button.MouseButton1Click:Connect(function()
+			if ClickLani.Enabled and entry.player and entry.player ~= lplr then laniTo(entry.player) end
+		end)
 		rows[index] = entry
 		return entry
 	end
@@ -34649,6 +34695,8 @@ run(function()
 	end
 	
 	local function render(player, entry, here)
+		entry.player = player
+		entry.button.Visible = ClickLani.Enabled and store.equippedKit == 'paladin' and player ~= lplr
 		local character = player.Character
 		local health = (character:GetAttribute('Health') or 0) + getShieldAttribute(character)
 		local maxHealth = math.max(character:GetAttribute('MaxHealth') or 100, 1)
@@ -34745,6 +34793,19 @@ run(function()
 	ShowEquipment = TeamHealth:CreateToggle({Name = 'Equipment', Tooltip = 'Shows their held item and armour', Default = true})
 	ShowEnchants = TeamHealth:CreateToggle({Name = 'Enchants', Tooltip = 'Shows their enchants\' icons'})
 	ShowDistance = TeamHealth:CreateToggle({Name = 'Distance', Tooltip = 'Shows how far away they are', Default = true})
+	ClickLani = TeamHealth:CreateToggle({
+		Name = 'Click To Lani',
+		Tooltip = 'Click a teammate to send your scepter to them',
+		Default = true,
+		Function = function(callback)
+			if LaniLegit and LaniLegit.Object then LaniLegit.Object.Visible = callback end
+		end
+	})
+	LaniLegit = TeamHealth:CreateToggle({
+		Name = 'Legit',
+		Tooltip = 'Switches to the scepter and pauses like a person',
+		Darker = true
+	})
 	Scale = TeamHealth:CreateSlider({
 		Name = 'Scale',
 		Tooltip = 'How big the card is',
