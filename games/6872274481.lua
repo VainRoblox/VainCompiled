@@ -10866,7 +10866,7 @@ run(function()
 		team's parties, marking a team that is one whole party as a full queue.
 	]]
 	local PartyFinder
-	local Matches, Required, ShowPanel, Teammates, Corner, ShowLeaderboard
+	local Matches, Required, ShowPanel, Teammates, Corner, ShowLeaderboard, Source
 	local badges = setmetatable({}, {__mode = 'k'})
 	local panel, list, rows = nil, nil, {}
 	local mates = {}
@@ -10909,7 +10909,17 @@ run(function()
 		return id
 	end
 	
+	-- Which sources are in use: the game's own party data, the match history, or both.
+	local function usesGameData()
+		return not Source or Source.Value ~= 'Match History'
+	end
+	
+	local function usesHistory()
+		return not Source or Source.Value ~= 'Game Data'
+	end
+	
 	local function learn(player)
+		if not usesHistory() then return end
 		if mates[player.UserId] ~= nil then return end
 		mates[player.UserId] = false
 		status.asked += 1
@@ -11024,8 +11034,9 @@ run(function()
 		for _, player in players do parent[player.UserId] = player.UserId end
 		table.clear(confidence)
 	
-		-- The game's own party list first, then your own party, then match history.
-		for _, members in exactParties() do
+		-- The game's own party list first, then your own party, then match history - each only
+		-- when the Source setting uses it.
+		for _, members in (usesGameData() and exactParties() or {}) do
 			local first
 			for _, id in members do
 				id = tonumber(id)
@@ -11041,7 +11052,7 @@ run(function()
 			end
 		end
 	
-		local own = ownParty()
+		local own = usesGameData() and ownParty() or {}
 		for _, player in players do
 			if player ~= lplr and own[player.UserId] then
 				local ra, rb = find(player.UserId), find(lplr.UserId)
@@ -11049,7 +11060,7 @@ run(function()
 				confidence[lplr.UserId .. ':' .. player.UserId] = math.huge
 			end
 		end
-		for _, a in players do
+		for _, a in (usesHistory() and players or {}) do
 			for _, b in players do
 				if a ~= b and teamOf(a) and teamOf(a) == teamOf(b) then
 					local count = shared(a, b)
@@ -11216,7 +11227,9 @@ run(function()
 		if #lines == 0 then
 			-- Says why, so an empty panel can be told apart from nobody being partied.
 			local why
-			if status.loaded < status.asked then
+			if not usesHistory() then
+				why = #exactParties() == 0 and 'The game sends you no party data' or 'No parties in the game data'
+			elseif status.loaded < status.asked then
 				why = string.format('Loading histories %d/%d', status.loaded, status.asked)
 			elseif status.loaded > 0 and status.empty == status.loaded then
 				why = 'No match history came back'
@@ -11304,6 +11317,25 @@ run(function()
 				-- Answers stay in the shared cache, so turning it back on asks nobody again.
 				table.clear(mates)
 				status = {asked = 0, loaded = 0, withParty = 0, withTeams = 0, empty = 0}
+			end
+		end
+	})
+	Source = PartyFinder:CreateDropdown({
+		Name = 'Source',
+		List = {'Both', 'Game Data', 'Match History'},
+		Tooltips = {
+			Both = 'The game\'s party data, then match history',
+			['Game Data'] = 'Only the game\'s own party data',
+			['Match History'] = 'Only comparing match histories'
+		},
+		Function = function(val)
+			for _, setting in {Matches, Required} do
+				if setting and setting.Object then setting.Object.Visible = val ~= 'Game Data' end
+			end
+			if Required and Required.Object and Matches then Required.Object.Visible = val ~= 'Game Data' and Matches.Value > 1 end
+			-- Switched onto history: ask for anyone not asked yet.
+			if PartyFinder.Enabled and val ~= 'Game Data' then
+				for _, player in playersService:GetPlayers() do learn(player) end
 			end
 		end
 	})
