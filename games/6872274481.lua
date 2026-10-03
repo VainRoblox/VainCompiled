@@ -10770,14 +10770,18 @@ run(function()
 		by the shared matchHistory helper - and anyone who shared their partyId there and is on
 		their team now is taken as their party. Parties formed only this match cannot show.
 	
+		For more certainty, more matches can be compared: a pair then has to have queued together
+		in at least the required number of them, and the tags show how many it was.
+	
 		Partied players get a tag over their head in their party's colour, and a panel lists each
 		team's parties, marking a team that is one whole party as a full queue.
 	]]
 	local PartyFinder
-	local Matches, ShowTags, ShowPanel, Teammates, Corner
+	local Matches, Required, ShowTags, ShowPanel, Teammates, Corner
 	local panel, list, rows = nil, nil, {}
 	local mates = {}
 	local groups = {}
+	local confidence = {}
 	local tags = {}
 	local Folder = Instance.new('Folder')
 	Folder.Name = 'PartyFinder'
@@ -10803,11 +10807,12 @@ run(function()
 		return team ~= nil and tostring(team) or nil
 	end
 	
-	-- Everyone who shared a party with them in their last few matches, by user id.
+	-- How many of their last few matches each other player shared a party with them in, by
+	-- user id. Kept as counts so the requirement can change without asking again.
 	local function learn(player)
 		matchHistory.fetch(player, function(matches)
 			local found = {}
-			for i = 1, math.min(Matches.Value, #matches) do
+			for i = 1, math.min(10, #matches) do
 				local match = matches[i]
 				local mine = matchHistory.entryFor(match, player.UserId)
 				local partyId = mine and mine.partyId
@@ -10816,7 +10821,8 @@ run(function()
 						local info = type(entry) == 'table' and entry.playerInfo
 						local userId = info and tonumber(info.userId)
 						if userId and userId ~= player.UserId and entry.partyId == partyId then
-							found[userId] = true
+							found[userId] = found[userId] or {}
+							found[userId][i] = true
 						end
 					end
 				end
@@ -10825,9 +10831,26 @@ run(function()
 		end)
 	end
 	
+	-- In how many of the compared matches two players queued together, from either side.
+	local function shared(a, b)
+		local best = 0
+		for _, pair in {{a, b}, {b, a}} do
+			local seen = mates[pair[1].UserId] and mates[pair[1].UserId][pair[2].UserId]
+			if seen then
+				local count = 0
+				for i = 1, Matches.Value do
+					if seen[i] then count += 1 end
+				end
+				best = math.max(best, count)
+			end
+		end
+		return best
+	end
+	
 	--[[
-		Groups the players in this match into parties: two players are together when either
-		lists the other and they are on the same team now. Parties of one are left out.
+		Groups the players in this match into parties: two players are together when they
+		queued together in enough of the compared matches and are on the same team now.
+		Parties of one are left out.
 	]]
 	local function regroup()
 		local players = playersService:GetPlayers()
@@ -10837,11 +10860,13 @@ run(function()
 			return id
 		end
 		for _, player in players do parent[player.UserId] = player.UserId end
+		table.clear(confidence)
 		for _, a in players do
 			for _, b in players do
 				if a ~= b and teamOf(a) and teamOf(a) == teamOf(b) then
-					local known = (mates[a.UserId] and mates[a.UserId][b.UserId]) or (mates[b.UserId] and mates[b.UserId][a.UserId])
-					if known then
+					local count = shared(a, b)
+					if count >= math.min(Required.Value, Matches.Value) then
+						confidence[a.UserId .. ':' .. b.UserId] = count
 						local ra, rb = find(a.UserId), find(b.UserId)
 						if ra ~= rb then parent[ra] = rb end
 					end
@@ -10866,7 +10891,17 @@ run(function()
 			if a.team ~= b.team then return tostring(a.team) < tostring(b.team) end
 			return a.members[1].UserId < b.members[1].UserId
 		end)
-		for i, group in groups do group.color = COLORS[(i - 1) % #COLORS + 1] end
+		for i, group in groups do
+			group.color = COLORS[(i - 1) % #COLORS + 1]
+			-- How sure: the most matches any member shared with another.
+			local best = 0
+			for key, count in confidence do
+				for _, member in group.members do
+					if key:find('^' .. member.UserId .. ':') then best = math.max(best, count) end
+				end
+			end
+			group.seen = best
+		end
 	end
 	
 	local function clearTags()
@@ -10903,7 +10938,9 @@ run(function()
 								label.Parent = tag
 								tags[player] = tag
 							end
-							tag.Label.Text = string.format('Party %d (%d)', index, #group.members)
+							tag.Label.Text = Matches.Value > 1
+								and string.format('Party %d (%d)  %d/%d', index, #group.members, group.seen, Matches.Value)
+								or string.format('Party %d (%d)', index, #group.members)
 							tag.Label.TextColor3 = group.color
 						end
 					end
@@ -11043,11 +11080,23 @@ run(function()
 		end
 	})
 	Matches = PartyFinder:CreateSlider({
-		Name = 'Matches Checked',
-		Tooltip = 'How many recent matches to look at',
+		Name = 'Matches Compared',
+		Tooltip = 'How many recent matches to compare',
 		Min = 1,
-		Max = 5,
-		Default = 1
+		Max = 10,
+		Default = 1,
+		Function = function(val)
+			if Required and Required.Object then Required.Object.Visible = val > 1 end
+		end
+	})
+	Required = PartyFinder:CreateSlider({
+		Name = 'Required Matches',
+		Tooltip = 'How many of those they must have queued together in',
+		Min = 1,
+		Max = 10,
+		Default = 1,
+		Darker = true,
+		Visible = false
 	})
 	ShowTags = PartyFinder:CreateToggle({
 		Name = 'Tags',
