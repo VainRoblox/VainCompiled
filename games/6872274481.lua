@@ -591,6 +591,66 @@ local brokenbeds = {}
 	has a time limit, and requests for many players at once are spread out a little.
 	Callbacks get the list of matches, newest first, or an empty list.
 ]]
+--[[
+	Enchants, read the way the game defines them. enchant-meta lists every weapon, armor
+	and tool enchant with its name, its icon and the status effect it shows up as on the
+	character (statusEffect), so a StatusEffect_<type> attribute is an enchant exactly when
+	its type is one of those - no guessing from the word "enchant" in the name. A trailing
+	level (_2) is taken off before looking it up and kept as the level.
+]]
+local enchants = {}
+do
+	local byEffect
+
+	local function build()
+		if byEffect then return byEffect end
+		byEffect = {}
+		local ok, meta = pcall(function()
+			return require(replicatedStorage.TS.enchant['enchant-meta'])
+		end)
+		if not ok or type(meta) ~= 'table' then return byEffect end
+		for kind, list in {weapon = meta.EnchantMeta, armor = meta.ArmorEnchantMeta, tool = meta.ToolEnchantMeta} do
+			for enchantType, info in (type(list) == 'table' and list or {}) do
+				if type(info) == 'table' and info.statusEffect then
+					byEffect[tostring(info.statusEffect)] = {type = enchantType, name = info.name, image = info.image, kind = kind}
+				end
+			end
+		end
+		return byEffect
+	end
+
+	-- The enchant behind a status effect type, and its level if it carries one.
+	function enchants.lookup(effect)
+		local map = build()
+		if map[effect] then return map[effect], nil end
+		local base, level = effect:match('^(.-)_(%d+)$')
+		if base and map[base] then return map[base], tonumber(level) end
+		return nil
+	end
+
+	-- Every enchant on a character: {type, name, image, kind, level, stacks}.
+	function enchants.of(character)
+		local list = {}
+		if not character then return list end
+		local ok, attributes = pcall(character.GetAttributes, character)
+		if not ok then return list end
+		for key in attributes do
+			local effect = key:match('^StatusEffect_(.+)$')
+			if effect and not effect:find('_stacks$') and not effect:find('_extra') then
+				local info, level = enchants.lookup(effect)
+				if info then
+					list[#list + 1] = {
+						type = info.type, name = info.name, image = info.image, kind = info.kind,
+						level = level, stacks = tonumber(attributes[key .. '_stacks']) or 0
+					}
+				end
+			end
+		end
+		table.sort(list, function(a, b) return a.name < b.name end)
+		return list
+	end
+end
+
 local matchHistory = {cache = {}, waiting = {}, queued = 0}
 do
 	local TIMEOUT = 6
@@ -9861,8 +9921,16 @@ run(function()
 				label = label .. ' x' .. stacks
 			end
 	
-			local enchant = StatusEnchant[name]
-			if enchant == nil then
+			-- Whether it is an enchant comes from the game's enchant meta (the shared enchants
+			-- helper): its name and icon too. The enum guess is only the fallback.
+			local enchantInfo, enchantLevel = enchants.lookup(name)
+			local enchant = enchantInfo ~= nil
+			if enchantInfo then
+				label = enchantInfo.name .. (enchantLevel and enchantLevel > 1 and (' ' .. enchantLevel) or '')
+				if type(stacks) == 'number' and stacks > 1 then label = label .. ' x' .. stacks end
+			elseif StatusEnchant[name] ~= nil then
+				enchant = StatusEnchant[name]
+			else
 				enchant = name:find('enchant') ~= nil or STATUS_WEAPON_ENCHANT[name] or false
 			end
 	
@@ -9877,9 +9945,9 @@ run(function()
 			]]
 			local ok, meta = pcall(function() return bedwars.StatusEffectMeta[name] end)
 			meta = ok and meta or nil
-			if meta and meta.noDisplay then continue end
+			if meta and meta.noDisplay and not enchantInfo then continue end
 	
-			local image = meta and meta.image or nil
+			local image = (enchantInfo and enchantInfo.image) or (meta and meta.image) or nil
 			if not image and meta and meta.item then
 				local got, icon = pcall(function() return bedwars.getIcon({itemType = meta.item}, true) end)
 				image = got and icon or nil
@@ -10415,10 +10483,12 @@ run(function()
 		character replaced without the event landing. There is nothing that ever looks again.
 	
 		So the render loop checks as it goes. An entity whose character has left the world is
-		not one to draw a name over, whatever did or did not fire.
+		not one to draw a name over, whatever did or did not fire - and neither is one the
+		entity list has let go of: a respawn makes a new entity while the old body can linger
+		in the world, which left its tag frozen where the player died.
 	]]
-	local function stale(ent)
-		if not ent then return true end
+	local function stale(ent, listed)
+		if not ent or not listed[ent] then return true end
 		local char = ent.Character
 		if not (char and char.Parent) then return true end
 		local root = ent.RootPart
@@ -10426,8 +10496,10 @@ run(function()
 	end
 	
 	local function sweep()
+		local listed = {}
+		for _, ent in entitylib.List do listed[ent] = true end
 		for ent in Reference do
-			if stale(ent) then
+			if stale(ent, listed) then
 				Removed[methodused](ent)
 			end
 		end
@@ -10442,45 +10514,51 @@ run(function()
 				if DivisionsChanged then
 					DivisionsChanged = false
 					for ent in Reference do
-						Updated[methodused](ent)
+						pcall(Updated[methodused], ent)
 					end
 				end
 			end
 			for ent, nametag in Reference do
-				if due and ((Enchants and Enchants.Enabled) or (Effects and Effects.Enabled)) then
-					local sig = statusSignature(ent)
-					if StatusSig[ent] ~= sig then
-						StatusSig[ent] = sig
-						Updated[methodused](ent)
+				-- Each tag on its own, so one that errors does not stop the rest from being
+				-- moved - which froze every tag on screen.
+				pcall(function()
+					-- Text that was never built would fail every frame; build it now.
+					if not Strings[ent] then Updated[methodused](ent) end
+					if due and ((Enchants and Enchants.Enabled) or (Effects and Effects.Enabled)) then
+						local sig = statusSignature(ent)
+						if StatusSig[ent] ~= sig then
+							StatusSig[ent] = sig
+							Updated[methodused](ent)
+						end
 					end
-				end
 	
-				if DistanceCheck.Enabled then
-					local distance = entitylib.isAlive and (entitylib.character.RootPart.Position - ent.RootPart.Position).Magnitude or math.huge
-					if distance < DistanceLimit.ValueMin or distance > DistanceLimit.ValueMax then
-						nametag.Visible = false
-						continue
+					if DistanceCheck.Enabled then
+						local distance = entitylib.isAlive and (entitylib.character.RootPart.Position - ent.RootPart.Position).Magnitude or math.huge
+						if distance < DistanceLimit.ValueMin or distance > DistanceLimit.ValueMax then
+							nametag.Visible = false
+							return
+						end
 					end
-				end
 	
-				local headPos, headVis = gameCamera:WorldToViewportPoint(ent.RootPart.Position + Vector3.new(0, ent.HipHeight + 1, 0))
-				nametag.Visible = headVis
-				if not headVis then
-					continue
-				end
-	
-				if Distance.Enabled then
-					local mag = entitylib.isAlive and math.floor((entitylib.character.RootPart.Position - ent.RootPart.Position).Magnitude) or 0
-					if Sizes[ent] ~= mag then
-						nametag.Text = string.format(Strings[ent], mag)
-						local ize = getfontsize(removeTags(nametag.Text), nametag.TextSize, nametag.FontFace, Vector2.new(100000, 100000))
-						nametag.Size = UDim2.fromOffset(ize.X + 8, ize.Y + 7)
-						Sizes[ent] = mag
-						-- Only when the number changed, so the badge is not re-measured every frame.
-						placeRankIcon(nametag, ent, string.format(Prefixes[ent] or '', mag))
+					local headPos, headVis = gameCamera:WorldToViewportPoint(ent.RootPart.Position + Vector3.new(0, ent.HipHeight + 1, 0))
+					nametag.Visible = headVis
+					if not headVis then
+						return
 					end
-				end
-				nametag.Position = UDim2.fromOffset(headPos.X, headPos.Y)
+	
+					if Distance.Enabled then
+						local mag = entitylib.isAlive and math.floor((entitylib.character.RootPart.Position - ent.RootPart.Position).Magnitude) or 0
+						if Sizes[ent] ~= mag then
+							nametag.Text = string.format(Strings[ent], mag)
+							local ize = getfontsize(removeTags(nametag.Text), nametag.TextSize, nametag.FontFace, Vector2.new(100000, 100000))
+							nametag.Size = UDim2.fromOffset(ize.X + 8, ize.Y + 7)
+							Sizes[ent] = mag
+							-- Only when the number changed, so the badge is not re-measured every frame.
+							placeRankIcon(nametag, ent, string.format(Prefixes[ent] or '', mag))
+						end
+					end
+					nametag.Position = UDim2.fromOffset(headPos.X, headPos.Y)
+				end)
 			end
 		end,
 		Drawing = function()
@@ -10491,45 +10569,51 @@ run(function()
 				if DivisionsChanged then
 					DivisionsChanged = false
 					for ent in Reference do
-						Updated[methodused](ent)
+						pcall(Updated[methodused], ent)
 					end
 				end
 			end
 			for ent, nametag in Reference do
-				if due and ((Enchants and Enchants.Enabled) or (Effects and Effects.Enabled)) then
-					local sig = statusSignature(ent)
-					if StatusSig[ent] ~= sig then
-						StatusSig[ent] = sig
-						Updated[methodused](ent)
+				-- Each tag on its own, so one that errors does not stop the rest from being
+				-- moved - which froze every tag on screen.
+				pcall(function()
+					-- Text that was never built would fail every frame; build it now.
+					if not Strings[ent] then Updated[methodused](ent) end
+					if due and ((Enchants and Enchants.Enabled) or (Effects and Effects.Enabled)) then
+						local sig = statusSignature(ent)
+						if StatusSig[ent] ~= sig then
+							StatusSig[ent] = sig
+							Updated[methodused](ent)
+						end
 					end
-				end
 	
-				if DistanceCheck.Enabled then
-					local distance = entitylib.isAlive and (entitylib.character.RootPart.Position - ent.RootPart.Position).Magnitude or math.huge
-					if distance < DistanceLimit.ValueMin or distance > DistanceLimit.ValueMax then
-						nametag.Text.Visible = false
-						nametag.BG.Visible = false
-						continue
+					if DistanceCheck.Enabled then
+						local distance = entitylib.isAlive and (entitylib.character.RootPart.Position - ent.RootPart.Position).Magnitude or math.huge
+						if distance < DistanceLimit.ValueMin or distance > DistanceLimit.ValueMax then
+							nametag.Text.Visible = false
+							nametag.BG.Visible = false
+							return
+						end
 					end
-				end
 	
-				local headPos, headVis = gameCamera:WorldToViewportPoint(ent.RootPart.Position + Vector3.new(0, ent.HipHeight + 1, 0))
-				nametag.Text.Visible = headVis
-				nametag.BG.Visible = headVis
-				if not headVis then
-					continue
-				end
-	
-				if Distance.Enabled then
-					local mag = entitylib.isAlive and math.floor((entitylib.character.RootPart.Position - ent.RootPart.Position).Magnitude) or 0
-					if Sizes[ent] ~= mag then
-						nametag.Text.Text = string.format(Strings[ent], mag)
-						nametag.BG.Size = Vector2.new(nametag.Text.TextBounds.X + 8, nametag.Text.TextBounds.Y + 7)
-						Sizes[ent] = mag
+					local headPos, headVis = gameCamera:WorldToViewportPoint(ent.RootPart.Position + Vector3.new(0, ent.HipHeight + 1, 0))
+					nametag.Text.Visible = headVis
+					nametag.BG.Visible = headVis
+					if not headVis then
+						return
 					end
-				end
-				nametag.BG.Position = Vector2.new(headPos.X - (nametag.BG.Size.X / 2), headPos.Y - nametag.BG.Size.Y)
-				nametag.Text.Position = nametag.BG.Position + Vector2.new(4, 3)
+	
+					if Distance.Enabled then
+						local mag = entitylib.isAlive and math.floor((entitylib.character.RootPart.Position - ent.RootPart.Position).Magnitude) or 0
+						if Sizes[ent] ~= mag then
+							nametag.Text.Text = string.format(Strings[ent], mag)
+							nametag.BG.Size = Vector2.new(nametag.Text.TextBounds.X + 8, nametag.Text.TextBounds.Y + 7)
+							Sizes[ent] = mag
+						end
+					end
+					nametag.BG.Position = Vector2.new(headPos.X - (nametag.BG.Size.X / 2), headPos.Y - nametag.BG.Size.Y)
+					nametag.Text.Position = nametag.BG.Position + Vector2.new(4, 3)
+				end)
 			end
 		end
 	}
@@ -32651,20 +32735,6 @@ run(function()
 		icon.Visible = image ~= nil and image ~= ''
 	end
 	
-	-- "ARMOR_ENCHANT_FROST" style status names, read as "Frost".
-	local function enchantsOf(character)
-		local list = {}
-		for name in character:GetAttributes() do
-			local effect = name:match('^StatusEffect_(.+)$')
-			if effect and not effect:find('_stacks$') and not effect:find('_extra') and effect:lower():find('enchant', 1, true) then
-				local word = effect:lower():gsub('armor_enchant_', ''):gsub('_enchant', ''):gsub('enchant_', ''):gsub('_', ' ')
-				list[#list + 1] = word:gsub('^%l', string.upper)
-			end
-		end
-		table.sort(list)
-		return list
-	end
-	
 	local function layout()
 		local compact = on(Compact)
 		avatar.Visible = not compact
@@ -32676,39 +32746,100 @@ run(function()
 		barBack.Size = UDim2.new(1, -left - 8, 0, 8)
 		infoLabel.Position = UDim2.fromOffset(left, 38)
 		infoLabel.Size = UDim2.new(1, -left - 8, 0, 16)
-		local extra = not compact and (on(ShowKitName) or on(ShowEnchants))
+		local extra = not compact and on(ShowKitName)
 		extraLabel.Visible = extra
 		extraLabel.Position = UDim2.fromOffset(left, 54)
-		equipment.Visible = not compact and on(ShowEquipment)
+		equipment.Visible = not compact and (on(ShowEquipment) or on(ShowEnchants))
 		equipment.Position = UDim2.fromOffset(8, extra and 74 or 58)
-		local height = compact and 42 or (58 + (extra and 16 or 0) + (on(ShowEquipment) and 20 or 0))
+		local height = compact and 42 or (58 + (extra and 16 or 0) + ((on(ShowEquipment) or on(ShowEnchants)) and 20 or 0))
 		card.Size = UDim2.new(1, 0, 0, height)
 	end
 	
 	--[[
-		The win check: how many hits each of you needs to finish the other. Your own health is
-		read straight off your character (Health plus any shield) - the entity list's copy of it
-		did not follow your own damage, which is why it said winning while losing. Damage is the
-		sword damage of what each of you holds, from the item meta; anything that is not a sword
-		counts as a fist.
+		The win check: how many hits each of you needs to finish the other.
+	
+		- Health: yours is read straight off your character (Health plus any shield) - the
+		  entity list's copy did not follow your own damage, which is why it said winning while
+		  losing. A Sound Barrier above half health counts its 50 shield on top.
+		- Damage: the sword damage of what each of you holds, from the item meta (a fist when
+		  it is not a sword), through the other's armor the way the game's ArmorUtil works it
+		  out: damage x (1 - the summed damageReductionMultiplier of the armor worn).
+		- Enchants (from the shared enchants helper, i.e. the game's enchant meta): Absorption
+		  takes its 10% off the damage taken and Blocking stops one hit. The weapon enchants'
+		  numbers live on the server, so those are estimates - Critical Strike, Fire, Static,
+		  Forest and Execute as a bit more damage, Berserker more again at low health.
 	]]
 	local FIST_DAMAGE = 1
+	local WEAPON_BONUS = {
+		critical_strike = 1.2, fire = 1.15, static = 1.15, forest = 1.1, execute = 1.1, berserker = 1.1
+	}
 	
 	local function swordDamage(itemType)
 		local meta = itemType and bedwars.ItemMeta[itemType]
 		return meta and meta.sword and tonumber(meta.sword.damage) or FIST_DAMAGE
 	end
 	
+	local function armorReduction(pieces)
+		local total = 0
+		for _, piece in (type(pieces) == 'table' and pieces or {}) do
+			local itemType = type(piece) == 'table' and piece.itemType
+			local meta = itemType and bedwars.ItemMeta[itemType]
+			if meta and meta.armor and tonumber(meta.armor.damageReductionMultiplier) then
+				total += meta.armor.damageReductionMultiplier
+			end
+		end
+		return math.clamp(total, 0, 0.95)
+	end
+	
+	local function enchantSet(character)
+		local set = {}
+		for _, enchant in enchants.of(character) do
+			-- Tool enchants share names with weapon ones (Shatter Strike is critical_strike)
+			-- and do nothing in a fight.
+			if enchant.kind ~= 'tool' then
+				set[tostring(enchant.type):lower()] = enchant
+			end
+		end
+		return set
+	end
+	
+	-- Damage one side's hit does to the other.
+	local function hitDamage(itemType, attackerEnchants, defenderArmor, defenderEnchants, defenderFraction)
+		local damage = swordDamage(itemType)
+		for name, bonus in WEAPON_BONUS do
+			if attackerEnchants[name] then damage *= bonus end
+		end
+		if attackerEnchants.berserker and defenderFraction and defenderFraction < 0.5 then damage *= 1.15 end
+		damage *= 1 - armorReduction(defenderArmor)
+		if defenderEnchants.absorption then damage *= 0.9 end
+		return math.max(damage, 0.1)
+	end
+	
+	local function effectiveHealth(health, maxHealth, set)
+		if set.safeguard and maxHealth > 0 and health / maxHealth > 0.5 then health += 50 end
+		return health
+	end
+	
 	hitsToKill = function(player, theirHealth)
 		local character = lplr.Character
-		if not (entitylib.isAlive and character) then return nil end
+		if not (entitylib.isAlive and character and player.Character) then return nil end
 		local myHealth = (character:GetAttribute('Health') or 0) + getShieldAttribute(character)
+		local myMax = character:GetAttribute('MaxHealth') or 100
+		local theirMax = player.Character:GetAttribute('MaxHealth') or 100
+	
+		local mySet, theirSet = enchantSet(character), enchantSet(player.Character)
 		local myTool = store.hand and store.hand.tool
 		local inventory = store.inventories[player]
 		local theirItem = inventory and inventory.hand and inventory.hand.itemType
-		local mine = math.max(math.ceil(theirHealth / swordDamage(myTool and myTool.Name)), 1)
-		local theirs = math.max(math.ceil(myHealth / swordDamage(theirItem)), 1)
-		return mine, theirs
+		local myArmor = store.inventory and store.inventory.inventory and store.inventory.inventory.armor
+		local theirArmor = inventory and inventory.armor
+	
+		local mine = math.ceil(effectiveHealth(theirHealth, theirMax, theirSet) / hitDamage(myTool and myTool.Name, mySet, theirArmor, theirSet, theirHealth / math.max(theirMax, 1)))
+		local theirs = math.ceil(effectiveHealth(myHealth, myMax, mySet) / hitDamage(theirItem, theirSet, myArmor, mySet, myHealth / math.max(myMax, 1)))
+		-- Blocking stops the first hit.
+		if theirSet.blocking then mine += 1 end
+		if mySet.blocking then theirs += 1 end
+		return math.max(mine, 1), math.max(theirs, 1)
 	end
 	
 	local function show(entity, player)
@@ -32747,13 +32878,18 @@ run(function()
 		local kitMeta = kit and kit ~= 'none' and bedwars.BedwarsKitMeta[kit]
 		local extra = {}
 		if on(ShowKitName) and kitMeta then extra[#extra + 1] = kitMeta.name or kit end
-		if on(ShowEnchants) and entity.Character then
-			local enchants = enchantsOf(entity.Character)
-			if #enchants > 0 then extra[#extra + 1] = table.concat(enchants, ', ') end
-		end
 		extraLabel.Text = table.concat(extra, '  ·  ')
 	
-		if on(ShowEquipment) then
+		-- Their enchants as the game's own enchant icons, after the equipment.
+		local list = (on(ShowEnchants) and entity.Character) and enchants.of(entity.Character) or {}
+		for i = 6, #icons do
+			local enchant = list[i - 5]
+			setIcon(i, enchant and enchant.image or nil)
+		end
+	
+		if not on(ShowEquipment) then
+			for i = 1, 5 do setIcon(i, nil) end
+		else
 			local inventory = store.inventories[player]
 			setIcon(1, kitMeta and kitMeta.renderImage or nil)
 			setIcon(2, inventory and inventory.hand and bedwars.getIcon(inventory.hand, true) or nil)
@@ -32868,7 +33004,7 @@ run(function()
 	})
 	ShowEnchants = TargetHUD:CreateToggle({
 		Name = 'Enchants',
-		Tooltip = 'Lists their active enchants'
+		Tooltip = 'Shows their enchants\' icons'
 	})
 	Background = TargetHUD:CreateColorSlider({
 		Name = 'Background',
@@ -32965,8 +33101,8 @@ run(function()
 	equipmentLayout.Padding = UDim.new(0, 4)
 	equipmentLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	equipmentLayout.Parent = equipment
-	-- Kit, held item, helmet, chestplate, boots.
-	for i = 1, 5 do
+	-- Kit, held item, helmet, chestplate, boots, then up to four enchants.
+	for i = 1, 9 do
 		local icon = Instance.new('ImageLabel')
 		icon.BackgroundTransparency = 1
 		icon.Size = UDim2.fromOffset(16, 16)
