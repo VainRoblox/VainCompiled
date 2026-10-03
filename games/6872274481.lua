@@ -32776,7 +32776,9 @@ run(function()
 				winLabel.Text = ''
 			else
 				local diff = theirsLeft - mineLeft
-				winLabel.Text = string.format('%s %dv%d', diff == 0 and 'EVEN' or (diff > 0 and 'WINNING' or 'LOSING'), mineLeft, theirsLeft)
+				-- Just the verdict: fewer hits needed is winning, which weighs the damage each of
+				-- you deals against the health each of you has left.
+				winLabel.Text = diff == 0 and 'EVEN' or (diff > 0 and 'WINNING' or 'LOSING')
 				winLabel.TextColor3 = diff == 0 and Color3.fromRGB(230, 230, 230) or (diff > 0 and Color3.fromRGB(110, 230, 120) or Color3.fromRGB(255, 90, 90))
 			end
 		end
