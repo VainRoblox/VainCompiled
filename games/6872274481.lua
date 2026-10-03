@@ -9163,6 +9163,15 @@ run(function()
 		['Bottom Left'] = {Vector2.new(0, 1), UDim2.new(0, 4, 1, -4), Enum.HorizontalAlignment.Left}
 	}
 	
+	-- How far down the card the name bar starts, as a share of the card's height, so the
+	-- bottom positions sit just above it rather than over the name and the vote label.
+	local function nameBarTop(card)
+		local bar = card:FindFirstChild('TextBackgroundBar', true)
+		if not (bar and bar:IsA('GuiObject') and card.AbsoluteSize.Y > 0) then return 1 end
+		local top = (bar.AbsolutePosition.Y - card.AbsolutePosition.Y) / card.AbsoluteSize.Y
+		return (top > 0.3 and top <= 1) and top or 1
+	end
+	
 	local function newRow(card)
 		local place = POSITIONS[RowPosition and RowPosition.Value or 'Bottom Right'] or POSITIONS['Bottom Right']
 		local row = Instance.new('Frame')
@@ -9170,6 +9179,9 @@ run(function()
 		row.BackgroundTransparency = 1
 		row.AnchorPoint = place[1]
 		row.Position = place[2]
+		if place[1].Y == 1 then
+			row.Position = UDim2.new(place[2].X.Scale, place[2].X.Offset, nameBarTop(card), -3)
+		end
 		row.Size = UDim2.new(0.62, 0, IconSize and IconSize.Value / 100 or 0.2, 0)
 		row.ZIndex = 10
 		row.Parent = card
