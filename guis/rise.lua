@@ -285,7 +285,109 @@ local function loadJson(path)
 	return suc and type(res) == 'table' and res or nil
 end
 
+--[[
+	Snapping for the dragged overlays (the Legit module displays): while one is dragged it
+	lines up with the screen's edges and centre lines, and with any other overlay on show -
+	edges and centres level, or butted up against it with a small gap - once it comes
+	within a few pixels, with a guide line drawn along whatever it is snapped to. Holding
+	Left Control drags freely.
+]]
+local snapTargets = setmetatable({}, {__mode = 'k'})
+local snapGuides = {}
+local SNAP_DISTANCE = 8
+local SNAP_GAP = 6
+local SNAP_MARGIN = 6
+
+local function snapGuide(parent, vertical)
+	local key = vertical and 'x' or 'y'
+	local guide = snapGuides[key]
+	if not guide or guide.Parent ~= parent then
+		if guide then guide:Destroy() end
+		guide = Instance.new('Frame')
+		guide.Name = 'SnapGuide'
+		guide.BorderSizePixel = 0
+		guide.BackgroundColor3 = Color3.fromRGB(90, 170, 255)
+		guide.BackgroundTransparency = 0.2
+		guide.ZIndex = 100
+		guide.Visible = false
+		guide.Parent = parent
+		snapGuides[key] = guide
+	end
+	return guide
+end
+
+local function hideSnapGuides()
+	for _, guide in snapGuides do guide.Visible = false end
+end
+
+-- The dragged position after snapping, in the same unscaled offsets the drag works in.
+local function snapPosition(object, x, y)
+	local parent = object.Parent
+	if not parent or inputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+		hideSnapGuides()
+		return x, y
+	end
+	local s = scale.Scale
+	local screen = parent.AbsoluteSize / s
+	local size = object.AbsoluteSize / s
+	local xs, ys = {}, {}
+	local function addX(value, guide) xs[#xs + 1] = {value, guide} end
+	local function addY(value, guide) ys[#ys + 1] = {value, guide} end
+
+	addX(SNAP_MARGIN, SNAP_MARGIN)
+	addX(screen.X / 2 - size.X / 2, screen.X / 2)
+	addX(screen.X - size.X - SNAP_MARGIN, screen.X - SNAP_MARGIN)
+	addY(SNAP_MARGIN, SNAP_MARGIN)
+	addY(screen.Y / 2 - size.Y / 2, screen.Y / 2)
+	addY(screen.Y - size.Y - SNAP_MARGIN, screen.Y - SNAP_MARGIN)
+
+	for other in snapTargets do
+		if other ~= object and other.Parent == parent and other.Visible then
+			local ox, oy = other.Position.X.Offset, other.Position.Y.Offset
+			local os = other.AbsoluteSize / s
+			addX(ox, ox)
+			addX(ox + os.X - size.X, ox + os.X)
+			addX(ox + os.X / 2 - size.X / 2, ox + os.X / 2)
+			addX(ox + os.X + SNAP_GAP, ox + os.X + SNAP_GAP / 2)
+			addX(ox - size.X - SNAP_GAP, ox - SNAP_GAP / 2)
+			addY(oy, oy)
+			addY(oy + os.Y - size.Y, oy + os.Y)
+			addY(oy + os.Y / 2 - size.Y / 2, oy + os.Y / 2)
+			addY(oy + os.Y + SNAP_GAP, oy + os.Y + SNAP_GAP / 2)
+			addY(oy - size.Y - SNAP_GAP, oy - SNAP_GAP / 2)
+		end
+	end
+
+	local function nearest(list, value)
+		local best, bestGap
+		for _, option in list do
+			local gap = math.abs(option[1] - value)
+			if gap <= SNAP_DISTANCE and (not bestGap or gap < bestGap) then
+				best, bestGap = option, gap
+			end
+		end
+		return best
+	end
+
+	local snapX, snapY = nearest(xs, x), nearest(ys, y)
+	local vertical, horizontal = snapGuide(parent, true), snapGuide(parent, false)
+	vertical.Visible = snapX ~= nil
+	horizontal.Visible = snapY ~= nil
+	if snapX then
+		x = snapX[1]
+		vertical.Position = UDim2.fromOffset(snapX[2], 0)
+		vertical.Size = UDim2.new(0, 1, 1, 0)
+	end
+	if snapY then
+		y = snapY[1]
+		horizontal.Position = UDim2.fromOffset(0, snapY[2])
+		horizontal.Size = UDim2.new(1, 0, 0, 1)
+	end
+	return x, y
+end
+
 local function makeDraggable(obj, window)
+	if window then snapTargets[obj] = true end
 	obj.InputBegan:Connect(function(inputObj)
 		if window and not window.Visible then return end
 		if
@@ -300,13 +402,16 @@ local function makeDraggable(obj, window)
 						dragPosition = (dragPosition // 3) * 3
 						position = (position // 3) * 3
 					end
-					obj.Position = UDim2.fromOffset((position.X / scale.Scale) + dragPosition.X, (position.Y / scale.Scale) + dragPosition.Y)
+					local x, y = (position.X / scale.Scale) + dragPosition.X, (position.Y / scale.Scale) + dragPosition.Y
+					if window then x, y = snapPosition(obj, x, y) end
+					obj.Position = UDim2.fromOffset(x, y)
 				end
 			end)
 
 			local ended
 			ended = inputObj.Changed:Connect(function()
 				if inputObj.UserInputState == Enum.UserInputState.End then
+					hideSnapGuides()
 					if changed then
 						changed:Disconnect()
 					end
