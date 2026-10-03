@@ -11294,7 +11294,14 @@ run(function()
 			label.Visible = true
 		end
 		for i = #lines + 1, #rows do rows[i].Visible = false end
-		panel.Size = UDim2.fromOffset(300, #lines * 18 + 30)
+		-- As wide as the longest line, so nothing runs past the edge.
+		local widest = 120
+		for i = 1, #lines do
+			local label = rows[i]
+			local ok, size = pcall(getfontsize, removeTags(label.Text), label.TextSize, label.FontFace, Vector2.new(100000, 100000))
+			if ok and size then widest = math.max(widest, size.X) end
+		end
+		panel.Size = UDim2.fromOffset(math.min(math.ceil(widest) + 20, 900), #lines * 18 + 30)
 	end
 	
 	local function place()
