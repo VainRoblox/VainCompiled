@@ -10933,7 +10933,7 @@ run(function()
 		team's parties, marking a team that is one whole party as a full queue.
 	]]
 	local PartyFinder
-	local Matches, Required, ShowPanel, Teammates, Corner, ShowLeaderboard, Source
+	local Matches, Required, ShowPanel, Teammates, Corner, ShowLeaderboard, Source, ShowDraft
 	local badges = setmetatable({}, {__mode = 'k'})
 	local cachedTabList
 	local panel, list, rows = nil, nil, {}
@@ -11251,6 +11251,66 @@ run(function()
 		end
 	end
 	
+	--[[
+		Party numbers on the kit voting screen: every player has a MatchDraftPlayerCard with
+		their name in its PlayerName label, so a round badge with the party number goes into
+		the card's top left corner.
+	]]
+	local function updateDraft()
+		local gui = lplr:FindFirstChildOfClass('PlayerGui')
+		local draft = gui and gui:FindFirstChild('MatchDraftApp')
+		if not draft then return end
+	
+		local byName = {}
+		for _, player in playersService:GetPlayers() do
+			byName[player.DisplayName] = player
+			byName[player.Name] = player
+		end
+		local partyOfPlayer = {}
+		for index, group in groups do
+			for _, player in group.members do
+				partyOfPlayer[player] = {index = index, color = group.color, team = group.team}
+			end
+		end
+	
+		for _, card in draft:GetDescendants() do
+			if card.Name == 'MatchDraftPlayerCard' and card:IsA('GuiObject') then
+				local label = card:FindFirstChild('PlayerName', true)
+				local player = label and label:IsA('TextLabel') and byName[stripTags(label.Text)]
+				local party = player and partyOfPlayer[player]
+				local own = party and teamOf(lplr) ~= nil and party.team == teamOf(lplr)
+				local badge = card:FindFirstChild('VainDraftParty')
+				if party and on(ShowDraft) and (not own or on(Teammates)) then
+					if not badge then
+						badge = Instance.new('Frame')
+						badge.Name = 'VainDraftParty'
+						badge.SizeConstraint = Enum.SizeConstraint.RelativeYY
+						badge.Size = UDim2.fromScale(0.16, 0.16)
+						badge.Position = UDim2.fromOffset(6, 6)
+						badge.ZIndex = 20
+						badge.Parent = card
+						Instance.new('UICorner', badge).CornerRadius = UDim.new(1, 0)
+						local number = Instance.new('TextLabel')
+						number.Name = 'Number'
+						number.BackgroundTransparency = 1
+						number.Size = UDim2.fromScale(1, 1)
+						number.TextScaled = true
+						number.Font = Enum.Font.GothamBold
+						number.TextColor3 = Color3.new(0, 0, 0)
+						number.ZIndex = 21
+						number.Parent = badge
+						badges[badge] = true
+					end
+					badge.BackgroundColor3 = party.color
+					badge.Number.Text = tostring(party.index)
+					badge.Visible = true
+				elseif badge then
+					badge.Visible = false
+				end
+			end
+		end
+	end
+	
 	local function row(index)
 		local label = rows[index]
 		if label then return label end
@@ -11389,6 +11449,7 @@ run(function()
 					pcall(regroup)
 					pcall(updatePanel)
 					pcall(updateLeaderboard)
+					pcall(updateDraft)
 				end))
 			else
 				clearBadges()
@@ -11437,6 +11498,11 @@ run(function()
 		Default = 1,
 		Darker = true,
 		Visible = false
+	})
+	ShowDraft = PartyFinder:CreateToggle({
+		Name = 'Draft Screen',
+		Tooltip = 'Numbers each party on the kit voting cards',
+		Default = true
 	})
 	ShowLeaderboard = PartyFinder:CreateToggle({
 		Name = 'Leaderboard',
