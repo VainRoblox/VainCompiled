@@ -421,7 +421,8 @@ local function addEditPlaceholder(frame, name)
 	corner.Parent = placeholder
 	local stroke = Instance.new('UIStroke')
 	stroke.Color = Color3.fromRGB(90, 170, 255)
-	stroke.Transparency = 0.3
+	stroke.Thickness = 1
+	stroke.Transparency = 0.55
 	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	stroke.Parent = placeholder
 	local label = Instance.new('TextLabel')
