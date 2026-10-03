@@ -2167,11 +2167,15 @@ components = {
 		end
 		
 		function optionapi:Load(tab)
-			if self.ValueMin ~= tab.ValueMin then
-				self:SetValue(false, tab.ValueMin)
+			-- A setting that used to be a single slider saved {Value = n}; that is taken as both
+			-- ends, and anything else that is not a number is ignored rather than loaded as nil.
+			local min = type(tab.ValueMin) == 'number' and tab.ValueMin or (type(tab.Value) == 'number' and tab.Value or nil)
+			local max = type(tab.ValueMax) == 'number' and tab.ValueMax or (type(tab.Value) == 'number' and tab.Value or nil)
+			if min and self.ValueMin ~= min then
+				self:SetValue(false, min)
 			end
-			if self.ValueMax ~= tab.ValueMax then
-				self:SetValue(true, tab.ValueMax)
+			if max and self.ValueMax ~= max then
+				self:SetValue(true, max)
 			end
 		end
 		
