@@ -30688,13 +30688,21 @@ run(function()
 		end
 	end
 	
+	local function guiOpen()
+		local ok, open = pcall(function() return vain.gui.ScaledGui.ClickGui.Visible end)
+		return ok and open == true
+	end
+	
 	local function update()
 		remember()
-		if not entitylib.isAlive then
+		local alive = entitylib.isAlive
+		if not alive and not guiOpen() then
 			hideAll()
+			holder.Visible = false
+			ring.Visible = false
 			return
 		end
-		local here = entitylib.character.RootPart.Position
+		local here = alive and entitylib.character.RootPart.Position or gameCamera.CFrame.Position
 		local look = gameCamera.CFrame.LookVector
 		local facing = math.atan2(look.X, -look.Z)
 	
@@ -30719,6 +30727,22 @@ run(function()
 		for i = 1, math.min(limit, #enemies) do shown[#shown + 1] = enemies[i] end
 		if on(ShowBroken) then
 			for _, item in broken do shown[#shown + 1] = item end
+		end
+	
+		-- Nothing to point at: hidden, or a preview while the GUI is open so it can be placed.
+		if #shown == 0 then
+			if not guiOpen() then
+				hideAll()
+				holder.Visible = false
+				ring.Visible = false
+				return
+			end
+			local ahead = gameCamera.CFrame.LookVector * Vector3.new(1, 0, 1)
+			ahead = ahead.Magnitude > 0 and ahead.Unit or Vector3.new(0, 0, -1)
+			shown = {
+				{info = {position = here + ahead * 24, own = true, name = 'Your', color = Color3.fromRGB(120, 230, 140)}, distance = 24},
+				{info = {position = here - ahead * 120, name = 'Red', color = Color3.fromRGB(235, 80, 80)}, distance = 120}
+			}
 		end
 	
 		local scale = Scale.Value
@@ -32334,7 +32358,8 @@ run(function()
 				end))
 				RespawnTimers:Clean(runService.RenderStepped:Connect(function()
 					pcall(trackGround)
-					pcall(update)
+					-- A failed update hides the panel rather than leaving it frozen on screen.
+					if not pcall(update) and panel then panel.Visible = false end
 				end))
 			else
 				for player in dead do forget(player) end
