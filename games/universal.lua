@@ -9311,16 +9311,19 @@ run(function()
 	local Keystrokes
 	local Style
 	local Color
+	local ShowSpace, ShowMouse, ShowCPS
 	local keys, holder = {}
+	-- Click times per mouse button, for clicks per second over the last second.
+	local clicks = {[Enum.UserInputType.MouseButton1] = {}, [Enum.UserInputType.MouseButton2] = {}}
 	
-	local function createKeystroke(keybutton, pos, pos2, text)
+	local function createKeystroke(keybutton, pos, pos2, text, size)
 		if keys[keybutton] then
 			keys[keybutton].Key:Destroy()
 			keys[keybutton] = nil
 		end
 	
 		local key = Instance.new('Frame')
-		key.Size = keybutton == Enum.KeyCode.Space and UDim2.new(0, 110, 0, 24) or UDim2.new(0, 34, 0, 36)
+		key.Size = size or (keybutton == Enum.KeyCode.Space and UDim2.new(0, 110, 0, 24) or UDim2.new(0, 34, 0, 36))
 		key.BackgroundColor3 = Color3.fromHSV(Color.Hue, Color.Sat, Color.Value)
 		key.BackgroundTransparency = 1 - Color.Opacity
 		key.Position = pos
@@ -9342,10 +9345,43 @@ run(function()
 		corner.Parent = key
 	
 		keys[keybutton] = {Key = key}
+		return key
+	end
+	
+	-- A mouse button: its name, and the clicks per second under it when CPS is on.
+	local function createMouseKey(button, pos, text)
+		local key = createKeystroke(button, pos, UDim2.new(0, 0, 0, 0), '', UDim2.new(0, 53, 0, 36))
+		local label = key.TextLabel
+		label.TextXAlignment = Enum.TextXAlignment.Center
+		label.TextYAlignment = Enum.TextYAlignment.Center
+		label.RichText = true
+		keys[button].Label = text
+		label.Text = text
+	end
+	
+	local function cps(button)
+		local list = clicks[button]
+		local now = os.clock()
+		for i = #list, 1, -1 do
+			if now - list[i] > 1 then table.remove(list, i) end
+		end
+		return #list
+	end
+	
+	local function refreshCPS()
+		for _, button in {Enum.UserInputType.MouseButton1, Enum.UserInputType.MouseButton2} do
+			local key = keys[button]
+			if key then
+				key.Key.TextLabel.Text = ShowCPS.Enabled
+					and string.format('%s\n<font size="11">%d CPS</font>', key.Label, cps(button))
+					or key.Label
+			end
+		end
 	end
 	
 	local function updateKey(inputType)
-		local key = keys[inputType.KeyCode]
+		local isMouse = inputType.UserInputType == Enum.UserInputType.MouseButton1 or inputType.UserInputType == Enum.UserInputType.MouseButton2
+		local key = keys[isMouse and inputType.UserInputType or inputType.KeyCode]
 		if key then
 			if key.Tween then
 				key.Tween:Cancel()
@@ -9356,6 +9392,10 @@ run(function()
 			end
 	
 			local pressed = inputType.UserInputState == Enum.UserInputState.Begin
+			if pressed and isMouse then
+				table.insert(clicks[inputType.UserInputType], os.clock())
+				refreshCPS()
+			end
 			key.Pressed = pressed
 			key.Tween = tweenService:Create(key.Key, TweenInfo.new(0.1), {
 				BackgroundColor3 = pressed and Color3.new(1, 1, 1) or Color3.fromHSV(Color.Hue, Color.Sat, Color.Value),
@@ -9369,35 +9409,61 @@ run(function()
 		end
 	end
 	
+	-- Lays the keys out from the settings: WASD, then the spacebar, then the mouse buttons.
+	local function build()
+		for button, key in keys do
+			key.Key:Destroy()
+			keys[button] = nil
+		end
+		createKeystroke(Enum.KeyCode.W, UDim2.new(0, 38, 0, 0), UDim2.new(0, 6, 0, 5), Style.Value == 'Arrow' and '↑' or nil)
+		createKeystroke(Enum.KeyCode.S, UDim2.new(0, 38, 0, 42), UDim2.new(0, 8, 0, 5), Style.Value == 'Arrow' and '↓' or nil)
+		createKeystroke(Enum.KeyCode.A, UDim2.new(0, 0, 0, 42), UDim2.new(0, 7, 0, 5), Style.Value == 'Arrow' and '←' or nil)
+		createKeystroke(Enum.KeyCode.D, UDim2.new(0, 76, 0, 42), UDim2.new(0, 8, 0, 5), Style.Value == 'Arrow' and '→' or nil)
+	
+		local height = 78
+		if ShowSpace.Enabled then
+			createKeystroke(Enum.KeyCode.Space, UDim2.new(0, 0, 0, 83), UDim2.new(0, 25, 0, -10), '______')
+			height = 107
+		end
+		if ShowMouse.Enabled then
+			local y = height + 4
+			createMouseKey(Enum.UserInputType.MouseButton1, UDim2.new(0, 0, 0, y), 'LMB')
+			createMouseKey(Enum.UserInputType.MouseButton2, UDim2.new(0, 57, 0, y), 'RMB')
+			height = y + 36
+			refreshCPS()
+		end
+		Keystrokes.Children.Size = UDim2.fromOffset(110, height)
+	end
+	
 	Keystrokes = vain.Legit:CreateModule({
 		Name = 'Keystrokes',
 		Function = function(callback)
 			if callback then
-				createKeystroke(Enum.KeyCode.W, UDim2.new(0, 38, 0, 0), UDim2.new(0, 6, 0, 5), Style.Value == 'Arrow' and '↑' or nil)
-				createKeystroke(Enum.KeyCode.S, UDim2.new(0, 38, 0, 42), UDim2.new(0, 8, 0, 5), Style.Value == 'Arrow' and '↓' or nil)
-				createKeystroke(Enum.KeyCode.A, UDim2.new(0, 0, 0, 42), UDim2.new(0, 7, 0, 5), Style.Value == 'Arrow' and '←' or nil)
-				createKeystroke(Enum.KeyCode.D, UDim2.new(0, 76, 0, 42), UDim2.new(0, 8, 0, 5), Style.Value == 'Arrow' and '→' or nil)
-	
+				build()
 				Keystrokes:Clean(inputService.InputBegan:Connect(updateKey))
 				Keystrokes:Clean(inputService.InputEnded:Connect(updateKey))
+				-- Counts fall back down after you stop clicking.
+				Keystrokes:Clean(runService.Heartbeat:Connect(function()
+					if ShowMouse.Enabled and ShowCPS.Enabled then refreshCPS() end
+				end))
 			end
 		end,
 		Size = UDim2.fromOffset(110, 176),
-		Tooltip = 'Shows movement keys onscreen'
+		Tooltip = 'Shows your keys and clicks onscreen'
 	})
 	holder = Instance.new('Frame')
 	holder.Size = UDim2.fromScale(1, 1)
 	holder.BackgroundTransparency = 1
 	holder.Parent = Keystrokes.Children
+	
+	local function rebuild()
+		if Keystrokes.Enabled then build() end
+	end
+	
 	Style = Keystrokes:CreateDropdown({
 		Name = 'Key Style',
 		List = {'Keyboard', 'Arrow'},
-		Function = function()
-			if Keystrokes.Enabled then
-				Keystrokes:Toggle()
-				Keystrokes:Toggle()
-			end
-		end
+		Function = rebuild
 	})
 	Color = Keystrokes:CreateColorSlider({
 		Name = 'Color',
@@ -9412,20 +9478,30 @@ run(function()
 			end
 		end
 	})
-	Keystrokes:CreateToggle({
+	ShowSpace = Keystrokes:CreateToggle({
 		Name = 'Show Spacebar',
-		Function = function(callback)
-			Keystrokes.Children.Size = UDim2.fromOffset(110, callback and 107 or 78)
-	
-			if callback then
-				createKeystroke(Enum.KeyCode.Space, UDim2.new(0, 0, 0, 83), UDim2.new(0, 25, 0, -10), '______')
-			else
-				keys[Enum.KeyCode.Space].Key:Destroy()
-				keys[Enum.KeyCode.Space] = nil
-			end
-		end,
+		Function = rebuild,
 		Default = true
 	})
+	ShowMouse = Keystrokes:CreateToggle({
+		Name = 'Mouse Buttons',
+		Tooltip = 'Shows your left and right clicks',
+		Default = true,
+		Function = function(callback)
+			if ShowCPS and ShowCPS.Object then ShowCPS.Object.Visible = callback end
+			rebuild()
+		end
+	})
+	ShowCPS = Keystrokes:CreateToggle({
+		Name = 'CPS',
+		Tooltip = 'Clicks per second on each mouse button',
+		Default = true,
+		Darker = true,
+		Function = function()
+			refreshCPS()
+		end
+	})
+	
 end)
 
 run(function()

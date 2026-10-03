@@ -7359,7 +7359,23 @@ run(function()
 	local GeneratorESP
 	local Diamond, Emerald, Team, ShowItems, ShowTier, ShowTimer, ProgressBar, Icons
 	local Background, BackgroundColor, Outline, FontOption, Range, Scale
-	local ShowDistance, Compact, HideEmpty, FullAlert, FullAmount, FullColor
+	local ShowDistance, Compact, HideEmpty, FullAlert, FullAmount, FullColor, ShowTierUp
+	
+	--[[
+		When the diamond and emerald generators level up: the game's BWOreGenLevelSystem steps
+		them up at fixed times into the match - 0, 5, 10, 15 and 20 minutes - so the next one
+		is simply the next of those after how long the match has run.
+	]]
+	local LEVEL_TIMES = {0, 300, 600, 900, 1200}
+	local function nextTierIn()
+		local started = store.matchStartTime
+		if type(started) ~= 'number' or started <= 0 then return nil end
+		local elapsed = os.time() - started
+		for _, at in LEVEL_TIMES do
+			if at > elapsed then return at - elapsed end
+		end
+		return nil
+	end
 	local Folder = Instance.new('Folder')
 	Folder.Parent = vain.gui
 	local generators = {}
@@ -7529,6 +7545,7 @@ run(function()
 		local timer = newText(header, 3)
 		local tier = newText(header, 4)
 		local distance = newText(header, 5)
+		local tierUp = newText(header, 6)
 		local contents = row(2)
 	
 		local bar = Instance.new('Frame')
@@ -7547,7 +7564,7 @@ run(function()
 	
 		generators[part] = {
 			billboard = billboard, adornee = part, card = card, stroke = stroke, padding = padding,
-			header = header, icon = icon, title = title, timer = timer, tier = tier, distance = distance,
+			header = header, icon = icon, title = title, timer = timer, tier = tier, distance = distance, tierUp = tierUp,
 			contents = contents, chips = {}, bar = bar, fill = fill
 		}
 	end
@@ -7705,7 +7722,13 @@ run(function()
 		entry.distance.Visible = not compact and on(ShowDistance) and here ~= nil
 		entry.distance.Text = here and string.format('%dm', math.floor((entry.adornee.Position - here).Magnitude)) or ''
 		entry.distance.TextColor3 = Color3.fromRGB(170, 170, 170)
-		for _, label in {entry.title, entry.timer, entry.tier, entry.distance} do
+		local untilTier = kind ~= 'team' and on(ShowTierUp) and not compact and nextTierIn()
+		entry.tierUp.Visible = untilTier ~= nil and untilTier ~= false
+		if entry.tierUp.Visible then
+			entry.tierUp.Text = string.format('Tier up %d:%02d', untilTier // 60, untilTier % 60)
+			entry.tierUp.TextColor3 = Color3.fromRGB(255, 210, 90)
+		end
+		for _, label in {entry.title, entry.timer, entry.tier, entry.distance, entry.tierUp} do
 			label.TextSize = size
 			label.FontFace = font
 		end
@@ -7798,6 +7821,11 @@ run(function()
 	ShowTier = GeneratorESP:CreateToggle({
 		Name = 'Show Tier',
 		Tooltip = 'Shows each generator\'s tier'
+	})
+	ShowTierUp = GeneratorESP:CreateToggle({
+		Name = 'Tier Up Timer',
+		Tooltip = 'Time until diamond and emerald gens level up',
+		Default = true
 	})
 	ShowDistance = GeneratorESP:CreateToggle({
 		Name = 'Distance',
@@ -32353,9 +32381,9 @@ run(function()
 		team colour draining to the respawn. It grows and shrinks smoothly as rows come and go,
 		and while the GUI is open with nobody dead it shows a preview so it can be placed.
 	]]
-	local ROW_HEIGHT = 28
-	local HEADER_HEIGHT = 22
-	local PANEL_WIDTH = 200
+	local ROW_HEIGHT = 23
+	local HEADER_HEIGHT = 19
+	local PANEL_WIDTH = 172
 	local header, countLabel, sizeTween, lastHeight
 	
 	local function guiOpen()
@@ -32373,7 +32401,7 @@ run(function()
 		frame.Parent = list
 	
 		local avatar = Instance.new('ImageLabel')
-		avatar.Size = UDim2.fromOffset(20, 20)
+		avatar.Size = UDim2.fromOffset(16, 16)
 		avatar.Position = UDim2.fromOffset(0, 2)
 		avatar.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 		avatar.BorderSizePixel = 0
@@ -32382,9 +32410,9 @@ run(function()
 	
 		local name = Instance.new('TextLabel')
 		name.BackgroundTransparency = 1
-		name.Position = UDim2.fromOffset(27, 2)
-		name.Size = UDim2.new(1, -80, 0, 20)
-		name.TextSize = 13
+		name.Position = UDim2.fromOffset(22, 1)
+		name.Size = UDim2.new(1, -70, 0, 18)
+		name.TextSize = 12
 		name.TextXAlignment = Enum.TextXAlignment.Left
 		name.TextTruncate = Enum.TextTruncate.AtEnd
 		name.Parent = frame
@@ -32392,15 +32420,15 @@ run(function()
 		local timer = Instance.new('TextLabel')
 		timer.BackgroundTransparency = 1
 		timer.AnchorPoint = Vector2.new(1, 0)
-		timer.Position = UDim2.new(1, 0, 0, 2)
-		timer.Size = UDim2.fromOffset(50, 20)
-		timer.TextSize = 13
+		timer.Position = UDim2.new(1, 0, 0, 1)
+		timer.Size = UDim2.fromOffset(46, 18)
+		timer.TextSize = 12
 		timer.TextXAlignment = Enum.TextXAlignment.Right
 		timer.Parent = frame
 	
 		local track = Instance.new('Frame')
-		track.Position = UDim2.new(0, 27, 1, -3)
-		track.Size = UDim2.new(1, -27, 0, 2)
+		track.Position = UDim2.new(0, 22, 1, -3)
+		track.Size = UDim2.new(1, -22, 0, 2)
 		track.BackgroundColor3 = Color3.new(1, 1, 1)
 		track.BackgroundTransparency = 0.88
 		track.BorderSizePixel = 0
@@ -32558,7 +32586,7 @@ run(function()
 		header = Instance.new('TextLabel')
 		header.BackgroundTransparency = 1
 		header.Size = UDim2.new(1, -60, 0, HEADER_HEIGHT - 6)
-		header.TextSize = 11
+		header.TextSize = 10
 		header.TextColor3 = Color3.fromRGB(150, 150, 150)
 		header.TextXAlignment = Enum.TextXAlignment.Left
 		header.Text = 'RESPAWNING'
@@ -32569,7 +32597,7 @@ run(function()
 		countLabel.Position = UDim2.fromScale(1, 0)
 		countLabel.Size = UDim2.fromOffset(60, HEADER_HEIGHT - 6)
 		countLabel.Font = Enum.Font.GothamBold
-		countLabel.TextSize = 11
+		countLabel.TextSize = 10
 		countLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
 		countLabel.TextXAlignment = Enum.TextXAlignment.Right
 		countLabel.Parent = panel
@@ -32591,7 +32619,7 @@ run(function()
 	RespawnTimers = vain.Legit:CreateModule({
 		Name = 'Respawn Timers',
 		Tooltip = 'Shows when dead players respawn',
-		Size = UDim2.fromOffset(200, 60),
+		Size = UDim2.fromOffset(172, 50),
 		Function = function(callback)
 			if callback then
 				build()
@@ -32703,6 +32731,186 @@ run(function()
 			end
 		end
 	})
+	
+end)
+
+run(function()
+	--[[
+		Session Stats.
+	
+		Your numbers for this match, counted from what reaches every client: EntityDeathEvent
+		(your character as fromEntity is a kill - finalKill says whether it was a final one -
+		and as entityInstance is a death) and BedwarsBedBreak (its player is who broke it).
+		Shown as a small card; each stat can be switched off.
+	]]
+	local SessionStats
+	local ShowKills, ShowFinals, ShowBeds, ShowDeaths, ShowKD, ShowTime, Background, Scale
+	local card, header, list, scaler
+	local rows = {}
+	local stats = {kills = 0, finals = 0, beds = 0, deaths = 0}
+	
+	local ROW_HEIGHT = 18
+	local HEADER_HEIGHT = 20
+	local WIDTH = 150
+	
+	local function on(setting)
+		return setting ~= nil and setting.Enabled
+	end
+	
+	local function row(index)
+		local entry = rows[index]
+		if entry then return entry end
+		local frame = Instance.new('Frame')
+		frame.BackgroundTransparency = 1
+		frame.Size = UDim2.new(1, 0, 0, ROW_HEIGHT)
+		frame.LayoutOrder = index
+		frame.Parent = list
+		local name = Instance.new('TextLabel')
+		name.BackgroundTransparency = 1
+		name.Size = UDim2.fromScale(0.6, 1)
+		name.Font = Enum.Font.Gotham
+		name.TextSize = 13
+		name.TextColor3 = Color3.fromRGB(190, 190, 190)
+		name.TextXAlignment = Enum.TextXAlignment.Left
+		name.Parent = frame
+		local value = Instance.new('TextLabel')
+		value.BackgroundTransparency = 1
+		value.AnchorPoint = Vector2.new(1, 0)
+		value.Position = UDim2.fromScale(1, 0)
+		value.Size = UDim2.fromScale(0.4, 1)
+		value.Font = Enum.Font.GothamBold
+		value.TextSize = 13
+		value.TextColor3 = Color3.new(1, 1, 1)
+		value.TextXAlignment = Enum.TextXAlignment.Right
+		value.Parent = frame
+		entry = {frame = frame, name = name, value = value}
+		rows[index] = entry
+		return entry
+	end
+	
+	local function matchTime()
+		local started = store.matchStartTime
+		if type(started) ~= 'number' or started <= 0 then return '0:00' end
+		local seconds = math.max(os.time() - started, 0)
+		return string.format('%d:%02d', seconds // 60, seconds % 60)
+	end
+	
+	local function update()
+		local lines = {}
+		if on(ShowKills) then lines[#lines + 1] = {'Kills', tostring(stats.kills)} end
+		if on(ShowFinals) then lines[#lines + 1] = {'Final Kills', tostring(stats.finals)} end
+		if on(ShowBeds) then lines[#lines + 1] = {'Beds', tostring(stats.beds)} end
+		if on(ShowDeaths) then lines[#lines + 1] = {'Deaths', tostring(stats.deaths)} end
+		if on(ShowKD) then
+			lines[#lines + 1] = {'K/D', string.format('%.2f', stats.kills / math.max(stats.deaths, 1))}
+		end
+		if on(ShowTime) then lines[#lines + 1] = {'Time', matchTime()} end
+	
+		for i, line in lines do
+			local entry = row(i)
+			entry.name.Text = line[1]
+			entry.value.Text = line[2]
+			entry.frame.Visible = true
+		end
+		for i = #lines + 1, #rows do rows[i].frame.Visible = false end
+		card.Size = UDim2.fromOffset(WIDTH, HEADER_HEIGHT + #lines * ROW_HEIGHT + 10)
+		scaler.Scale = Scale.Value
+	end
+	
+	SessionStats = vain.Legit:CreateModule({
+		Name = 'Session Stats',
+		Function = function(callback)
+			if callback then
+				SessionStats:Clean(vainEvents.EntityDeathEvent.Event:Connect(function(deathTable)
+					if type(deathTable) ~= 'table' then return end
+					local character = lplr.Character
+					if character and deathTable.fromEntity == character and deathTable.entityInstance ~= character then
+						stats.kills += 1
+						if deathTable.finalKill then stats.finals += 1 end
+					elseif character and deathTable.entityInstance == character then
+						stats.deaths += 1
+					end
+				end))
+				SessionStats:Clean(vainEvents.BedwarsBedBreak.Event:Connect(function(bedTable)
+					if type(bedTable) == 'table' and bedTable.player == lplr then
+						stats.beds += 1
+					end
+				end))
+				local last = 0
+				SessionStats:Clean(runService.Heartbeat:Connect(function()
+					if os.clock() - last < 0.25 then return end
+					last = os.clock()
+					pcall(update)
+				end))
+				pcall(update)
+			end
+		end,
+		Size = UDim2.fromOffset(150, 120),
+		Tooltip = 'Your kills, beds and deaths this match'
+	})
+	ShowKills = SessionStats:CreateToggle({Name = 'Kills', Tooltip = 'Shows your kills', Default = true})
+	ShowFinals = SessionStats:CreateToggle({Name = 'Final Kills', Tooltip = 'Shows your final kills', Default = true})
+	ShowBeds = SessionStats:CreateToggle({Name = 'Beds', Tooltip = 'Shows beds you broke', Default = true})
+	ShowDeaths = SessionStats:CreateToggle({Name = 'Deaths', Tooltip = 'Shows your deaths', Default = true})
+	ShowKD = SessionStats:CreateToggle({Name = 'K/D', Tooltip = 'Kills per death'})
+	ShowTime = SessionStats:CreateToggle({Name = 'Match Time', Tooltip = 'How long the match has run', Default = true})
+	Scale = SessionStats:CreateSlider({
+		Name = 'Scale',
+		Tooltip = 'How big the card is',
+		Min = 0.6,
+		Max = 2,
+		Default = 1,
+		Decimal = 10
+	})
+	Background = SessionStats:CreateColorSlider({
+		Name = 'Background',
+		Tooltip = 'Colour of the card',
+		DefaultValue = 0.08,
+		DefaultOpacity = 0.6,
+		Function = function(hue, sat, val, opacity)
+			if card then
+				card.BackgroundColor3 = Color3.fromHSV(hue, sat, val)
+				card.BackgroundTransparency = 1 - opacity
+			end
+		end
+	})
+	
+	card = Instance.new('Frame')
+	card.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	card.BackgroundTransparency = 0.4
+	card.BorderSizePixel = 0
+	card.Size = UDim2.fromOffset(WIDTH, 120)
+	card.Parent = SessionStats.Children
+	Instance.new('UICorner', card).CornerRadius = UDim.new(0, 8)
+	local stroke = Instance.new('UIStroke')
+	stroke.Color = Color3.new(1, 1, 1)
+	stroke.Transparency = 0.9
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Parent = card
+	local padding = Instance.new('UIPadding')
+	padding.PaddingLeft = UDim.new(0, 10)
+	padding.PaddingRight = UDim.new(0, 10)
+	padding.PaddingTop = UDim.new(0, 6)
+	padding.Parent = card
+	scaler = Instance.new('UIScale')
+	scaler.Parent = card
+	header = Instance.new('TextLabel')
+	header.BackgroundTransparency = 1
+	header.Size = UDim2.new(1, 0, 0, HEADER_HEIGHT - 6)
+	header.Font = Enum.Font.GothamBold
+	header.TextSize = 11
+	header.TextColor3 = Color3.fromRGB(150, 150, 150)
+	header.TextXAlignment = Enum.TextXAlignment.Left
+	header.Text = 'THIS MATCH'
+	header.Parent = card
+	list = Instance.new('Frame')
+	list.BackgroundTransparency = 1
+	list.Position = UDim2.fromOffset(0, HEADER_HEIGHT)
+	list.Size = UDim2.new(1, 0, 1, -HEADER_HEIGHT)
+	list.Parent = card
+	local layout = Instance.new('UIListLayout')
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = list
 	
 end)
 
@@ -33043,7 +33251,7 @@ run(function()
 	]]
 	local TargetHUD
 	local Mode, Range, Angle, Linger, ShowEquipment, WinIndicator, Compact, Accent, ShowKitName, ShowEnchants, Background
-	local WinMode
+	local WinMode, ShowCombo, ShowLastHit, HudScale
 	local card, stroke, avatar, nameLabel, winLabel, infoLabel, extraLabel, barBack, barFill, barGhost, equipment
 	local icons = {}
 	local target, lastSeen = nil, 0
@@ -33289,6 +33497,30 @@ run(function()
 	end
 	
 	-- Damage a second from a log, and how many hits it is based on.
+	--[[
+		Combo and last hit, from the same health watchers: the combo is how many hits in a row
+		the target has taken without you taking one back, with no more than 3 seconds between
+		them; the last hit is how much the latest of those took off.
+	]]
+	local COMBO_GAP = 3
+	local function comboAndLast()
+		-- Kept short: nothing older than the window matters here.
+		for _, log in {live.taken, live.dealt} do
+			while log[1] and os.clock() - log[1].time > 10 do table.remove(log, 1) end
+		end
+		local lastTaken = live.taken[#live.taken]
+		local since = lastTaken and lastTaken.time or 0
+		local combo, previous = 0, os.clock()
+		for i = #live.dealt, 1, -1 do
+			local hit = live.dealt[i]
+			if hit.time <= since or previous - hit.time > COMBO_GAP then break end
+			combo += 1
+			previous = hit.time
+		end
+		local last = live.dealt[#live.dealt]
+		return combo, last and last.amount or nil
+	end
+	
 	local function liveRate(log)
 		local now = os.clock()
 		local total, hits, first = 0, 0, nil
@@ -33372,7 +33604,14 @@ run(function()
 		end
 	
 		local distance = (entitylib.isAlive and entity.RootPart) and (entity.RootPart.Position - entitylib.character.RootPart.Position).Magnitude or 0
-		infoLabel.Text = string.format('%d / %d HP   %dm', math.ceil(health), math.ceil(maxHealth), math.floor(distance))
+		local info = string.format('%d / %d HP   %dm', math.ceil(health), math.ceil(maxHealth), math.floor(distance))
+		if player ~= lplr and (on(ShowCombo) or on(ShowLastHit)) then
+			liveTrack(player)
+			local combo, last = comboAndLast()
+			if on(ShowCombo) and combo > 1 then info ..= '   ' .. combo .. ' combo' end
+			if on(ShowLastHit) and last then info ..= string.format('   -%.1f', last) end
+		end
+		infoLabel.Text = info
 	
 		local kit = player:GetAttribute('PlayingAsKit')
 		local kitMeta = kit and kit ~= 'none' and bedwars.BedwarsKitMeta[kit]
@@ -33440,7 +33679,7 @@ run(function()
 				liveReset()
 			end
 		end,
-		Size = UDim2.fromOffset(240, 96),
+		Size = UDim2.fromOffset(204, 82),
 		Tooltip = 'Shows who you are fighting'
 	})
 	Mode = TargetHUD:CreateDropdown({
@@ -33514,6 +33753,14 @@ run(function()
 		Tooltip = 'Shows their kit, held item and armour',
 		Default = true
 	})
+	ShowCombo = TargetHUD:CreateToggle({
+		Name = 'Combo',
+		Tooltip = 'Hits in a row they took without hitting back'
+	})
+	ShowLastHit = TargetHUD:CreateToggle({
+		Name = 'Last Hit',
+		Tooltip = 'How much your last hit took off'
+	})
 	ShowKitName = TargetHUD:CreateToggle({
 		Name = 'Kit Name',
 		Tooltip = 'Writes out their kit'
@@ -33521,6 +33768,18 @@ run(function()
 	ShowEnchants = TargetHUD:CreateToggle({
 		Name = 'Enchants',
 		Tooltip = 'Shows their enchants\' icons'
+	})
+	HudScale = TargetHUD:CreateSlider({
+		Name = 'Scale',
+		Tooltip = 'How big the card is',
+		Min = 0.5,
+		Max = 1.5,
+		Default = 0.85,
+		Decimal = 100,
+		Function = function(val)
+			local scaler = card and card:FindFirstChildOfClass('UIScale')
+			if scaler then scaler.Scale = val end
+		end
 	})
 	Background = TargetHUD:CreateColorSlider({
 		Name = 'Background',
@@ -33542,6 +33801,9 @@ run(function()
 	card.BorderSizePixel = 0
 	card.Visible = false
 	card.Parent = TargetHUD.Children
+	local cardScale = Instance.new('UIScale')
+	cardScale.Scale = HudScale.Value
+	cardScale.Parent = card
 	Instance.new('UICorner', card).CornerRadius = UDim.new(0, 8)
 	stroke = Instance.new('UIStroke')
 	stroke.Thickness = 1
