@@ -10780,6 +10780,9 @@ run(function()
 	local Matches, Required, ShowTags, ShowPanel, Teammates, Corner
 	local panel, list, rows = nil, nil, {}
 	local mates = {}
+	-- What came back, for the panel to explain an empty result: histories answered, and
+	-- how many of those carried any party data at all.
+	local status = {asked = 0, loaded = 0, withParty = 0, empty = 0}
 	local groups = {}
 	local confidence = {}
 	local tags = {}
@@ -10809,24 +10812,43 @@ run(function()
 	
 	-- How many of their last few matches each other player shared a party with them in, by
 	-- user id. Kept as counts so the requirement can change without asking again.
+	-- The party a match entry was queued in, wherever the entry keeps it.
+	local function partyOf(entry)
+		if type(entry) ~= 'table' then return nil end
+		local info = type(entry.playerInfo) == 'table' and entry.playerInfo or {}
+		local party = type(entry.party) == 'table' and entry.party or {}
+		local id = entry.partyId or entry.party_id or info.partyId or party.id or party.partyId
+		-- 12345678 is the placeholder a fresh match record starts with, not a real party.
+		if id == 12345678 or id == '12345678' then return nil end
+		return id
+	end
+	
 	local function learn(player)
+		if mates[player.UserId] ~= nil then return end
+		mates[player.UserId] = false
+		status.asked += 1
 		matchHistory.fetch(player, function(matches)
+			status.loaded += 1
+			if #matches == 0 then status.empty += 1 end
+			local hadParty = false
 			local found = {}
 			for i = 1, math.min(10, #matches) do
 				local match = matches[i]
 				local mine = matchHistory.entryFor(match, player.UserId)
-				local partyId = mine and mine.partyId
+				local partyId = partyOf(mine)
 				if partyId ~= nil then
+					hadParty = true
 					for _, entry in (type(match.players) == 'table' and match.players or {}) do
 						local info = type(entry) == 'table' and entry.playerInfo
 						local userId = info and tonumber(info.userId)
-						if userId and userId ~= player.UserId and entry.partyId == partyId then
+						if userId and userId ~= player.UserId and partyOf(entry) == partyId then
 							found[userId] = found[userId] or {}
 							found[userId][i] = true
 						end
 					end
 				end
 			end
+			if hadParty then status.withParty += 1 end
 			mates[player.UserId] = found
 		end)
 	end
@@ -11002,7 +11024,20 @@ run(function()
 			end
 		end
 		if #lines == 0 then
-			lines[1] = {color = Color3.fromRGB(150, 150, 150), text = 'No parties found yet'}
+			-- Says why, so an empty panel can be told apart from nobody being partied.
+			local why
+			if status.loaded < status.asked then
+				why = string.format('Loading histories %d/%d', status.loaded, status.asked)
+			elseif status.loaded > 0 and status.empty == status.loaded then
+				why = 'No match history came back'
+			elseif status.loaded > 0 and status.withParty == 0 then
+				why = 'Histories have no party data'
+			elseif not teamOf(lplr) then
+				why = 'Waiting for teams'
+			else
+				why = string.format('No parties found (%d/%d with party data)', status.withParty, status.loaded)
+			end
+			lines[1] = {color = Color3.fromRGB(150, 150, 150), text = why}
 		end
 		for i, line in lines do
 			local label = row(i)
@@ -11076,6 +11111,9 @@ run(function()
 				clearTags()
 				table.clear(rows)
 				panel, list = nil, nil
+				-- Answers stay in the shared cache, so turning it back on asks nobody again.
+				table.clear(mates)
+				status = {asked = 0, loaded = 0, withParty = 0, empty = 0}
 			end
 		end
 	})
