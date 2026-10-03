@@ -3327,6 +3327,24 @@ function mainapi:Save(newprofile)
 		}
 	end
 
+	--[[
+		Categories this session never made keep what the file already says.
+
+		The file is shared by every place in the game, and some categories only exist in
+		some of them - Kit is created in a BedWars match, never in the lobby. Saving from
+		the lobby used to write the file without it, so every match after a lobby started
+		with Kit switched off again.
+	]]
+	local guipath = 'vain/profiles/'..game.GameId..'.gui.txt'
+	local previous = isfile(guipath) and loadJson(guipath)
+	if type(previous) == 'table' and type(previous.Categories) == 'table' then
+		for i, v in previous.Categories do
+			if guidata.Categories[i] == nil and self.Categories[i] == nil then
+				guidata.Categories[i] = v
+			end
+		end
+	end
+
 	writefile('vain/profiles/'..game.GameId..'.gui.txt', httpService:JSONEncode(guidata))
 	writefile('vain/profiles/'..self.Profile..self.Place..'.txt', httpService:JSONEncode(savedata))
 end
