@@ -4916,6 +4916,10 @@ run(function()
 	end
 	
 	local function createHitbox(ent)
+		-- Entity events can run on a game thread that may not create instances; raised first.
+		if vain.ThreadFix then
+			setthreadidentity(8)
+		end
 		if ent.Targetable and ent.Player then
 			local hitbox = Instance.new('Part')
 			hitbox.Name = 'VainHitbox'
@@ -7557,6 +7561,10 @@ run(function()
 		what changed.
 	]]
 	local function add(part)
+		-- Game events can call this on a thread that may not create instances.
+		if vain.ThreadFix then
+			setthreadidentity(8)
+		end
 		if generators[part] or not part:IsA('BasePart') then return end
 	
 		local billboard = Instance.new('BillboardGui')
@@ -8541,6 +8549,10 @@ run(function()
 	end
 	
 	local function Added(ent)
+		-- Entity events can run on a game thread that may not create instances; raised first.
+		if vain.ThreadFix then
+			setthreadidentity(8)
+		end
 		if not ent.Player or Entries[ent] then return end
 	
 		--[[
@@ -9051,6 +9063,10 @@ run(function()
 	end
 	
 	local function add(drop)
+		-- Game events can call this on a thread that may not create instances.
+		if vain.ThreadFix then
+			setthreadidentity(8)
+		end
 		if drops[drop] then return end
 		local part = drop:IsA('BasePart') and drop or drop:FindFirstChildWhichIsA('BasePart', true)
 		if not part then return end
@@ -11124,6 +11140,10 @@ run(function()
 						Added[methodused](v)
 					end
 					NameTags:Clean(entitylib.Events.EntityAdded:Connect(function(ent)
+						-- Entity events can run on a game thread that may not create instances.
+						if vain.ThreadFix then
+							setthreadidentity(8)
+						end
 						if Reference[ent] then
 							Removed[methodused](ent)
 						end
@@ -13136,6 +13156,10 @@ run(function()
 	end
 	
 	local function add(trap, info)
+		-- Game events can call this on a thread that may not create instances.
+		if vain.ThreadFix then
+			setthreadidentity(8)
+		end
 		if traps[trap] then return end
 		local part = partOf(trap)
 		if not part then return end
@@ -33351,6 +33375,10 @@ run(function()
 	end
 	
 	local function onDeath(deathTable)
+		-- Game events can call this on a thread that may not create instances.
+		if vain.ThreadFix then
+			setthreadidentity(8)
+		end
 		if type(deathTable) ~= 'table' then return end
 		local player = playersService:GetPlayerFromCharacter(deathTable.entityInstance)
 		if not player or player == lplr then return end
@@ -35399,6 +35427,10 @@ run(function()
 	end
 	
 	local function add(trap)
+		-- Game events can call this on a thread that may not create instances.
+		if vain.ThreadFix then
+			setthreadidentity(8)
+		end
 		if traps[trap] or not trap:IsA('PVInstance') then return end
 		local sphere = Instance.new('SphereHandleAdornment')
 		sphere.Radius = RANGE
