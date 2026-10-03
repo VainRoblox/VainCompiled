@@ -8332,6 +8332,125 @@ end)
 run(function()
 	local KitDisplay
 	local RankedOnly
+	local KitHistory
+	local HistoryCount
+	
+	--[[
+		The kits someone played in their last matches, from their match history.
+	
+		It is the same history the player profile shows, asked for the same way -
+		RequestProfileData with the player - and each match in it lists every player with the
+		kit they played under bedwars.kit. Asked for once per player and kept for the session;
+		the draft screen asks for everyone at once, so the requests are spread out a little.
+	]]
+	local historyCache, historyWaiters = {}, {}
+	local historyQueue = 0
+	
+	local function fetchHistory(player, callback)
+		local userId = player.UserId
+		local cached = historyCache[userId]
+		if type(cached) == 'table' then
+			callback(cached)
+			return
+		end
+		historyWaiters[userId] = historyWaiters[userId] or {}
+		table.insert(historyWaiters[userId], callback)
+		if cached == 'pending' then return end
+		historyCache[userId] = 'pending'
+	
+		historyQueue += 1
+		local delay = (historyQueue - 1) * 0.15
+		task.delay(delay, function()
+			historyQueue = math.max(historyQueue - 1, 0)
+			local kits = {}
+			local ok, data = pcall(function()
+				return bedwars.Client:Get('RequestProfileData'):CallServer(player)
+			end)
+			if ok and type(data) == 'table' and type(data.matchHistory) == 'table' then
+				local matches = table.clone(data.matchHistory)
+				table.sort(matches, function(a, b)
+					return (tonumber(a.matchStartTime) or 0) > (tonumber(b.matchStartTime) or 0)
+				end)
+				for _, match in matches do
+					if #kits >= 10 then break end
+					for _, entry in (type(match.players) == 'table' and match.players or {}) do
+						if type(entry) == 'table' and entry.playerInfo and entry.playerInfo.userId == userId then
+							local kit = entry.bedwars and entry.bedwars.kit
+							if type(kit) == 'string' then
+								kits[#kits + 1] = kit
+							end
+							break
+						end
+					end
+				end
+			end
+			historyCache[userId] = kits
+			for _, waiting in historyWaiters[userId] or {} do
+				pcall(waiting, kits)
+			end
+			historyWaiters[userId] = nil
+		end)
+	end
+	
+	-- A row of the kits under a player's card, most recent first.
+	local function drawHistory(card, player)
+		if not card then return end
+		local old = card:FindFirstChild('KitHistory')
+		if old then old:Destroy() end
+		if not (KitHistory and KitHistory.Enabled and player) then return end
+	
+		-- Cards are reused as the list reorders, so the answer is only drawn if the card still
+		-- shows the player it was asked for.
+		card:SetAttribute('KitHistoryUser', player.UserId)
+		fetchHistory(player, function(kits)
+			if not (card.Parent and KitDisplay.Enabled) then return end
+			if card:GetAttribute('KitHistoryUser') ~= player.UserId then return end
+			if card:FindFirstChild('KitHistory') then card.KitHistory:Destroy() end
+	
+			local row = Instance.new('Frame')
+			row.Name = 'KitHistory'
+			row.BackgroundTransparency = 1
+			row.AnchorPoint = Vector2.new(0, 0)
+			row.Position = UDim2.new(0, 0, 1, 2)
+			row.Size = UDim2.new(1, 0, 0.32, 0)
+			row.ZIndex = 2
+			row.Parent = card
+			KitDisplay:Clean(row)
+	
+			local layout = Instance.new('UIListLayout')
+			layout.FillDirection = Enum.FillDirection.Horizontal
+			layout.SortOrder = Enum.SortOrder.LayoutOrder
+			layout.Padding = UDim.new(0, 2)
+			layout.Parent = row
+	
+			local shown = math.min(#kits, HistoryCount and HistoryCount.Value or 10)
+			if shown == 0 then
+				local none = Instance.new('TextLabel')
+				none.BackgroundTransparency = 1
+				none.Size = UDim2.fromScale(1, 1)
+				none.Text = 'No history'
+				none.TextScaled = true
+				none.TextColor3 = Color3.fromRGB(200, 200, 200)
+				none.TextXAlignment = Enum.TextXAlignment.Left
+				none.Parent = row
+				return
+			end
+			for i = 1, shown do
+				local meta = bedwars.BedwarsKitMeta[kits[i]]
+				local icon = Instance.new('ImageLabel')
+				icon.Name = kits[i]
+				icon.LayoutOrder = i
+				icon.BackgroundTransparency = 1
+				icon.SizeConstraint = Enum.SizeConstraint.RelativeYY
+				icon.Size = UDim2.fromScale(1, 1)
+				icon.ScaleType = Enum.ScaleType.Crop
+				icon.Image = meta and meta.renderImage or ''
+				-- Newest brightest, fading back through the older ones.
+				icon.ImageTransparency = math.clamp((i - 1) * 0.05, 0, 0.45)
+				icon.Parent = row
+			end
+		end)
+	end
 	
 	local function getKitMeta(player)
 		local kit = player:GetAttribute('PlayingAsKits') or player:GetAttribute('PlayingAsKit') or 'none'
@@ -8441,6 +8560,7 @@ run(function()
 				kitConn = player:GetAttributeChangedSignal('PlayingAsKits'):Connect(update)
 				KitDisplay:Clean(kitConn)
 				update()
+				drawHistory(v, player)
 			end
 			bindKit()
 	
@@ -8491,6 +8611,7 @@ run(function()
 				kitConn = player:GetAttributeChangedSignal('PlayingAsKits'):Connect(update)
 				KitDisplay:Clean(kitConn)
 				update()
+				drawHistory(v, player)
 			end
 			bindKit()
 	
@@ -8637,6 +8758,26 @@ run(function()
 				KitDisplay:Toggle()
 			end
 		end
+	})
+	KitHistory = KitDisplay:CreateToggle({
+		Name = 'Kit History',
+		Tooltip = 'Shows the kits each player used in their last matches',
+		Function = function(callback)
+			if HistoryCount and HistoryCount.Object then HistoryCount.Object.Visible = callback end
+			if KitDisplay.Enabled then
+				KitDisplay:Toggle()
+				KitDisplay:Toggle()
+			end
+		end
+	})
+	HistoryCount = KitDisplay:CreateSlider({
+		Name = 'History Matches',
+		Tooltip = 'How many of their recent matches to show',
+		Min = 1,
+		Max = 10,
+		Default = 10,
+		Darker = true,
+		Visible = false
 	})
 	
 end)
