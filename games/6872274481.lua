@@ -10860,13 +10860,13 @@ run(function()
 		read as a party too.
 	
 		For more certainty, more matches can be compared: a pair then has to have queued or
-		teamed together in at least the required number of them, and the tags show how many.
+		teamed together in at least the required number of them.
 	
-		Partied players get a tag over their head in their party's colour, and a panel lists each
+		Parties are numbered next to names in the game's tab list, and a panel can list each
 		team's parties, marking a team that is one whole party as a full queue.
 	]]
 	local PartyFinder
-	local Matches, Required, ShowTags, ShowPanel, Teammates, Corner, ShowLeaderboard
+	local Matches, Required, ShowPanel, Teammates, Corner, ShowLeaderboard
 	local badges = setmetatable({}, {__mode = 'k'})
 	local panel, list, rows = nil, nil, {}
 	local mates = {}
@@ -10875,10 +10875,6 @@ run(function()
 	local status = {asked = 0, loaded = 0, withParty = 0, withTeams = 0, empty = 0}
 	local groups = {}
 	local confidence = {}
-	local tags = {}
-	local Folder = Instance.new('Folder')
-	Folder.Name = 'PartyFinder'
-	Folder.Parent = vain.gui
 	
 	local COLORS = {
 		Color3.fromRGB(255, 200, 70), Color3.fromRGB(110, 220, 255), Color3.fromRGB(255, 120, 200),
@@ -11097,57 +11093,6 @@ run(function()
 		end
 	end
 	
-	local function clearTags()
-		for _, tag in tags do tag:Destroy() end
-		table.clear(tags)
-	end
-	
-	local function updateTags()
-		local wanted = {}
-		if on(ShowTags) then
-			for index, group in groups do
-				local own = teamOf(lplr) ~= nil and group.team == teamOf(lplr)
-				if not own or on(Teammates) then
-					for _, player in group.members do
-						local head = player.Character and player.Character:FindFirstChild('Head')
-						if head then
-							wanted[player] = true
-							local tag = tags[player]
-							if not tag or tag.Adornee ~= head then
-								if tag then tag:Destroy() end
-								tag = Instance.new('BillboardGui')
-								tag.Size = UDim2.fromOffset(120, 18)
-								tag.StudsOffsetWorldSpace = Vector3.new(0, 3.4, 0)
-								tag.AlwaysOnTop = true
-								tag.Adornee = head
-								tag.Parent = Folder
-								local label = Instance.new('TextLabel')
-								label.Name = 'Label'
-								label.Size = UDim2.fromScale(1, 1)
-								label.BackgroundTransparency = 1
-								label.Font = Enum.Font.GothamBold
-								label.TextSize = 12
-								label.TextStrokeTransparency = 0.4
-								label.Parent = tag
-								tags[player] = tag
-							end
-							tag.Label.Text = (Matches.Value > 1 and not group.exact)
-								and string.format('Party %d (%d)  %d/%d', index, #group.members, group.seen, Matches.Value)
-								or string.format('Party %d (%d)', index, #group.members)
-							tag.Label.TextColor3 = group.color
-						end
-					end
-				end
-			end
-		end
-		for player, tag in tags do
-			if not wanted[player] then
-				tag:Destroy()
-				tags[player] = nil
-			end
-		end
-	end
-	
 	--[[
 		Party numbers in the game's tab list. Each player row shows its name in a PlayerName
 		label inside PlayerNameContainer (a horizontal list), so a small numbered badge in the
@@ -11349,12 +11294,10 @@ run(function()
 					if os.clock() - last < 0.5 then return end
 					last = os.clock()
 					pcall(regroup)
-					pcall(updateTags)
 					pcall(updatePanel)
 					pcall(updateLeaderboard)
 				end))
 			else
-				clearTags()
 				clearBadges()
 				table.clear(rows)
 				panel, list = nil, nil
@@ -11387,10 +11330,6 @@ run(function()
 		Name = 'Leaderboard',
 		Tooltip = 'Numbers each party next to names in the tab list',
 		Default = true
-	})
-	ShowTags = PartyFinder:CreateToggle({
-		Name = 'Tags',
-		Tooltip = 'Tags partied players with their party'
 	})
 	ShowPanel = PartyFinder:CreateToggle({
 		Name = 'Panel',
@@ -31944,7 +31883,7 @@ run(function()
 	local RespawnTimers
 	local Teammates, ShowFinals, WorldMarkers, Corner, Background
 	local RespawnSound, WarnBefore, OnlyNearby, NearbyRange, AlwaysShow, PanelScale, FontOption
-	local panel, list, title, scaler
+	local panel, list, scaler
 	local dead = {}
 	local rows = {}
 	local Folder = Instance.new('Folder')
@@ -32067,6 +32006,7 @@ run(function()
 			respawnAt = now + (tonumber(deathTable.respawnDuration) or 5),
 			diedAt = now
 		}
+		entry.duration = math.max(entry.respawnAt - now, 0.1)
 	
 		local root = deathTable.entityInstance:FindFirstChild('HumanoidRootPart') or deathTable.entityInstance.PrimaryPart
 		entry.deathPosition = root and root.Position
@@ -32101,21 +32041,103 @@ run(function()
 		dead[player] = entry
 	end
 	
+	--[[
+		The panel: a rounded card with a small header and count, and a row per player - their
+		avatar, name in their team colour, the seconds left on the right and a thin bar in the
+		team colour draining to the respawn. It grows and shrinks smoothly as rows come and go,
+		and while the GUI is open with nobody dead it shows a preview so it can be placed.
+	]]
+	local ROW_HEIGHT = 28
+	local HEADER_HEIGHT = 22
+	local PANEL_WIDTH = 200
+	local header, countLabel, sizeTween, lastHeight
+	
+	local function guiOpen()
+		local ok, open = pcall(function() return vain.gui.ScaledGui.ClickGui.Visible end)
+		return ok and open == true
+	end
+	
 	local function row(index)
 		local entry = rows[index]
 		if entry then return entry end
-		local label = Instance.new('TextLabel')
-		label.BackgroundTransparency = 1
-		label.Size = UDim2.new(1, 0, 0, 18)
-		label.Font = Enum.Font.GothamBold
-		label.TextSize = 13
-		label.TextXAlignment = Enum.TextXAlignment.Left
-		label.TextStrokeTransparency = 0.5
-		label.RichText = true
-		label.LayoutOrder = index
-		label.Parent = list
-		rows[index] = label
-		return label
+		local frame = Instance.new('Frame')
+		frame.BackgroundTransparency = 1
+		frame.Size = UDim2.new(1, 0, 0, ROW_HEIGHT)
+		frame.LayoutOrder = index
+		frame.Parent = list
+	
+		local avatar = Instance.new('ImageLabel')
+		avatar.Size = UDim2.fromOffset(20, 20)
+		avatar.Position = UDim2.fromOffset(0, 2)
+		avatar.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+		avatar.BorderSizePixel = 0
+		avatar.Parent = frame
+		Instance.new('UICorner', avatar).CornerRadius = UDim.new(1, 0)
+	
+		local name = Instance.new('TextLabel')
+		name.BackgroundTransparency = 1
+		name.Position = UDim2.fromOffset(27, 2)
+		name.Size = UDim2.new(1, -80, 0, 20)
+		name.TextSize = 13
+		name.TextXAlignment = Enum.TextXAlignment.Left
+		name.TextTruncate = Enum.TextTruncate.AtEnd
+		name.Parent = frame
+	
+		local timer = Instance.new('TextLabel')
+		timer.BackgroundTransparency = 1
+		timer.AnchorPoint = Vector2.new(1, 0)
+		timer.Position = UDim2.new(1, 0, 0, 2)
+		timer.Size = UDim2.fromOffset(50, 20)
+		timer.TextSize = 13
+		timer.TextXAlignment = Enum.TextXAlignment.Right
+		timer.Parent = frame
+	
+		local track = Instance.new('Frame')
+		track.Position = UDim2.new(0, 27, 1, -3)
+		track.Size = UDim2.new(1, -27, 0, 2)
+		track.BackgroundColor3 = Color3.new(1, 1, 1)
+		track.BackgroundTransparency = 0.88
+		track.BorderSizePixel = 0
+		track.Parent = frame
+		Instance.new('UICorner', track).CornerRadius = UDim.new(1, 0)
+		local fill = Instance.new('Frame')
+		fill.BorderSizePixel = 0
+		fill.Size = UDim2.fromScale(1, 1)
+		fill.Parent = track
+		Instance.new('UICorner', fill).CornerRadius = UDim.new(1, 0)
+	
+		entry = {frame = frame, avatar = avatar, name = name, timer = timer, track = track, fill = fill}
+		rows[index] = entry
+		return entry
+	end
+	
+	local function render(items, font)
+		for i, item in items do
+			local entry = row(i)
+			local color = item.player.Team and item.player.TeamColor.Color or Color3.fromRGB(230, 230, 230)
+			entry.avatar.Image = 'rbxthumb://type=AvatarHeadShot&id=' .. item.player.UserId .. '&w=48&h=48'
+			entry.name.Text = item.player.DisplayName
+			entry.name.TextColor3 = color
+			entry.name.FontFace = font
+			entry.timer.Text = item.text
+			entry.timer.TextColor3 = item.final and Color3.fromRGB(255, 95, 95) or Color3.fromRGB(235, 235, 235)
+			entry.timer.FontFace = font
+			entry.track.Visible = not item.final
+			entry.fill.BackgroundColor3 = color
+			entry.fill.Size = UDim2.fromScale(math.clamp(item.fraction or 0, 0, 1), 1)
+			entry.frame.Visible = true
+		end
+		for i = #items + 1, #rows do rows[i].frame.Visible = false end
+	end
+	
+	-- Resized with a short tween rather than snapping.
+	local function resize(count)
+		local height = HEADER_HEIGHT + math.max(count, 1) * ROW_HEIGHT + 10
+		if height == lastHeight then return end
+		lastHeight = height
+		if sizeTween then sizeTween:Cancel() end
+		sizeTween = tweenService:Create(panel, TweenInfo.new(0.15, Enum.EasingStyle.Quad), {Size = UDim2.fromOffset(PANEL_WIDTH, height)})
+		sizeTween:Play()
 	end
 	
 	local function update()
@@ -32152,7 +32174,8 @@ run(function()
 				entry.markerLabel.TextColor3 = player.Team and player.TeamColor.Color or Color3.new(1, 1, 1)
 			end
 			if wanted then
-				shown[#shown + 1] = {player = player, text = text, final = entry.final, remaining = remaining}
+				local duration = math.max(entry.respawnAt - entry.diedAt, 0.1)
+				shown[#shown + 1] = {player = player, text = text, final = entry.final, remaining = remaining, fraction = remaining / duration}
 			end
 		end
 		table.sort(shown, function(a, b)
@@ -32161,31 +32184,30 @@ run(function()
 		end)
 	
 		local font = FontOption and FontOption.Value or Font.fromEnum(Enum.Font.GothamBold)
-		if title then title.FontFace = font end
+		if header then header.FontFace = font end
 		if scaler then scaler.Scale = PanelScale.Value end
-		-- Always Show keeps the panel up, saying so when nobody is dead.
+	
+		local preview = #shown == 0 and guiOpen()
+		if preview then
+			-- A stand-in so the panel can be seen and placed while the GUI is open.
+			local t = os.clock() % 5
+			shown = {
+				{player = lplr, text = string.format('%.1fs', 5 - t), fraction = (5 - t) / 5},
+				{player = lplr, text = 'FINAL', final = true}
+			}
+		end
+	
+		countLabel.Text = preview and 'PREVIEW' or (#shown > 0 and tostring(#shown) or '')
 		if #shown == 0 and on(AlwaysShow) then
-			local label = row(1)
-			label.FontFace = font
-			label.TextColor3 = Color3.fromRGB(150, 150, 150)
-			label.Text = 'None'
-			label.Visible = true
-			for i = 2, #rows do rows[i].Visible = false end
+			render({}, font)
+			countLabel.Text = 'none'
 			panel.Visible = true
-			panel.Size = UDim2.fromOffset(190, 48)
+			resize(0)
 			return
 		end
-		for i, item in shown do
-			local label = row(i)
-			label.FontFace = font
-			local color = item.player.Team and item.player.TeamColor.Color or Color3.new(1, 1, 1)
-			label.TextColor3 = color
-			label.Text = item.player.DisplayName .. '  <font color="rgb(' .. (item.final and '255,90,90' or '230,230,230') .. ')">' .. item.text .. '</font>'
-			label.Visible = true
-		end
-		for i = #shown + 1, #rows do rows[i].Visible = false end
+		render(shown, font)
 		panel.Visible = #shown > 0
-		panel.Size = UDim2.fromOffset(190, #shown * 18 + 30)
+		resize(#shown)
 	end
 	
 	-- Inside the module's draggable frame where the GUI gives it one; pinned to a corner of
@@ -32203,35 +32225,52 @@ run(function()
 	end
 	
 	local function build()
+		lastHeight = nil
 		panel = Instance.new('Frame')
 		panel.Name = 'RespawnTimers'
 		panel.BorderSizePixel = 0
 		panel.Visible = false
+		panel.Size = UDim2.fromOffset(PANEL_WIDTH, HEADER_HEIGHT + ROW_HEIGHT + 10)
+		panel.ClipsDescendants = true
 		panel.Parent = RespawnTimers.Children or vain.gui
-		Instance.new('UICorner', panel).CornerRadius = UDim.new(0, 6)
+		Instance.new('UICorner', panel).CornerRadius = UDim.new(0, 8)
+		local stroke = Instance.new('UIStroke')
+		stroke.Color = Color3.new(1, 1, 1)
+		stroke.Transparency = 0.9
+		stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		stroke.Parent = panel
 		local padding = Instance.new('UIPadding')
-		padding.PaddingLeft = UDim.new(0, 8)
-		padding.PaddingRight = UDim.new(0, 8)
-		padding.PaddingTop = UDim.new(0, 4)
+		padding.PaddingLeft = UDim.new(0, 10)
+		padding.PaddingRight = UDim.new(0, 10)
+		padding.PaddingTop = UDim.new(0, 6)
 		padding.Parent = panel
 	
 		scaler = Instance.new('UIScale')
 		scaler.Parent = panel
 	
-		title = Instance.new('TextLabel')
-		title.BackgroundTransparency = 1
-		title.Size = UDim2.new(1, 0, 0, 20)
-		title.Font = Enum.Font.GothamBold
-		title.TextSize = 13
-		title.TextColor3 = Color3.fromRGB(170, 170, 170)
-		title.TextXAlignment = Enum.TextXAlignment.Left
-		title.Text = 'Respawning'
-		title.Parent = panel
+		header = Instance.new('TextLabel')
+		header.BackgroundTransparency = 1
+		header.Size = UDim2.new(1, -60, 0, HEADER_HEIGHT - 6)
+		header.TextSize = 11
+		header.TextColor3 = Color3.fromRGB(150, 150, 150)
+		header.TextXAlignment = Enum.TextXAlignment.Left
+		header.Text = 'RESPAWNING'
+		header.Parent = panel
+		countLabel = Instance.new('TextLabel')
+		countLabel.BackgroundTransparency = 1
+		countLabel.AnchorPoint = Vector2.new(1, 0)
+		countLabel.Position = UDim2.fromScale(1, 0)
+		countLabel.Size = UDim2.fromOffset(60, HEADER_HEIGHT - 6)
+		countLabel.Font = Enum.Font.GothamBold
+		countLabel.TextSize = 11
+		countLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+		countLabel.TextXAlignment = Enum.TextXAlignment.Right
+		countLabel.Parent = panel
 	
 		list = Instance.new('Frame')
 		list.BackgroundTransparency = 1
-		list.Position = UDim2.fromOffset(0, 20)
-		list.Size = UDim2.new(1, 0, 1, -20)
+		list.Position = UDim2.fromOffset(0, HEADER_HEIGHT)
+		list.Size = UDim2.new(1, 0, 1, -HEADER_HEIGHT)
 		list.Parent = panel
 		local layout = Instance.new('UIListLayout')
 		layout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -32245,7 +32284,7 @@ run(function()
 	RespawnTimers = vain.Legit:CreateModule({
 		Name = 'Respawn Timers',
 		Tooltip = 'Shows when dead players respawn',
-		Size = UDim2.fromOffset(190, 48),
+		Size = UDim2.fromOffset(200, 60),
 		Function = function(callback)
 			if callback then
 				build()
@@ -32261,7 +32300,7 @@ run(function()
 				for player in dead do forget(player) end
 				table.clear(rows)
 				table.clear(lastGround)
-				panel, list, title, scaler = nil, nil, nil, nil
+				panel, list, header, countLabel, scaler = nil, nil, nil, nil, nil
 			end
 		end
 	})
