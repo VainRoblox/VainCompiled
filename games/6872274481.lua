@@ -18205,9 +18205,37 @@ run(function()
 	    local BOBBER_SPEED, BOBBER_GRAVITY = 25, 30
 	    local SIM_TIME, SIM_STEP = 1.6, 0.08
 	
+	    --[[
+	        How the rod really launches, learned from the rod itself.
+	
+	        A guess at the speed and at where the bobber leaves from is what put shoal casts
+	        off centre: the bobber spawns at the rod, not your head, and at whatever speed the
+	        game works out. Every cast the rod makes is watched (in the launch hook below) and
+	        its real speed, gravity and launch point relative to your head kept, so the next
+	        cast is planned with the numbers that will actually be used.
+	    ]]
+	    local learned = {}
+	
 	    local function bobberMeta()
 	        local meta = bedwars.ProjectileMeta and bedwars.ProjectileMeta.fisherman_bobber
-	        return (meta and meta.launchVelocity) or BOBBER_SPEED, (meta and meta.gravitationalAcceleration) or BOBBER_GRAVITY
+	        local speed = learned.speed or (meta and meta.launchVelocity) or BOBBER_SPEED
+	        local gravity = learned.gravity or (meta and meta.gravitationalAcceleration) or BOBBER_GRAVITY
+	        return speed, gravity
+	    end
+	
+	    -- Where a cast leaves from: the learned launch point, your head until one is known.
+	    local function launchOrigin()
+	        local head = entitylib.character.Head.Position
+	        return learned.offset and head + learned.offset or head
+	    end
+	
+	    -- The game spawns the bobber a little way along its launch direction from the launch
+	    -- point, by the bow constants - so a shot is planned from there, not from the rod.
+	    local function muzzle(from, direction)
+	        local constants = bedwars.BowConstantsTable
+	        if not constants or direction.Magnitude <= 0 then return from end
+	        local offset = Vector3.new(constants.RelX or 0, constants.RelY or 0, constants.RelZ or 0)
+	        return (CFrame.new(from, from + direction) * CFrame.new(offset)).Position
 	    end
 	
 	    -- Characters and the shoal models are never what stops a bobber.
@@ -18221,10 +18249,12 @@ run(function()
 	        castParams.RespectCanCollide = true
 	    end
 	
-	    -- A sphere the bobber's size rather than a line, so a cast that grazes an edge counts.
+	    -- A sphere wider than the bobber rather than a line, so a cast that would only graze a
+	    -- block's edge is still turned down - a stud of room all the way along.
+	    local CLEARANCE = 1
 	    local function blocked(from, to)
 	        local direction = to - from
-	        local ok, hit = pcall(workspace.Spherecast, workspace, from, 0.6, direction, castParams)
+	        local ok, hit = pcall(workspace.Spherecast, workspace, from, CLEARANCE, direction, castParams)
 	        if not ok then hit = workspace:Raycast(from, direction, castParams) end
 	        return hit ~= nil
 	    end
@@ -18252,6 +18282,7 @@ run(function()
 	        if not entitylib.isAlive then return end
 	
 	        local head = entitylib.character.Head.Position
+	        local origin = launchOrigin()
 	        local speed, gravity = bobberMeta()
 	        refreshCastFilter()
 	
@@ -18263,8 +18294,14 @@ run(function()
 	            local angle = (i / 24) * math.pi * 2
 	            local direction = Vector3.new(math.cos(angle), 0, math.sin(angle))
 	            local dot = direction:Dot(look)
-	            if (not bestDot or dot > bestDot) and clearArc(head, direction * speed, gravity) then
-	                best, bestDot = direction, dot
+	            if not bestDot or dot > bestDot then
+	                -- The same heading the launch hook will give it: from the launch point
+	                -- toward a point thirty studs out at head height.
+	                local heading = (head + direction * 30) - origin
+	                local start = muzzle(origin, heading)
+	                if clearArc(start, heading.Unit * speed, gravity) then
+	                    best, bestDot = direction, dot
+	                end
 	            end
 	        end
 	        return best
@@ -18279,22 +18316,55 @@ run(function()
 	    ]]
 	    local TIER_RANK = {[2] = 4, [3] = 3, [1] = 2, [0] = 1}
 	
+	    --[[
+	        The launch velocity that lands a bobber on a point, with a clear path.
+	
+	        Solved from the bobber's real spawn point - which depends on the direction, so it
+	        is worked out twice - and checked the whole way for blocks. A flat arc that would
+	        clip something is retried as a lob over it by the solver before giving up.
+	    ]]
+	    local function solveOnto(from, speed, gravity, point)
+	        local direction = point - from
+	        local start, velocity, flight
+	        for _ = 1, 2 do
+	            start = muzzle(from, direction)
+	            local ok, calc, _, time = pcall(prediction.SolveTrajectory, start, speed, gravity, point, Vector3.zero, workspace.Gravity, 0, 0, castParams)
+	            if not (ok and calc and time) then return nil end
+	            direction = calc - start
+	            velocity, flight = direction.Unit * speed, time
+	        end
+	        start = muzzle(from, direction)
+	        if clearArc(start, velocity, gravity, flight) then
+	            return velocity
+	        end
+	    end
+	
+	    -- Where the game put a shoal: the point it was spawned at, which is the pond's pivot.
+	    local function shoalCentre(model)
+	        local ok, pivot = pcall(model.GetPivot, model)
+	        if ok then return pivot.Position end
+	        local part = model.PrimaryPart or model:FindFirstChildWhichIsA('BasePart', true)
+	        return part and part.Position or nil
+	    end
+	
+	    -- The best shoal in range with a clear shot onto its centre: shark shoals first, then
+	    -- the nearest. Returns the centre to aim for, and the shoal.
 	    local function findShoal()
 	        if not (entitylib.isAlive and on(CastAtShoals)) then return end
 	
-	        local head = entitylib.character.Head.Position
+	        local origin = launchOrigin()
 	        local speed, gravity = bobberMeta()
 	        local candidates = {}
 	        for _, child in workspace:GetChildren() do
 	            if child:IsA('Model') and child.Name:lower():find('pond', 1, true) then
-	                local part = child.PrimaryPart or child:FindFirstChildWhichIsA('BasePart', true)
-	                if part then
-	                    local flat = (part.Position - head) * Vector3.new(1, 0, 1)
+	                local centre = shoalCentre(child)
+	                if centre then
+	                    local flat = (centre - origin) * Vector3.new(1, 0, 1)
 	                    if flat.Magnitude <= ShoalRange.Value then
-	                        local tier = shoalTier and shoalTier(part.Position)
+	                        local tier = shoalTier and shoalTier(centre)
 	                        local big = child.Name:lower():find('two', 1, true) ~= nil
 	                        local rank = (tier and TIER_RANK[tier]) or (big and 4 or 1)
-	                        candidates[#candidates + 1] = {model = child, point = part.Position, rank = rank, distance = flat.Magnitude}
+	                        candidates[#candidates + 1] = {model = child, point = centre, rank = rank, distance = flat.Magnitude}
 	                    end
 	                end
 	            end
@@ -18305,13 +18375,9 @@ run(function()
 	        end)
 	
 	        for _, shoal in candidates do
-	            local ok, calc, _, flight = pcall(prediction.SolveTrajectory, head, speed, gravity, shoal.point, Vector3.zero, workspace.Gravity, 0, 0)
-	            if ok and calc and flight then
-	                local velocity = (calc - head).Unit * speed
-	                refreshCastFilter(shoal.model)
-	                if clearArc(head, velocity, gravity, flight) then
-	                    return calc
-	                end
+	            refreshCastFilter(shoal.model)
+	            if solveOnto(origin, speed, gravity, shoal.point) then
+	                return shoal.point, shoal.model
 	            end
 	        end
 	    end
@@ -18335,6 +18401,8 @@ run(function()
 	    ]]
 	    local aimOriginal, aimWrapper
 	    local castTarget
+	    -- The centre of the shoal being cast at, and its model, while a shoal cast is under way.
+	    local castShoal, castShoalModel
 	
 	    --[[
 	        Wrapped on the controller itself, and never left dangling.
@@ -18392,10 +18460,37 @@ run(function()
 	
 	            local values = original(self, handler, ...)
 	
+	            -- Every rod launch teaches the planner the real numbers.
+	            if held and isFishingRod(held.Name) and values and values.initialVelocity and values.positionFrom then
+	                local speed = values.initialVelocity.Magnitude
+	                if speed > 0 then learned.speed = speed end
+	                if type(values.gravitationalAcceleration) == 'number' and values.gravitationalAcceleration > 0 then
+	                    learned.gravity = values.gravitationalAcceleration
+	                end
+	                if entitylib.isAlive then
+	                    learned.offset = values.positionFrom - entitylib.character.Head.Position
+	                end
+	            end
+	
 	            if wanted and values and values.initialVelocity and values.positionFrom then
-	                local heading = wanted - values.positionFrom
-	                if heading.Magnitude > 0 then
-	                    values.initialVelocity = heading.Unit * values.initialVelocity.Magnitude
+	                local speed = values.initialVelocity.Magnitude
+	                local aimed = false
+	                -- A shoal is solved again here with exactly what the game is about to use, so
+	                -- the bobber comes down on its centre.
+	                if castShoal then
+	                    local _, gravity = bobberMeta()
+	                    refreshCastFilter(castShoalModel)
+	                    local velocity = solveOnto(values.positionFrom, speed, gravity, castShoal)
+	                    if velocity then
+	                        values.initialVelocity = velocity
+	                        aimed = true
+	                    end
+	                end
+	                if not aimed then
+	                    local heading = wanted - values.positionFrom
+	                    if heading.Magnitude > 0 then
+	                        values.initialVelocity = heading.Unit * speed
+	                    end
 	                end
 	            end
 	
@@ -18407,7 +18502,7 @@ run(function()
 	    end
 	
 	    local function cleanupAim()
-	        castTarget = nil
+	        castTarget, castShoal, castShoalModel = nil, nil, nil
 	
 	        -- Put back only if ours is still the one installed. Something wrapped after us
 	        -- owns the slot now, and writing over it would throw their hook away.
@@ -18439,7 +18534,11 @@ run(function()
 	                        -- enough to have walked somewhere else. A shoal in reach wins;
 	                        -- otherwise the clearest edge, cast level so it flies the arc that
 	                        -- was checked.
-	                        local target = entitylib.isAlive and findShoal()
+	                        local target, shoalModel = nil, nil
+	                        if entitylib.isAlive then
+	                            target, shoalModel = findShoal()
+	                        end
+	                        castShoal, castShoalModel = target, shoalModel
 	                        if not target then
 	                            local direction = entitylib.isAlive and findVoid()
 	                            target = direction and entitylib.character.Head.Position + direction * 30
@@ -18456,7 +18555,7 @@ run(function()
 	                            -- Held past the click, because the rod works out its direction
 	                            -- when the throw is released rather than when it is pressed.
 	                            task.wait(0.3)
-	                            castTarget = nil
+	                            castTarget, castShoal, castShoalModel = nil, nil, nil
 	                            task.wait(0.5)
 	                        end
 	                    end
@@ -18998,7 +19097,7 @@ run(function()
 	        Name = 'Shoal Range',
 	        Min = 5,
 	        Max = 40,
-	        Default = 25,
+	        Default = 35,
 	        Visible = false,
 	        Darker = true,
 	        Tooltip = 'How far away a shoal can be\nThe bobber reaches about 21 studs on the level',
