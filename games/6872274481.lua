@@ -9389,7 +9389,6 @@ run(function()
 									addKit(entry[1], entry[2], entry[3], entry[4])
 								end
 								if on(Notify) then
-									notif('KitESP', 'Tracking objects for ' .. kit, 4, 'check')
 								end
 							elseif kit ~= '' and on(Notify) then
 								notif('KitESP', kit .. ' has nothing to track', 4, 'alert')
@@ -13826,7 +13825,6 @@ run(function()
 						upgradingUntil = tick() + JUMP_WINDOW
 						bedwars.Client:Get('UpgradeFrostyHammer'):CallServerAsync(upgrade):andThen(function(result)
 							if result ~= false and Notify.Enabled then
-								notif('Adetunde', 'Upgraded '..tostring(upgrade):lower()..' to '..level, 3)
 							end
 						end)
 					end)
@@ -14166,6 +14164,7 @@ run(function()
 	})
 	for _, v in {'Kill', 'Death', 'Bed', 'BedDestroyed', 'Win'} do
 		Toggles[v] = AutoToxic:CreateToggle({
+			Tooltip = 'Sends a message for this',
 			Name = v..' ',
 			Function = function(callback)
 				if Lists[v] then
@@ -14174,6 +14173,7 @@ run(function()
 			end
 		})
 		Lists[v] = AutoToxic:CreateTextList({
+			Tooltip = 'Messages for this',
 			Name = v,
 			Darker = true,
 			Visible = false
@@ -17458,7 +17458,6 @@ run(function()
 	    							and now > (collectDebounce[drill] or 0)
 	    						then
 	    							if collectDrill(drill) and Notify.Enabled then
-	    								notif('Auto Drill', 'Collected drill resources', 4, 'info')
 	    							end
 	    							collectDebounce[drill] = now + CollectDelay.Value
 	    						end
@@ -17776,6 +17775,7 @@ run(function()
 			end
 		})
 		Targets = AutoEmber:CreateTargets({
+			Tooltip = 'Who it is used on',
 			Players = true,
 			NPCs = false
 		})
@@ -17973,6 +17973,7 @@ run(function()
 		})
 	
 		Targets = AutoHannah:CreateTargets({
+			Tooltip = 'Who it is used on',
 			Players = true,
 			Walls = false,
 			NPCs = false
@@ -18497,6 +18498,7 @@ run(function()
 	        return list
 	    end
 	    Teammate = AutoLani:CreateDropdown({
+	        Tooltip = 'The teammate for Specific',
 	        Name = 'Teammate',
 	        List = teammateList(),
 	        Darker = true,
@@ -18713,7 +18715,6 @@ run(function()
 	    end
 	
 	    local function sendNotification(count)
-	        notif("Metal ESP", string.format("%d metals spawned", count), 3)
 	    end
 	
 	    local function processSpawnQueue()
@@ -19192,7 +19193,6 @@ run(function()
 	    									if suc then
 	    										v.Data.Following.Value = player.UserId
 	    										if Notify.Enabled then
-	    											notif('AutoNoelle', `Directed {v.Name} to {player.DisplayName} ({player.Name})`, 5, 'info')
 	    										end
 	    									end
 	    								end)
@@ -20460,7 +20460,6 @@ run(function()
 	                    end)
 	                end
 	                
-	                notif("Auto Whisper", string.format("Refreshed teammate list (%d teammates)", #newList), 2)
 	            end)
 	        end,
 	        Tooltip = "Manually refresh the teammate list"
@@ -22609,7 +22608,6 @@ run(function()
 	    local collectionRunning = false
 	
 	    local function sendNotification(count)
-	        notif("Star ESP", string.format("%d stars spawned", count), 3)
 	    end
 	
 	    local function processSpawnQueue()
@@ -23260,7 +23258,6 @@ run(function()
 	    local originalCheckForPickup
 	    
 	    local function sendNotification(count)
-	        notif("Spirit ESP", string.format("%d spirit orbs spawned", count), 3)
 	    end
 	
 	    local function processSpawnQueue()
@@ -25023,7 +25020,6 @@ run(function()
 		end
 	
 	    local function sendNotification(count)
-	        notif("Crop ESP", string.format("%d crops spawned", count), 3)
 	    end
 	
 	    local function processSpawnQueue()
@@ -25774,7 +25770,6 @@ run(function()
 	            remote:SendToServer({petrifyId = statue:GetAttribute('PetrifyId')})
 	        end)
 	        if ok and on(Notify) then
-	            notif('Auto Miner', label .. "'s statue dug", 3)
 	        end
 	        return ok
 	    end
@@ -28615,7 +28610,6 @@ run(function()
 	
 	local function buyItem(item, currencytable)
 		if not id then return end
-		notif('AutoBuy', 'Bought '..bedwars.ItemMeta[item.itemType].displayName, 3)
 		bedwars.Client:Get('BedwarsPurchaseItem'):CallServerAsync({
 			shopItem = item,
 			shopId = id
@@ -28683,7 +28677,6 @@ run(function()
 			if tier.availableOnlyInQueue and not table.find(tier.availableOnlyInQueue, store.queueType) then return false end
 	
 			if canBuy({currency = 'diamond', price = tier.cost}, currencytable) then
-				notif('AutoBuy', 'Bought '..(upgrade.name == 'Armor' and 'Protection' or upgrade.name)..' '..currentTier, 3)
 				bedwars.Client:Get('RequestPurchaseTeamUpgrade'):CallServerAsync(upgradeType)
 				currencytable.diamond -= tier.cost
 				return true
@@ -28861,6 +28854,7 @@ run(function()
 		local toggleCount = count
 		local displayName = (v.name == 'Armor' and 'Protection' or v.name)
 		local toggle = AutoBuy:CreateToggle({
+			Tooltip = 'Buys this team upgrade',
 			Name = 'Buy '..displayName,
 			Function = function(callback)
 				npctick = tick()
@@ -34841,6 +34835,7 @@ run(function()
 	})
 	for _, name in {'Rotation X', 'Rotation Y', 'Rotation Z'} do
 		table.insert(Rots, Viewmodel:CreateSlider({
+			Tooltip = 'Moves the held item',
 			Name = name,
 			Min = 0,
 			Max = 360,

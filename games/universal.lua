@@ -1212,12 +1212,14 @@ run(function()
 		end,
 		Tooltip = 'Smoothly aims to closest valid target'
 	})
-	Targets = AimAssist:CreateTargets({Players = true})
+	Targets = AimAssist:CreateTargets({Tooltip = 'Who it aims at', Players = true})
 	Part = AimAssist:CreateDropdown({
+		Tooltip = 'Which body part it aims at',
 		Name = 'Part',
 		List = {'RootPart', 'Head'}
 	})
 	FOV = AimAssist:CreateSlider({
+		Tooltip = 'How far from your crosshair it reaches',
 		Name = 'FOV',
 		Min = 0,
 		Max = 1000,
@@ -1229,12 +1231,14 @@ run(function()
 		end
 	})
 	Speed = AimAssist:CreateSlider({
+		Tooltip = 'How quickly it turns you',
 		Name = 'Speed',
 		Min = 0,
 		Max = 30,
 		Default = 15
 	})
 	AimAssist:CreateToggle({
+		Tooltip = 'Draws the FOV circle',
 		Name = 'Range Circle',
 		Function = function(callback)
 			if callback then
@@ -1258,6 +1262,7 @@ run(function()
 		end
 	})
 	CircleColor = AimAssist:CreateColorSlider({
+		Tooltip = 'Colour of the circle',
 		Name = 'Circle Color',
 		Function = function(hue, sat, val)
 			if CircleObject then
@@ -1268,6 +1273,7 @@ run(function()
 		Visible = false
 	})
 	CircleTransparency = AimAssist:CreateSlider({
+		Tooltip = 'How see-through the circle is',
 		Name = 'Transparency',
 		Min = 0,
 		Max = 1,
@@ -1282,6 +1288,7 @@ run(function()
 		Visible = false
 	})
 	CircleFilled = AimAssist:CreateToggle({
+		Tooltip = 'Fills the circle in',
 		Name = 'Circle Filled',
 		Function = function(callback)
 			if CircleObject then
@@ -1292,6 +1299,7 @@ run(function()
 		Visible = false
 	})
 	RightClick = AimAssist:CreateToggle({
+		Tooltip = 'Only while holding right click',
 		Name = 'Require right click',
 		Function = function()
 			if AimAssist.Enabled then
@@ -1301,6 +1309,7 @@ run(function()
 		end
 	})
 	ShowTarget = AimAssist:CreateToggle({
+		Tooltip = 'Shows who it is aiming at',
 		Name = 'Show target info'
 	})
 end)
@@ -1340,6 +1349,7 @@ run(function()
 		Tooltip = 'Tool - Automatically uses roblox tools (eg. swords)\nClick - Left click\nRightClick - Right click'
 	})
 	CPS = AutoClicker:CreateTwoSlider({
+		Tooltip = 'Random clicks per second between these',
 		Name = 'CPS',
 		Min = 1,
 		Max = 20,
@@ -1468,7 +1478,7 @@ run(function()
 		Tooltip = 'Extends tool attack reach'
 	})
 	-- NPCs on by default: in most games with them, they are what you are hitting.
-	Targets = Reach:CreateTargets({Players = true, NPCs = true})
+	Targets = Reach:CreateTargets({Tooltip = 'Who the extra reach applies to', Players = true, NPCs = true})
 	Mode = Reach:CreateDropdown({
 		Name = 'Mode',
 		List = {'TouchInterest', 'Resize'},
@@ -1478,6 +1488,7 @@ run(function()
 		Tooltip = 'TouchInterest - Reports fake collision events to the server\nResize - Physically modifies the tools size'
 	})
 	Value = Reach:CreateSlider({
+		Tooltip = 'How far you can hit',
 		Name = 'Range',
 		Min = 0,
 		Max = 2,
@@ -1487,6 +1498,7 @@ run(function()
 		end
 	})
 	Chance = Reach:CreateSlider({
+		Tooltip = 'How often extra reach is used',
 		Name = 'Chance',
 		Min = 0,
 		Max = 100,
@@ -1698,7 +1710,7 @@ run(function()
 		end,
 		Tooltip = 'Silently adjusts your aim towards the enemy'
 	})
-	Target = SilentAim:CreateTargets({Players = true})
+	Target = SilentAim:CreateTargets({Tooltip = 'Who shots are sent to', Players = true})
 	Mode = SilentAim:CreateDropdown({
 		Name = 'Mode',
 		List = {'Mouse', 'Position'},
@@ -1722,13 +1734,15 @@ run(function()
 		Tooltip = 'FindPartOnRay* - Deprecated methods of raycasting used in old games\nRaycast - The modern raycast method\nPointToRay - Method to generate a ray from screen coords\nRay - Hooking Ray.new'
 	})
 	MethodRay = SilentAim:CreateDropdown({
+		Tooltip = 'Which shot method is redirected',
 		Name = 'Raycast Type',
 		List = {'All', 'Exclude', 'Include'},
 		Darker = true,
 		Visible = false
 	})
-	IgnoredScripts = SilentAim:CreateTextList({Name = 'Ignored Scripts'})
+	IgnoredScripts = SilentAim:CreateTextList({Tooltip = 'Scripts left alone', Name = 'Ignored Scripts'})
 	Range = SilentAim:CreateSlider({
+		Tooltip = 'How far a target can be',
 		Name = 'Range',
 		Min = 1,
 		Max = 1000,
@@ -1743,6 +1757,7 @@ run(function()
 		end
 	})
 	HitChance = SilentAim:CreateSlider({
+		Tooltip = 'How often shots are redirected',
 		Name = 'Hit Chance',
 		Min = 0,
 		Max = 100,
@@ -1750,6 +1765,7 @@ run(function()
 		Suffix = '%'
 	})
 	HeadshotChance = SilentAim:CreateSlider({
+		Tooltip = 'How often it aims for the head',
 		Name = 'Headshot Chance',
 		Min = 0,
 		Max = 100,
@@ -1757,6 +1773,7 @@ run(function()
 		Suffix = '%'
 	})
 	AutoFire = SilentAim:CreateToggle({
+		Tooltip = 'Fires for you when on target',
 		Name = 'AutoFire',
 		Function = function(callback)
 			AutoFireShootDelay.Object.Visible = callback
@@ -1765,6 +1782,7 @@ run(function()
 		end
 	})
 	AutoFireShootDelay = SilentAim:CreateSlider({
+		Tooltip = 'Wait between auto shots',
 		Name = 'Next Shot Delay',
 		Min = 0,
 		Max = 1,
@@ -1783,6 +1801,7 @@ run(function()
 		Tooltip = 'Determines the position to check for before shooting'
 	})
 	AutoFirePosition = SilentAim:CreateTextBox({
+		Tooltip = 'Aim offset from the target',
 		Name = 'Offset',
 		Function = function()
 			local suc, res = pcall(function()
@@ -1794,8 +1813,9 @@ run(function()
 		Visible = false,
 		Darker = true
 	})
-	Wallbang = SilentAim:CreateToggle({Name = 'Wallbang'})
+	Wallbang = SilentAim:CreateToggle({Tooltip = 'Shoots through walls', Name = 'Wallbang'})
 	SilentAim:CreateToggle({
+		Tooltip = 'Draws the range circle',
 		Name = 'Range Circle',
 		Function = function(callback)
 			if callback then
@@ -1819,6 +1839,7 @@ run(function()
 		end
 	})
 	CircleColor = SilentAim:CreateColorSlider({
+		Tooltip = 'Colour of the circle',
 		Name = 'Circle Color',
 		Function = function(hue, sat, val)
 			if CircleObject then
@@ -1829,6 +1850,7 @@ run(function()
 		Visible = false
 	})
 	CircleTransparency = SilentAim:CreateSlider({
+		Tooltip = 'How see-through the circle is',
 		Name = 'Transparency',
 		Min = 0,
 		Max = 1,
@@ -1843,6 +1865,7 @@ run(function()
 		Visible = false
 	})
 	CircleFilled = SilentAim:CreateToggle({
+		Tooltip = 'Fills the circle in',
 		Name = 'Circle Filled',
 		Function = function(callback)
 			if CircleObject then
@@ -1853,6 +1876,7 @@ run(function()
 		Visible = false
 	})
 	Projectile = SilentAim:CreateToggle({
+		Tooltip = 'Leads targets for slow projectiles',
 		Name = 'Projectile',
 		Function = function(callback)
 			ProjectileSpeed.Object.Visible = callback
@@ -1860,6 +1884,7 @@ run(function()
 		end
 	})
 	ProjectileSpeed = SilentAim:CreateSlider({
+		Tooltip = 'Projectile speed to lead with',
 		Name = 'Speed',
 		Min = 1,
 		Max = 1000,
@@ -1871,6 +1896,7 @@ run(function()
 		end
 	})
 	ProjectileGravity = SilentAim:CreateSlider({
+		Tooltip = 'Projectile drop to lead with',
 		Name = 'Gravity',
 		Min = 0,
 		Max = 192.6,
@@ -1940,6 +1966,7 @@ run(function()
 		Tooltip = 'Shoots people that enter your crosshair'
 	})
 	Targets = TriggerBot:CreateTargets({
+		Tooltip = 'Who it clicks on',
 		Players = true,
 		NPCs = true
 	})
@@ -1954,6 +1981,7 @@ run(function()
 		Tooltip = 'The delay set after shooting a target'
 	})
 	Distance = TriggerBot:CreateSlider({
+		Tooltip = 'How far a target can be',
 		Name = 'Distance',
 		Min = 0,
 		Max = 1000,
@@ -2069,6 +2097,7 @@ run(function()
 		end
 	end
 	Material = AntiFall:CreateDropdown({
+		Tooltip = 'What the floor looks like',
 		Name = 'Material',
 		List = materials,
 		Darker = true,
@@ -2079,6 +2108,7 @@ run(function()
 		end
 	})
 	Color = AntiFall:CreateColorSlider({
+		Tooltip = 'Colour of the floor',
 		Name = 'Color',
 		DefaultOpacity = 0.5,
 		Darker = true,
@@ -2309,6 +2339,7 @@ run(function()
 		end
 	end
 	State = Fly:CreateDropdown({
+		Tooltip = 'State your character is put in',
 		Name = 'Humanoid State',
 		List = states
 	})
@@ -2323,6 +2354,7 @@ run(function()
 		Tooltip = 'The key combination for going up & down'
 	})
 	Options.Value = Fly:CreateSlider({
+		Tooltip = 'How fast you fly',
 		Name = 'Speed',
 		Min = 1,
 		Max = 150,
@@ -2332,6 +2364,7 @@ run(function()
 		end
 	})
 	VerticalValue = Fly:CreateSlider({
+		Tooltip = 'How fast you rise and sink',
 		Name = 'Vertical Speed',
 		Min = 1,
 		Max = 150,
@@ -2341,6 +2374,7 @@ run(function()
 		end
 	})
 	Options.TPFrequency = Fly:CreateSlider({
+		Tooltip = 'How often it teleports forward',
 		Name = 'TP Frequency',
 		Min = 0,
 		Max = 1,
@@ -2352,6 +2386,7 @@ run(function()
 		end
 	})
 	Options.PulseLength = Fly:CreateSlider({
+		Tooltip = 'How long each speed pulse lasts',
 		Name = 'Pulse Length',
 		Min = 0,
 		Max = 1,
@@ -2363,6 +2398,7 @@ run(function()
 		end
 	})
 	Options.PulseDelay = Fly:CreateSlider({
+		Tooltip = 'Time between speed pulses',
 		Name = 'Pulse Delay',
 		Min = 0,
 		Max = 1,
@@ -2374,6 +2410,7 @@ run(function()
 		end
 	})
 	BounceLength = Fly:CreateSlider({
+		Tooltip = 'How long each bounce lasts',
 		Name = 'Bounce Length',
 		Min = 0,
 		Max = 30,
@@ -2384,6 +2421,7 @@ run(function()
 		end
 	})
 	BounceDelay = Fly:CreateSlider({
+		Tooltip = 'Time between bounces',
 		Name = 'Bounce Delay',
 		Min = 0,
 		Max = 1,
@@ -2395,6 +2433,7 @@ run(function()
 		end
 	})
 	FloatTPGround = Fly:CreateSlider({
+		Tooltip = 'Ground friction while flying',
 		Name = 'Ground',
 		Min = 0,
 		Max = 1,
@@ -2407,6 +2446,7 @@ run(function()
 		end
 	})
 	FloatTPAir = Fly:CreateSlider({
+		Tooltip = 'Air friction while flying',
 		Name = 'Air',
 		Min = 0,
 		Max = 5,
@@ -2419,6 +2459,7 @@ run(function()
 		end
 	})
 	WallCheck = Fly:CreateToggle({
+		Tooltip = 'Stops at walls instead of passing through',
 		Name = 'Wall Check',
 		Default = true,
 		Darker = true,
@@ -2435,6 +2476,7 @@ run(function()
 		Tooltip = 'Forces the character to look infront of the camera'
 	})
 	CustomProperties = Fly:CreateToggle({
+		Tooltip = 'Uses the friction values below',
 		Name = 'Custom Properties',
 		Function = function()
 			if Fly.Enabled then
@@ -2508,6 +2550,7 @@ run(function()
 		Tooltip = 'Velocity - Uses smooth movement to boost you upward\nImpulse - Same as velocity while using forces instead\nCFrame - Directly adjusts the position upward\nInstant - Teleports you to the peak of the jump'
 	})
 	Value = HighJump:CreateSlider({
+		Tooltip = 'How high you jump',
 		Name = 'Velocity',
 		Min = 1,
 		Max = 150,
@@ -2517,6 +2560,7 @@ run(function()
 		end
 	})
 	AutoDisable = HighJump:CreateToggle({
+		Tooltip = 'Turns off after one jump',
 		Name = 'Auto Disable',
 		Default = true
 	})
@@ -2557,12 +2601,14 @@ run(function()
 		end,
 		Tooltip = 'Expands entities hitboxes'
 	})
-	Targets = HitBoxes:CreateTargets({Players = true})
+	Targets = HitBoxes:CreateTargets({Tooltip = 'Whose hitboxes grow', Players = true})
 	TargetPart = HitBoxes:CreateDropdown({
+		Tooltip = 'Which body part grows',
 		Name = 'Part',
 		List = {'RootPart', 'Head'}
 	})
 	Expand = HitBoxes:CreateSlider({
+		Tooltip = 'How much bigger they get',
 		Name = 'Expand amount',
 		Min = 0,
 		Max = 2,
@@ -2840,8 +2886,9 @@ run(function()
 		end,
 		Tooltip = 'Attack players around you\nwithout aiming at them.'
 	})
-	Targets = Killaura:CreateTargets({Players = true})
+	Targets = Killaura:CreateTargets({Tooltip = 'Who it attacks', Players = true})
 	CPS = Killaura:CreateTwoSlider({
+		Tooltip = 'Random attack rate between these',
 		Name = 'Attacks per Second',
 		Min = 1,
 		Max = 20,
@@ -2849,6 +2896,7 @@ run(function()
 		DefaultMax = 12
 	})
 	SwingRange = Killaura:CreateSlider({
+		Tooltip = 'How far you swing from',
 		Name = 'Swing range',
 		Min = 1,
 		Max = 30,
@@ -2858,6 +2906,7 @@ run(function()
 		end
 	})
 	AttackRange = Killaura:CreateSlider({
+		Tooltip = 'How far hits land from',
 		Name = 'Attack range',
 		Min = 1,
 		Max = 30,
@@ -2867,20 +2916,23 @@ run(function()
 		end
 	})
 	AngleSlider = Killaura:CreateSlider({
+		Tooltip = 'How far off your view a target can be',
 		Name = 'Max angle',
 		Min = 1,
 		Max = 360,
 		Default = 90
 	})
 	Max = Killaura:CreateSlider({
+		Tooltip = 'How many it attacks at once',
 		Name = 'Max targets',
 		Min = 1,
 		Max = 10,
 		Default = 10
 	})
-	Mouse = Killaura:CreateToggle({Name = 'Require mouse down'})
-	Lunge = Killaura:CreateToggle({Name = 'Sword lunge only'})
+	Mouse = Killaura:CreateToggle({Tooltip = 'Only while holding left click', Name = 'Require mouse down'})
+	Lunge = Killaura:CreateToggle({Tooltip = 'Only while holding a sword', Name = 'Sword lunge only'})
 	Killaura:CreateToggle({
+		Tooltip = 'Marks who it is attacking',
 		Name = 'Show target',
 		Function = function(callback)
 			BoxSwingColor.Object.Visible = callback
@@ -2905,6 +2957,7 @@ run(function()
 		end
 	})
 	BoxSwingColor = Killaura:CreateColorSlider({
+		Tooltip = 'Colour of the target mark',
 		Name = 'Target Color',
 		Darker = true,
 		DefaultHue = 0.6,
@@ -2912,12 +2965,14 @@ run(function()
 		Visible = false
 	})
 	BoxAttackColor = Killaura:CreateColorSlider({
+		Tooltip = 'Colour when a hit lands',
 		Name = 'Attack Color',
 		Darker = true,
 		DefaultOpacity = 0.5,
 		Visible = false
 	})
 	Killaura:CreateToggle({
+		Tooltip = 'Particles around the target',
 		Name = 'Target particles',
 		Function = function(callback)
 			ParticleTexture.Object.Visible = callback
@@ -2960,6 +3015,7 @@ run(function()
 		end
 	})
 	ParticleTexture = Killaura:CreateTextBox({
+		Tooltip = 'Image id for the particles',
 		Name = 'Texture',
 		Default = 'rbxassetid://14736249347',
 		Function = function()
@@ -2971,6 +3027,7 @@ run(function()
 		Visible = false
 	})
 	ParticleColor1 = Killaura:CreateColorSlider({
+		Tooltip = 'Particle start colour',
 		Name = 'Color Begin',
 		Function = function(hue, sat, val)
 			for _, v in Particles do
@@ -2984,6 +3041,7 @@ run(function()
 		Visible = false
 	})
 	ParticleColor2 = Killaura:CreateColorSlider({
+		Tooltip = 'Particle end colour',
 		Name = 'Color End',
 		Function = function(hue, sat, val)
 			for _, v in Particles do
@@ -2997,6 +3055,7 @@ run(function()
 		Visible = false
 	})
 	ParticleSize = Killaura:CreateSlider({
+		Tooltip = 'How big the particles are',
 		Name = 'Size',
 		Min = 0,
 		Max = 1,
@@ -3010,7 +3069,7 @@ run(function()
 		Darker = true,
 		Visible = false
 	})
-	Face = Killaura:CreateToggle({Name = 'Face target'})
+	Face = Killaura:CreateToggle({Tooltip = 'Turns you towards the target', Name = 'Face target'})
 end)
 
 run(function()
@@ -3062,6 +3121,7 @@ run(function()
 		Tooltip = 'Velocity - Uses smooth physics based movement\nImpulse - Same as velocity while using forces instead\nCFrame - Directly adjusts the position of the root'
 	})
 	Value = LongJump:CreateSlider({
+		Tooltip = 'How far you jump',
 		Name = 'Speed',
 		Min = 1,
 		Max = 150,
@@ -3071,6 +3131,7 @@ run(function()
 		end
 	})
 	AutoDisable = LongJump:CreateToggle({
+		Tooltip = 'Turns off after one jump',
 		Name = 'Auto Disable',
 		Default = true
 	})
@@ -3165,10 +3226,12 @@ run(function()
 		Tooltip = 'Teleports to a selected position.'
 	})
 	Mode = MouseTP:CreateDropdown({
+		Tooltip = 'How it gets you there',
 		Name = 'Mode',
 		List = {'Mouse', 'Player', 'Waypoint'}
 	})
 	MovementMode = MouseTP:CreateDropdown({
+		Tooltip = 'How the move is made',
 		Name = 'Movement',
 		List = {'CFrame', 'Motor', 'Lerp'},
 		Function = function(val)
@@ -3177,6 +3240,7 @@ run(function()
 		end
 	})
 	Length = MouseTP:CreateSlider({
+		Tooltip = 'How long the move takes',
 		Name = 'Length',
 		Min = 0,
 		Max = 150,
@@ -3187,6 +3251,7 @@ run(function()
 		end
 	})
 	Delay = MouseTP:CreateSlider({
+		Tooltip = 'Wait before moving',
 		Name = 'Delay',
 		Min = 0,
 		Max = 1,
@@ -3340,6 +3405,7 @@ run(function()
 		Tooltip = 'Part - Modifies parts collision status around you\nCharacter - Modifies the local collision status of the character\nCFrame - Teleports you past parts\nMotor - Same as CFrame with a bypass\nFFlag - Directly adjusts all physics collisions'
 	})
 	StudLimit = Phase:CreateSlider({
+		Tooltip = 'Thickest wall it goes through',
 		Name = 'Wall Size',
 		Min = 1,
 		Max = 20,
@@ -3435,6 +3501,7 @@ run(function()
 			Tooltip = 'MoveDirection - Uses the games input vector for movement\nDirect - Directly calculate our own input vector'
 		}),
 		Value = Speed:CreateSlider({
+			Tooltip = 'How fast you move',
 			Name = 'Speed',
 			Min = 1,
 			Max = 150,
@@ -3444,6 +3511,7 @@ run(function()
 			end
 		}),
 		TPFrequency = Speed:CreateSlider({
+			Tooltip = 'How often it teleports forward',
 			Name = 'TP Frequency',
 			Min = 0,
 			Max = 1,
@@ -3455,6 +3523,7 @@ run(function()
 			end
 		}),
 		PulseLength = Speed:CreateSlider({
+			Tooltip = 'How long each speed pulse lasts',
 			Name = 'Pulse Length',
 			Min = 0,
 			Max = 1,
@@ -3466,6 +3535,7 @@ run(function()
 			end
 		}),
 		PulseDelay = Speed:CreateSlider({
+			Tooltip = 'Time between speed pulses',
 			Name = 'Pulse Delay',
 			Min = 0,
 			Max = 1,
@@ -3477,6 +3547,7 @@ run(function()
 			end
 		}),
 		WallCheck = Speed:CreateToggle({
+			Tooltip = 'Stops at walls instead of passing through',
 			Name = 'Wall Check',
 			Default = true,
 			Darker = true,
@@ -3487,6 +3558,7 @@ run(function()
 	}
 	Options.rayCheck.RespectCanCollide = true
 	CustomProperties = Speed:CreateToggle({
+		Tooltip = 'Uses custom movement values',
 		Name = 'Custom Properties',
 		Function = function()
 			if Speed.Enabled then
@@ -3497,6 +3569,7 @@ run(function()
 		Default = true
 	})
 	AutoJump = Speed:CreateToggle({
+		Tooltip = 'Jumps for you while moving',
 		Name = 'AutoJump',
 		Function = function(callback)
 			AutoJumpCustom.Object.Visible = callback
@@ -3512,6 +3585,7 @@ run(function()
 		Visible = false
 	})
 	AutoJumpValue = Speed:CreateSlider({
+		Tooltip = 'How high the auto jumps go',
 		Name = 'Jump Power',
 		Min = 1,
 		Max = 50,
@@ -3613,6 +3687,7 @@ run(function()
 		Tooltip = 'Velocity - Uses smooth movement to boost you upward\nImpulse - Same as velocity while using forces instead\nCFrame - Directly adjusts the position upward\nPart - Positions a climbable part infront of you'
 	})
 	Value = Spider:CreateSlider({
+		Tooltip = 'How fast you climb',
 		Name = 'Speed',
 		Min = 0,
 		Max = 100,
@@ -3623,6 +3698,7 @@ run(function()
 		end
 	})
 	State = Spider:CreateToggle({
+		Tooltip = 'Uses the climbing animation',
 		Name = 'Climb State',
 		Darker = true
 	})
@@ -3683,17 +3759,19 @@ run(function()
 		Tooltip = 'CFrame - Directly adjusts your characters angle\nRotVelocity - Sets the rotation velocity so that you spin\nBodyMover - Uses body movers to edit your rotation velocity'
 	})
 	Value = SpinBot:CreateSlider({
+		Tooltip = 'How fast you spin',
 		Name = 'Speed',
 		Min = 1,
 		Max = 100,
 		Default = 40
 	})
-	XToggle = SpinBot:CreateToggle({Name = 'Spin X'})
+	XToggle = SpinBot:CreateToggle({Tooltip = 'Spins on the X axis', Name = 'Spin X'})
 	YToggle = SpinBot:CreateToggle({
+		Tooltip = 'Spins on the Y axis',
 		Name = 'Spin Y',
 		Default = true
 	})
-	ZToggle = SpinBot:CreateToggle({Name = 'Spin Z'})
+	ZToggle = SpinBot:CreateToggle({Tooltip = 'Spins on the Z axis', Name = 'Spin Z'})
 end)
 
 run(function()
@@ -3824,10 +3902,12 @@ run(function()
 		Tooltip = 'Automatically strafes around the opponent'
 	})
 	Targets = TargetStrafe:CreateTargets({
+		Tooltip = 'Who it circles',
 		Players = true,
 		Walls = true
 	})
 	SearchRange = TargetStrafe:CreateSlider({
+		Tooltip = 'How far it looks for a target',
 		Name = 'Search Range',
 		Min = 1,
 		Max = 30,
@@ -3837,6 +3917,7 @@ run(function()
 		end
 	})
 	StrafeRange = TargetStrafe:CreateSlider({
+		Tooltip = 'How far from them you circle',
 		Name = 'Strafe Range',
 		Min = 1,
 		Max = 30,
@@ -3846,6 +3927,7 @@ run(function()
 		end
 	})
 	YFactor = TargetStrafe:CreateSlider({
+		Tooltip = 'How much height is followed',
 		Name = 'Y Factor',
 		Min = 0,
 		Max = 100,
@@ -3884,6 +3966,7 @@ run(function()
 		Tooltip = 'Change the game speed.'
 	})
 	Value = Timer:CreateSlider({
+		Tooltip = 'Game speed multiplier',
 		Name = 'Value',
 		Min = 1,
 		Max = 3,
@@ -3987,6 +4070,7 @@ run(function()
 		Tooltip = 'Draws arrows on screen when entities\nare out of your field of view.'
 	})
 	Targets = Arrows:CreateTargets({
+		Tooltip = 'Who gets an arrow',
 		Players = true,
 		Function = function()
 			if Arrows.Enabled then
@@ -3996,6 +4080,7 @@ run(function()
 		end
 	})
 	Color = Arrows:CreateColorSlider({
+		Tooltip = 'Colour of the arrows',
 		Name = 'Player Color',
 		Function = function(hue, sat, val)
 			if Arrows.Enabled then
@@ -4015,12 +4100,14 @@ run(function()
 		Tooltip = 'Hides teammates & non targetable entities'
 	})
 	Distance = Arrows:CreateToggle({
+		Tooltip = 'Only within the distance below',
 		Name = 'Distance Check',
 		Function = function(callback)
 			DistanceLimit.Object.Visible = callback
 		end
 	})
 	DistanceLimit = Arrows:CreateTwoSlider({
+		Tooltip = 'Distance range shown',
 		Name = 'Player Distance',
 		Min = 0,
 		Max = 256,
@@ -4140,6 +4227,7 @@ run(function()
 		Tooltip = 'Render players through walls'
 	})
 	Targets = Chams:CreateTargets({
+		Tooltip = 'Who is outlined',
 		Players = true,
 		Function = function()
 			if Chams.Enabled then
@@ -4149,6 +4237,7 @@ run(function()
 		end
 		})
 	Mode = Chams:CreateDropdown({
+		Tooltip = 'How players are drawn',
 		Name = 'Mode',
 		List = {'Highlight', 'BoxHandles'},
 		Function = function(val)
@@ -4161,6 +4250,7 @@ run(function()
 		end
 	})
 	FillColor = Chams:CreateColorSlider({
+		Tooltip = 'Fill colour',
 		Name = 'Color',
 		Function = function(hue, sat, val)
 			for i, v in Reference do
@@ -4174,6 +4264,7 @@ run(function()
 		end
 	})
 	OutlineColor = Chams:CreateColorSlider({
+		Tooltip = 'Outline colour',
 		Name = 'Outline Color',
 		DefaultSat = 0,
 		Function = function(hue, sat, val)
@@ -4186,6 +4277,7 @@ run(function()
 		Darker = true
 	})
 	FillTransparency = Chams:CreateSlider({
+		Tooltip = 'How see-through the fill is',
 		Name = 'Transparency',
 		Min = 0,
 		Max = 1,
@@ -4202,6 +4294,7 @@ run(function()
 		Decimal = 10
 	})
 	OutlineTransparency = Chams:CreateSlider({
+		Tooltip = 'How see-through the outline is',
 		Name = 'Outline Transparency',
 		Min = 0,
 		Max = 1,
@@ -4217,6 +4310,7 @@ run(function()
 		Darker = true
 	})
 	Walls = Chams:CreateToggle({
+		Tooltip = 'Shows them through walls',
 		Name = 'Render Walls',
 		Function = function(callback)
 			for _, v in Reference do
@@ -4931,6 +5025,7 @@ run(function()
 		Tooltip = 'Extra Sensory Perception\nRenders an ESP on players.'
 	})
 	Targets = ESP:CreateTargets({
+		Tooltip = 'Who is shown',
 		Players = true,
 		Function = function()
 			if ESP.Enabled then
@@ -4940,6 +5035,7 @@ run(function()
 		end
 	})
 	Method = ESP:CreateDropdown({
+		Tooltip = '2D or 3D boxes',
 		Name = 'Mode',
 		List = {'2D', '3D', 'Skeleton'},
 		Function = function(val)
@@ -4956,6 +5052,7 @@ run(function()
 		end,
 	})
 	Color = ESP:CreateColorSlider({
+		Tooltip = 'Colour of the boxes',
 		Name = 'Player Color',
 		Function = function(hue, sat, val)
 			if ESP.Enabled and ColorFunc[methodused] then
@@ -4964,6 +5061,7 @@ run(function()
 		end
 	})
 	BoundingBox = ESP:CreateToggle({
+		Tooltip = 'Draws a box around them',
 		Name = 'Bounding Box',
 		Function = function()
 			if ESP.Enabled then
@@ -4975,6 +5073,7 @@ run(function()
 		Darker = true
 	})
 	Filled = ESP:CreateToggle({
+		Tooltip = 'Fills the box in',
 		Name = 'Filled',
 		Function = function()
 			if ESP.Enabled then
@@ -4985,6 +5084,7 @@ run(function()
 		Darker = true
 	})
 	HealthBar = ESP:CreateToggle({
+		Tooltip = 'Shows their health',
 		Name = 'Health Bar',
 		Function = function()
 			if ESP.Enabled then
@@ -4995,6 +5095,7 @@ run(function()
 		Darker = true
 	})
 	Name = ESP:CreateToggle({
+		Tooltip = 'Shows their name',
 		Name = 'Name',
 		Function = function(callback)
 			if ESP.Enabled then
@@ -5007,6 +5108,7 @@ run(function()
 		Darker = true
 	})
 	DisplayName = ESP:CreateToggle({
+		Tooltip = 'Display name instead of username',
 		Name = 'Use Displayname',
 		Function = function()
 			if ESP.Enabled then
@@ -5018,6 +5120,7 @@ run(function()
 		Darker = true
 	})
 	Background = ESP:CreateToggle({
+		Tooltip = 'Background behind the name',
 		Name = 'Show Background',
 		Function = function()
 			if ESP.Enabled then
@@ -5039,12 +5142,14 @@ run(function()
 		Tooltip = 'Hides teammates & non targetable entities'
 	})
 	Distance = ESP:CreateToggle({
+		Tooltip = 'Only within the distance below',
 		Name = 'Distance Check',
 		Function = function(callback)
 			DistanceLimit.Object.Visible = callback
 		end
 	})
 	DistanceLimit = ESP:CreateTwoSlider({
+		Tooltip = 'Distance range shown',
 		Name = 'Player Distance',
 		Min = 0,
 		Max = 256,
@@ -5112,6 +5217,7 @@ run(function()
 		Tooltip = 'Increase the lighting of the world around you.'
 	})
 	Mode = Fullbright:CreateDropdown({
+		Tooltip = 'How the lighting is brightened',
 		Name = 'Mode',
 		List = {'Lighting', 'PointLight'},
 		Function = function()
@@ -5339,6 +5445,7 @@ run(function()
 		Tooltip = 'Sit in the best gaming chair known to mankind.'
 	})
 	Color = GamingChair:CreateColorSlider({
+		Tooltip = 'Colour of the chair',
 		Name = 'Color',
 		Function = function(h, s, v)
 			if chairhighlight then
@@ -5672,6 +5779,7 @@ run(function()
 		Tooltip = 'Renders nametags on entities through walls.'
 	})
 	Targets = NameTags:CreateTargets({
+		Tooltip = 'Who gets a tag',
 		Players = true,
 		Function = function()
 			if NameTags.Enabled then
@@ -5681,6 +5789,7 @@ run(function()
 		end
 	})
 	FontOption = NameTags:CreateFont({
+		Tooltip = 'Font used for the tags',
 		Name = 'Font',
 		Blacklist = 'Arial',
 		Function = function()
@@ -5691,6 +5800,7 @@ run(function()
 		end
 	})
 	Color = NameTags:CreateColorSlider({
+		Tooltip = 'Colour of the names',
 		Name = 'Player Color',
 		Function = function(hue, sat, val)
 			if NameTags.Enabled and ColorFunc[methodused] then
@@ -5699,6 +5809,7 @@ run(function()
 		end
 	})
 	Scale = NameTags:CreateSlider({
+		Tooltip = 'How big the tags are',
 		Name = 'Scale',
 		Function = function()
 			if NameTags.Enabled then
@@ -5712,6 +5823,7 @@ run(function()
 		Decimal = 10
 	})
 	Background = NameTags:CreateSlider({
+		Tooltip = 'How see-through the background is',
 		Name = 'Transparency',
 		Function = function()
 			if NameTags.Enabled then
@@ -5725,6 +5837,7 @@ run(function()
 		Decimal = 10
 	})
 	Stroke = NameTags:CreateSlider({
+		Tooltip = 'How see-through the text outline is',
 		Name = 'Stroke Transparency',
 		Function = function()
 			if NameTags.Enabled then
@@ -5738,6 +5851,7 @@ run(function()
 		Decimal = 10
 	})
 	Health = NameTags:CreateToggle({
+		Tooltip = 'Shows their health',
 		Name = 'Health',
 		Function = function()
 			if NameTags.Enabled then
@@ -5747,6 +5861,7 @@ run(function()
 		end
 	})
 	Distance = NameTags:CreateToggle({
+		Tooltip = 'Shows how far away they are',
 		Name = 'Distance',
 		Function = function()
 			if NameTags.Enabled then
@@ -5756,6 +5871,7 @@ run(function()
 		end
 	})
 	DisplayName = NameTags:CreateToggle({
+		Tooltip = 'Display name instead of username',
 		Name = 'Use Displayname',
 		Function = function()
 			if NameTags.Enabled then
@@ -5777,6 +5893,7 @@ run(function()
 		Tooltip = 'Hides teammates & non targetable entities'
 	})
 	DrawingToggle = NameTags:CreateToggle({
+		Tooltip = 'Draws tags with the Drawing library',
 		Name = 'Drawing',
 		Function = function()
 			if NameTags.Enabled then
@@ -5786,12 +5903,14 @@ run(function()
 		end
 	})
 	DistanceCheck = NameTags:CreateToggle({
+		Tooltip = 'Only within the distance below',
 		Name = 'Distance Check',
 		Function = function(callback)
 			DistanceLimit.Object.Visible = callback
 		end
 	})
 	DistanceLimit = NameTags:CreateTwoSlider({
+		Tooltip = 'Distance range shown',
 		Name = 'Player Distance',
 		Min = 0,
 		Max = 256,
@@ -5868,6 +5987,7 @@ run(function()
 		Tooltip = 'Change the player models to a Mesh'
 	})
 	Scale = PlayerModel:CreateSlider({
+		Tooltip = 'How big the model is',
 		Name = 'Scale',
 		Min = 0,
 		Max = 2,
@@ -5881,6 +6001,7 @@ run(function()
 	})
 	for _, name in {'Rotation X', 'Rotation Y', 'Rotation Z'} do 
 		table.insert(Rots, PlayerModel:CreateSlider({
+			Tooltip = 'Model rotation',
 			Name = name,
 			Min = 0,
 			Max = 360,
@@ -5894,6 +6015,7 @@ run(function()
 		}))
 	end
 	Local = PlayerModel:CreateToggle({
+		Tooltip = 'Also on your own character',
 		Name = 'Local',
 		Function = function()
 			if PlayerModel.Enabled then 
@@ -5903,6 +6025,7 @@ run(function()
 		end
 	})
 	Mesh = PlayerModel:CreateTextBox({
+		Tooltip = 'Mesh id for the model',
 		Name = 'Mesh',
 		Placeholder = 'mesh id',
 		Function = function()
@@ -5912,6 +6035,7 @@ run(function()
 		end
 	})
 	Texture = PlayerModel:CreateTextBox({
+		Tooltip = 'Texture id for the model',
 		Name = 'Texture',
 		Placeholder = 'texture id',
 		Function = function()
@@ -6008,6 +6132,7 @@ run(function()
 		end
 	})
 	Targets = Radar:CreateTargets({
+		Tooltip = 'Who shows on the radar',
 		Players = true,
 		Function = function()
 			if Radar.Button.Enabled then
@@ -6017,6 +6142,7 @@ run(function()
 		end
 	})
 	DotStyle = Radar:CreateDropdown({
+		Tooltip = 'Shape of the dots',
 		Name = 'Dot Style',
 		List = {'Circles', 'Squares'},
 		Function = function(val)
@@ -6026,6 +6152,7 @@ run(function()
 		end
 	})
 	PlayerColor = Radar:CreateColorSlider({
+		Tooltip = 'Colour of the dots',
 		Name = 'Player Color',
 		Function = function(hue, sat, val)
 			for ent, dot in Reference do
@@ -6069,12 +6196,14 @@ run(function()
 	barcorner.CornerRadius = UDim.new(0, 8)
 	barcorner.Parent = bar
 	Radar:CreateColorSlider({
+		Tooltip = 'Colour of the frame',
 		Name = 'Bar Color',
 		Function = function(hue, sat, val)
 			bar.BackgroundColor3 = Color3.fromHSV(hue, sat, val)
 		end
 	})
 	Radar:CreateToggle({
+		Tooltip = 'Background behind the radar',
 		Name = 'Show Background',
 		Default = true,
 		Function = function(callback)
@@ -6084,6 +6213,7 @@ run(function()
 		end
 	})
 	Radar:CreateToggle({
+		Tooltip = 'Crosshair in the middle',
 		Name = 'Show Cross',
 		Default = true,
 		Function = function(callback)
@@ -6092,6 +6222,7 @@ run(function()
 		end
 	})
 	Clamp = Radar:CreateToggle({
+		Tooltip = 'Keeps far players on the edge',
 		Name = 'Clamp Radar',
 		Default = true
 	})
@@ -6145,6 +6276,7 @@ run(function()
 		Tooltip = 'Draws box around selected parts\nAdd parts in Search frame'
 	})
 	List = Search:CreateTextList({
+		Tooltip = 'Part names to find',
 		Name = 'Parts',
 		Function = function()
 			if Search.Enabled then
@@ -6154,6 +6286,7 @@ run(function()
 		end
 	})
 	Color = Search:CreateColorSlider({
+		Tooltip = 'Colour of the highlight',
 		Name = 'Color',
 		Function = function(hue, sat, val)
 			for _, v in Reference do
@@ -6162,6 +6295,7 @@ run(function()
 		end
 	})
 	FillTransparency = Search:CreateSlider({
+		Tooltip = 'How see-through the highlight is',
 		Name = 'Transparency',
 		Min = 0,
 		Max = 1,
@@ -6254,6 +6388,7 @@ run(function()
 		end
 	})
 	FontOption = SessionInfo:CreateFont({
+		Tooltip = 'Font used for the text',
 		Name = 'Font',
 		Blacklist = 'Arial'
 	})
@@ -6266,6 +6401,7 @@ run(function()
 		Color = Color3.fromRGB(250, 50, 56)
 	})
 	SessionInfo:CreateColorSlider({
+		Tooltip = 'Colour of the background',
 		Name = 'Background Color',
 		DefaultValue = 0,
 		DefaultOpacity = 0.5,
@@ -6275,6 +6411,7 @@ run(function()
 		end
 	})
 	BorderColor = SessionInfo:CreateColorSlider({
+		Tooltip = 'Colour of the border',
 		Name = 'Border Color',
 		Function = function(hue, sat, val, opacity)
 			infostroke.Color = Color3.fromHSV(hue, sat, val)
@@ -6284,12 +6421,14 @@ run(function()
 		Visible = false
 	})
 	TextSize = SessionInfo:CreateSlider({
+		Tooltip = 'How big the text is',
 		Name = 'Text Size',
 		Min = 1,
 		Max = 30,
 		Default = 16
 	})
 	Title = SessionInfo:CreateToggle({
+		Tooltip = 'Shows the title',
 		Name = 'Title',
 		Function = function(callback)
 			if TitleOffset.Object then
@@ -6299,11 +6438,13 @@ run(function()
 		Default = true
 	})
 	TitleOffset = SessionInfo:CreateToggle({
+		Tooltip = 'Spaces the title from the list',
 		Name = 'Offset',
 		Default = true,
 		Darker = true
 	})
 	SessionInfo:CreateToggle({
+		Tooltip = 'Draws a border',
 		Name = 'Border',
 		Function = function(callback)
 			infostroke.Enabled = callback
@@ -6311,12 +6452,14 @@ run(function()
 		end
 	})
 	Custom = SessionInfo:CreateToggle({
+		Tooltip = 'Adds your own line',
 		Name = 'Add custom text',
 		Function = function(enabled)
 			CustomBox.Object.Visible = enabled
 		end
 	})
 	CustomBox = SessionInfo:CreateTextBox({
+		Tooltip = 'Your own line of text',
 		Name = 'Custom text',
 		Darker = true,
 		Visible = false
@@ -6661,6 +6804,7 @@ run(function()
 		Tooltip = 'Renders tracers on players.'
 	})
 	Targets = Tracers:CreateTargets({
+		Tooltip = 'Who gets a line',
 		Players = true,
 		Function = function()
 			if Tracers.Enabled then
@@ -6670,6 +6814,7 @@ run(function()
 		end
 	})
 	StartPosition = Tracers:CreateDropdown({
+		Tooltip = 'Where the lines start',
 		Name = 'Start Position',
 		List = {'Middle', 'Bottom', 'Mouse'},
 		Function = function()
@@ -6680,6 +6825,7 @@ run(function()
 		end
 	})
 	EndPosition = Tracers:CreateDropdown({
+		Tooltip = 'Where the lines end',
 		Name = 'End Position',
 		List = {'Head', 'Torso'},
 		Function = function()
@@ -6690,6 +6836,7 @@ run(function()
 		end
 	})
 	Color = Tracers:CreateColorSlider({
+		Tooltip = 'Colour of the lines',
 		Name = 'Player Color',
 		Function = function(hue, sat, val)
 			if Tracers.Enabled then
@@ -6698,6 +6845,7 @@ run(function()
 		end
 	})
 	Transparency = Tracers:CreateSlider({
+		Tooltip = 'How see-through the lines are',
 		Name = 'Transparency',
 		Min = 0,
 		Max = 1,
@@ -6709,6 +6857,7 @@ run(function()
 		Decimal = 10
 	})
 	DistanceColor = Tracers:CreateToggle({
+		Tooltip = 'Colours lines by distance',
 		Name = 'Color by distance',
 		Function = function()
 			if Tracers.Enabled then
@@ -6718,12 +6867,14 @@ run(function()
 		end
 	})
 	Distance = Tracers:CreateToggle({
+		Tooltip = 'Only within the distance below',
 		Name = 'Distance Check',
 		Function = function(callback)
 			DistanceLimit.Object.Visible = callback
 		end
 	})
 	DistanceLimit = Tracers:CreateTwoSlider({
+		Tooltip = 'Distance range shown',
 		Name = 'Player Distance',
 		Min = 0,
 		Max = 256,
@@ -6733,6 +6884,7 @@ run(function()
 		Visible = false
 	})
 	Behind = Tracers:CreateToggle({
+		Tooltip = 'Also for players behind you',
 		Name = 'Behind',
 		Default = true
 	})
@@ -6791,6 +6943,7 @@ run(function()
 		Tooltip = 'Mark certain spots with a visual indicator'
 	})
 	FontOption = Waypoints:CreateFont({
+		Tooltip = 'Font used for the labels',
 		Name = 'Font',
 		Blacklist = 'Arial',
 		Function = function()
@@ -6801,6 +6954,7 @@ run(function()
 		end,
 	})
 	List = Waypoints:CreateTextList({
+		Tooltip = 'Saved waypoints',
 		Name = 'Points',
 		Placeholder = 'x, y, z/name',
 		Function = function()
@@ -6811,6 +6965,7 @@ run(function()
 		end
 	})
 	Waypoints:CreateButton({
+		Tooltip = 'Saves where you are standing',
 		Name = 'Add current position',
 		Function = function()
 			if entitylib.isAlive then
@@ -6820,6 +6975,7 @@ run(function()
 		end
 	})
 	Color = Waypoints:CreateColorSlider({
+		Tooltip = 'Colour of the labels',
 		Name = 'Color',
 		Function = function(hue, sat, val)
 			for _, v in WaypointFolder:GetChildren() do
@@ -6828,6 +6984,7 @@ run(function()
 		end
 	})
 	Scale = Waypoints:CreateSlider({
+		Tooltip = 'How big the labels are',
 		Name = 'Scale',
 		Function = function()
 			if Waypoints.Enabled then
@@ -6841,6 +6998,7 @@ run(function()
 		Decimal = 10
 	})
 	Background = Waypoints:CreateSlider({
+		Tooltip = 'How see-through the labels are',
 		Name = 'Transparency',
 		Function = function()
 			if Waypoints.Enabled then
@@ -6913,6 +7071,7 @@ run(function()
 		Tooltip = 'Plays a specific animation of your choosing at a certain speed'
 	})
 	IDBox = AnimationPlayer:CreateTextBox({
+		Tooltip = 'Animation id to play',
 		Name = 'Animation',
 		Placeholder = 'anim (num only)',
 		Function = function(enter)
@@ -6929,6 +7088,7 @@ run(function()
 		end
 	end
 	Priority = AnimationPlayer:CreateDropdown({
+		Tooltip = 'Animation priority',
 		Name = 'Priority',
 		List = prio,
 		Function = function(val)
@@ -6938,6 +7098,7 @@ run(function()
 		end
 	})
 	Speed = AnimationPlayer:CreateSlider({
+		Tooltip = 'How fast it plays',
 		Name = 'Speed',
 		Function = function(val)
 			if anim then
@@ -7058,6 +7219,7 @@ run(function()
 		Tooltip = 'Automatically send packets in intervals'
 	})
 	AutoSendLength = Blink:CreateSlider({
+		Tooltip = 'How long before it sends again',
 		Name = 'Send threshold',
 		Min = 0,
 		Max = 1,
@@ -7144,16 +7306,19 @@ run(function()
 		Tooltip = 'Automatically types in chat'
 	})
 	Lines = ChatSpammer:CreateTextList({
+		Tooltip = 'Messages to send',
 		Name = 'Lines',
 		Function = function()
 			table.clear(RandomList)
 		end
 	})
 	Mode = ChatSpammer:CreateDropdown({
+		Tooltip = 'Order the lines are sent in',
 		Name = 'Mode',
 		List = {'Random', 'Order'}
 	})
 	Delay = ChatSpammer:CreateSlider({
+		Tooltip = 'Seconds between messages',
 		Name = 'Delay',
 		Min = 0.1,
 		Max = 10,
@@ -7164,6 +7329,7 @@ run(function()
 		end
 	})
 	Hide = ChatSpammer:CreateToggle({
+		Tooltip = 'Hides the chat flood warning',
 		Name = 'Hide Flood Message',
 		Default = true,
 		Function = function()
@@ -7842,6 +8008,7 @@ run(function()
 		Tooltip = 'Descending - Prefers full servers\nAscending - Prefers empty servers'
 	})
 	ServerHop:CreateButton({
+		Tooltip = 'Goes back to the last server',
 		Name = 'Rejoin Previous Server',
 		Function = function()
 			notif('ServerHop', shared.vainserverhopprevious and 'Rejoining previous server...' or 'Cannot find previous server', 5)
@@ -7966,6 +8133,7 @@ run(function()
 		Tooltip = 'Detects people with a staff rank ingame'
 	})
 	Mode = StaffDetector:CreateDropdown({
+		Tooltip = 'What to do when staff join',
 		Name = 'Mode',
 		List = {'Uninject', 'ServerHop', 'Profile', 'AutoConfig', 'Notify'},
 		Function = function(val)
@@ -7975,20 +8143,24 @@ run(function()
 		end
 	})
 	Profile = StaffDetector:CreateTextBox({
+		Tooltip = 'Profile to switch to',
 		Name = 'Profile',
 		Default = 'default',
 		Darker = true,
 		Visible = false
 	})
 	Users = StaffDetector:CreateTextList({
+		Tooltip = 'Extra users to treat as staff',
 		Name = 'Users',
 		Placeholder = 'player (userid)'
 	})
 	Group = StaffDetector:CreateTextBox({
+		Tooltip = 'Group id to check',
 		Name = 'Group',
 		Placeholder = 'Group Id'
 	})
 	Role = StaffDetector:CreateTextBox({
+		Tooltip = 'Group roles counted as staff',
 		Name = 'Role',
 		Placeholder = 'Role Rank'
 	})
@@ -8031,6 +8203,7 @@ run(function()
 		end
 	end
 	State = StateSpoofer:CreateDropdown({
+		Tooltip = 'State to report',
 		Name = 'Humanoid State',
 		List = states
 	})
@@ -8128,6 +8301,7 @@ run(function()
 		end
 	})
 	Value = FastProxPrompt:CreateSlider({
+		Tooltip = 'How much faster prompts complete',
 		Name = 'Modifier',
 		Min = 0,
 		Max = 100,
@@ -8203,6 +8377,7 @@ run(function()
 		Tooltip = 'Lets you fly and clip through walls freely\nwithout moving your player server-sided.'
 	})
 	Value = Freecam:CreateSlider({
+		Tooltip = 'How fast the camera moves',
 		Name = 'Speed',
 		Min = 1,
 		Max = 150,
@@ -8260,6 +8435,7 @@ run(function()
 		Tooltip = 'Workspace - Adjusts the gravity for the entire game\nVelocity - Adjusts the local players gravity\nImpulse - Same as velocity while using forces instead'
 	})
 	Value = Gravity:CreateSlider({
+		Tooltip = 'World gravity',
 		Name = 'Gravity',
 		Min = 0,
 		Max = 192,
@@ -8456,6 +8632,7 @@ run(function()
 		Tooltip = 'Automatically rotates camera for wallhopping.'
 	})
 	Offset = Wallhop:CreateSlider({
+		Tooltip = 'How far you are pushed off',
 		Name = 'Offset',
 		Min = -45,
 		Max = 45,
@@ -8494,6 +8671,7 @@ run(function()
 		Tooltip = 'Renders whitelisted parts through walls.'
 	})
 	List = Xray:CreateTextList({
+		Tooltip = 'Part names to see through',
 		Name = 'Part',
 		Function = function()
 			if Xray.Enabled then
@@ -8688,6 +8866,7 @@ run(function()
 	for i, v in apidump do
 		Toggles[i] = {Objects = {}}
 		Toggles[i].Toggle = Atmosphere:CreateToggle({
+			Tooltip = 'Changes this lighting property',
 			Name = i,
 			Function = function(callback)
 				if Atmosphere.Enabled then
@@ -8704,6 +8883,7 @@ run(function()
 		for i2, v2 in v do
 			if v2 == 'Text' or v2 == 'Number' then
 				Toggles[i].Objects[i2] = Atmosphere:CreateTextBox({
+					Tooltip = 'Value for this property',
 					Name = i2,
 					Function = function(enter)
 						if Atmosphere.Enabled and enter then
@@ -8717,6 +8897,7 @@ run(function()
 				})
 			elseif v2 == 'Color' then
 				Toggles[i].Objects[i2] = Atmosphere:CreateColorSlider({
+					Tooltip = 'Colour for this property',
 					Name = i2,
 					Function = function()
 						if Atmosphere.Enabled then
@@ -8781,6 +8962,7 @@ run(function()
 		Tooltip = 'Shows a trail behind your character'
 	})
 	Texture = Breadcrumbs:CreateTextBox({
+		Tooltip = 'Image id for the trail',
 		Name = 'Texture',
 		Placeholder = 'Texture Id',
 		Function = function(enter)
@@ -8790,6 +8972,7 @@ run(function()
 		end
 	})
 	FadeIn = Breadcrumbs:CreateColorSlider({
+		Tooltip = 'Trail start colour',
 		Name = 'Fade In',
 		Function = function(hue, sat, val)
 			if trail then
@@ -8798,6 +8981,7 @@ run(function()
 		end
 	})
 	FadeOut = Breadcrumbs:CreateColorSlider({
+		Tooltip = 'Trail end colour',
 		Name = 'Fade Out',
 		Function = function(hue, sat, val)
 			if trail then
@@ -8806,6 +8990,7 @@ run(function()
 		end
 	})
 	Lifetime = Breadcrumbs:CreateSlider({
+		Tooltip = 'How long the trail stays',
 		Name = 'Lifetime',
 		Min = 1,
 		Max = 5,
@@ -8821,6 +9006,7 @@ run(function()
 		end
 	})
 	Thickness = Breadcrumbs:CreateSlider({
+		Tooltip = 'How thick the trail is',
 		Name = 'Thickness',
 		Min = 0,
 		Max = 2,
@@ -8918,6 +9104,7 @@ run(function()
 		Tooltip = 'Add\'s a cape to your character'
 	})
 	Texture = Cape:CreateTextBox({
+		Tooltip = 'Image id for the cape',
 		Name = 'Texture'
 	})
 end)
@@ -8989,6 +9176,7 @@ run(function()
 		end
 	end
 	Material = ChinaHat:CreateDropdown({
+		Tooltip = 'What the hat is made of',
 		Name = 'Material',
 		List = materials,
 		Function = function(val)
@@ -8998,6 +9186,7 @@ run(function()
 		end
 	})
 	Color = ChinaHat:CreateColorSlider({
+		Tooltip = 'Colour of the hat',
 		Name = 'Hat Color',
 		DefaultOpacity = 0.7,
 		Function = function(hue, sat, val, opacity)
@@ -9040,6 +9229,7 @@ run(function()
 		Tooltip = 'Shows the current local time'
 	})
 	Clock:CreateFont({
+		Tooltip = 'Font used for the text',
 		Name = 'Font',
 		Blacklist = 'Gotham',
 		Function = function(val)
@@ -9047,6 +9237,7 @@ run(function()
 		end
 	})
 	Clock:CreateColorSlider({
+		Tooltip = 'Colour of the background',
 		Name = 'Color',
 		DefaultValue = 0,
 		DefaultOpacity = 0.5,
@@ -9056,6 +9247,7 @@ run(function()
 		end
 	})
 	TwentyFourHour = Clock:CreateToggle({
+		Tooltip = 'Uses 24 hour time',
 		Name = '24 Hour Clock'
 	})
 	label = Instance.new('TextLabel')
@@ -9196,6 +9388,7 @@ run(function()
 		Tooltip = 'Changes your character or animation to a specific ID (animation packs or userid\'s only)'
 	})
 	Mode = Disguise:CreateDropdown({
+		Tooltip = 'How you are disguised',
 		Name = 'Mode',
 		List = {'Character', 'Animation'},
 		Function = function()
@@ -9206,6 +9399,7 @@ run(function()
 		end
 	})
 	IDBox = Disguise:CreateTextBox({
+		Tooltip = 'Who to look like',
 		Name = 'Disguise',
 		Placeholder = 'Disguise User Id',
 		Function = function()
@@ -9238,6 +9432,7 @@ run(function()
 		Tooltip = 'Adjusts camera vision'
 	})
 	Value = FOV:CreateSlider({
+		Tooltip = 'Field of view, in degrees',
 		Name = 'FOV',
 		Min = 30,
 		Max = 120
@@ -9278,6 +9473,7 @@ run(function()
 		Tooltip = 'Shows the current framerate'
 	})
 	FPS:CreateFont({
+		Tooltip = 'Font used for the text',
 		Name = 'Font',
 		Blacklist = 'Gotham',
 		Function = function(val)
@@ -9285,6 +9481,7 @@ run(function()
 		end
 	})
 	FPS:CreateColorSlider({
+		Tooltip = 'Colour of the background',
 		Name = 'Color',
 		DefaultValue = 0,
 		DefaultOpacity = 0.5,
@@ -9461,11 +9658,13 @@ run(function()
 	end
 	
 	Style = Keystrokes:CreateDropdown({
+		Tooltip = 'Letters or arrows on the keys',
 		Name = 'Key Style',
 		List = {'Keyboard', 'Arrow'},
 		Function = rebuild
 	})
 	Color = Keystrokes:CreateColorSlider({
+		Tooltip = 'Colour of the keys',
 		Name = 'Color',
 		DefaultValue = 0,
 		DefaultOpacity = 0.5,
@@ -9479,6 +9678,7 @@ run(function()
 		end
 	})
 	ShowSpace = Keystrokes:CreateToggle({
+		Tooltip = 'Shows the spacebar',
 		Name = 'Show Spacebar',
 		Function = rebuild,
 		Default = true
@@ -9522,6 +9722,7 @@ run(function()
 		Tooltip = 'A label showing the memory currently used by roblox'
 	})
 	Memory:CreateFont({
+		Tooltip = 'Font used for the text',
 		Name = 'Font',
 		Blacklist = 'Gotham',
 		Function = function(val)
@@ -9529,6 +9730,7 @@ run(function()
 		end
 	})
 	Memory:CreateColorSlider({
+		Tooltip = 'Colour of the background',
 		Name = 'Color',
 		DefaultValue = 0,
 		DefaultOpacity = 0.5,
@@ -9569,6 +9771,7 @@ run(function()
 		Tooltip = 'Shows the current connection speed to the roblox server'
 	})
 	Ping:CreateFont({
+		Tooltip = 'Font used for the text',
 		Name = 'Font',
 		Blacklist = 'Gotham',
 		Function = function(val)
@@ -9576,6 +9779,7 @@ run(function()
 		end
 	})
 	Ping:CreateColorSlider({
+		Tooltip = 'Colour of the background',
 		Name = 'Color',
 		DefaultValue = 0,
 		DefaultOpacity = 0.5,
@@ -9694,10 +9898,12 @@ run(function()
 		Tooltip = 'Built in mp3 player'
 	})
 	List = SongBeats:CreateTextList({
+		Tooltip = 'Song files to play',
 		Name = 'Songs',
 		Placeholder = 'filepath/bpm/start'
 	})
 	FOV = SongBeats:CreateToggle({
+		Tooltip = 'Pulses the FOV to the beat',
 		Name = 'Beat FOV',
 		Function = function(callback)
 			if FOVValue.Object then
@@ -9712,6 +9918,7 @@ run(function()
 		Default = true
 	})
 	FOVValue = SongBeats:CreateSlider({
+		Tooltip = 'How strong the pulse is',
 		Name = 'Adjustment',
 		Min = 1,
 		Max = 30,
@@ -9719,6 +9926,7 @@ run(function()
 		Darker = true
 	})
 	Volume = SongBeats:CreateSlider({
+		Tooltip = 'How loud the songs are',
 		Name = 'Volume',
 		Function = function(val)
 			if songobj then
@@ -9752,6 +9960,7 @@ run(function()
 		Tooltip = 'A label showing the average velocity in studs'
 	})
 	Speedmeter:CreateFont({
+		Tooltip = 'Font used for the text',
 		Name = 'Font',
 		Blacklist = 'Gotham',
 		Function = function(val)
@@ -9759,6 +9968,7 @@ run(function()
 		end
 	})
 	Speedmeter:CreateColorSlider({
+		Tooltip = 'Colour of the background',
 		Name = 'Color',
 		DefaultValue = 0,
 		DefaultOpacity = 0.5,
@@ -9800,6 +10010,7 @@ run(function()
 		Tooltip = 'Change the time of the current world'
 	})
 	Value = TimeChanger:CreateSlider({
+		Tooltip = 'Time of day',
 		Name = 'Time',
 		Min = 0,
 		Max = 24,
