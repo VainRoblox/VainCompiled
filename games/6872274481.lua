@@ -8901,12 +8901,17 @@ run(function()
 		so a cloak put on before the module is switched on is still known.
 	]]
 	local cloaked = {}
-	pcall(function()
-		vain:Clean(bedwars.Client:Get('InvisibleCloakState'):Connect(function(data)
-			if type(data) == 'table' and data.player then
-				cloaked[data.player] = data.active == true or nil
-			end
-		end))
+	-- In its own thread: getting the remote can wait for it, and a wait on the loading thread
+	-- brings it back without the identity the rest of the load needs to create instances.
+	task.spawn(function()
+		pcall(function()
+			local connection = bedwars.Client:Get('InvisibleCloakState'):Connect(function(data)
+				if type(data) == 'table' and data.player then
+					cloaked[data.player] = data.active == true or nil
+				end
+			end)
+			vain:Clean(connection)
+		end)
 	end)
 	
 	--[[
