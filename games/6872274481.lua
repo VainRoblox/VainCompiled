@@ -7044,10 +7044,16 @@ run(function()
 		return nil
 	end
 	
-	-- Seconds to the next spawn, as the game's own label has it.
+	-- Seconds to the next spawn, as the game's own label has it: "[25]", "0:25" (its
+	-- Countdown component formats as minutes and seconds) or a bare number.
 	local function secondsOf(model)
 		local text = textOf(model, 'Countdown') or textOf(model, 'Timer')
-		return text and tonumber(text:match('%[([%d%.]+)%]') or text:match('([%d%.]+)')) or nil
+		if not text then return nil end
+		local bracket = text:match('%[([%d%.]+)%]')
+		if bracket then return tonumber(bracket) end
+		local minutes, seconds = text:match('(%d+):(%d+)')
+		if minutes then return tonumber(minutes) * 60 + tonumber(seconds) end
+		return tonumber(text:match('([%d%.]+)'))
 	end
 	
 	local function enabledKind(kind)
@@ -7169,14 +7175,28 @@ run(function()
 		}
 	end
 	
-	-- Everything lying on each generator, by item type. Drops are parts tagged ItemDrop and
-	-- named by item type; read every half second rather than every frame.
+	--[[
+		Everything lying on each generator, by item type. Drops are parts tagged ItemDrop,
+		named by item type, with the stack size in Amount. The tagged generator part floats
+		above the generator itself, so drops are matched by distance across the ground and a
+		generous height window rather than straight-line distance. Read every half second
+		rather than every frame.
+	]]
 	local function scanPiles()
 		if os.clock() - lastPileScan < 0.5 then return end
 		lastPileScan = os.clock()
 		table.clear(piles)
 	
 		local drops = collectionService:GetTagged('ItemDrop')
+		-- Drops also live in the ItemDrops folder; anything there without the tag is counted too.
+		local folder = workspace:FindFirstChild('ItemDrops')
+		if folder then
+			local seen = {}
+			for _, drop in drops do seen[drop] = true end
+			for _, drop in folder:GetChildren() do
+				if not seen[drop] then drops[#drops + 1] = drop end
+			end
+		end
 		for model, entry in generators do
 			if entry.kind and entry.adornee.Parent then
 				local center = entry.adornee.Position
@@ -7184,7 +7204,8 @@ run(function()
 				local counts = {}
 				for _, drop in drops do
 					local part = drop:IsA('BasePart') and drop or drop:FindFirstChildWhichIsA('BasePart', true)
-					if part and (part.Position - center).Magnitude <= radius then
+					local offset = part and part.Position - center
+					if offset and Vector2.new(offset.X, offset.Z).Magnitude <= radius and offset.Y <= 4 and offset.Y >= -14 then
 						counts[drop.Name] = (counts[drop.Name] or 0) + (tonumber(drop:GetAttribute('Amount')) or 1)
 					end
 				end
