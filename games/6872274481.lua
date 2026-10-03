@@ -11475,7 +11475,9 @@ run(function()
 	local tracked = {}
 	local pools = {}
 	local highlights = {}
-	local STEP = 0.03
+	-- Seconds of flight per simulated step (two raycasts each for the aim preview, every
+	-- frame); 0.05 keeps the curve smooth at under two thirds of the cost of 0.03.
+	local STEP = 0.05
 	local HIGHLIGHT_FADE = 0.35
 	local NEAR = 0.1
 	
@@ -11655,8 +11657,8 @@ run(function()
 		local count = #points - 1
 		local used = 0
 		for i = 1, count do
-			-- Dashes of three steps on, three off.
-			if style == 'Dashed' and math.floor((i - 1) / 3) % 2 == 1 then continue end
+			-- Dashes of two steps on, two off.
+			if style == 'Dashed' and math.floor((i - 1) / 2) % 2 == 1 then continue end
 			local from, to = screenSegment(points[i], points[i + 1])
 			-- Skipped only when wholly off one side of the screen.
 			if from and not ((from.X < 0 and to.X < 0) or (from.Y < 0 and to.Y < 0)
