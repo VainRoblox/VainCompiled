@@ -2553,30 +2553,28 @@ run(function()
 	-- than stacking another track on top of one still running.
 	local swingtrack
 
-	-- How long to leave a swing running when the track itself cannot say, and how long to
-	-- fade it out over.
-	local SWING_FALLBACK = 0.3
-	local SWING_FADE = 0.1
-
 	--[[
-		Ends a swing once it has had its time.
+		The swing's rhythm: no more often than the game's own break cooldown, which is how
+		often it plays the swing when you mine by hand, and blended into the next.
 
-		Scheduled rather than waited on. Waiting blocked the promise this is called from
-		and, at any break speed shorter than the wait, started the next swing on top of one
-		still playing. Leaving it to be stopped by the next swing instead was worse: the
-		last one of a dig had no next swing to replace it, so it simply never stopped.
-
-		Length is zero until the asset has loaded, which is usually the case immediately
-		after asking for it, so there is a fallback to fall back on.
+		Swings used to be stopped on a timer, and the timer had to guess: a track's Length
+		reads zero until its asset has loaded, which is almost always the case right after it
+		starts, so every swing was cut off at a fixed 0.3s wherever it had got to. Then
+		nothing played until the next block, and the arm snapped and paused, snapped and
+		paused. Now a swing is only cut short by the next one, with a fade, and the last of a
+		dig plays out and cleans itself up when it ends.
 	]]
+	local SWING_GAP = 0.3
+	local SWING_FADE = 0.15
+	local lastSwing = 0
+
 	local function endSwing(track)
-		task.delay(track.Length > 0 and track.Length or SWING_FALLBACK, function()
-			if swingtrack == track then
-				swingtrack = nil
-			end
-			pcall(function()
-				track:Stop(SWING_FADE)
-				track:Destroy()
+		pcall(function()
+			track.Stopped:Once(function()
+				if swingtrack == track then
+					swingtrack = nil
+				end
+				pcall(track.Destroy, track)
 			end)
 		end)
 	end
@@ -2700,13 +2698,11 @@ run(function()
 						animation never got past its opening frames before being cut back
 						to the start, which is not a fast swing, it is a stutter.
 
-						A swing already running is left alone now and the next begins when
-						it has finished. swingtrack is cleared by endSwing after the
-						track's own length, so that is the whole of the timing: the arm
-						swings at the speed the animation was made for however quickly the
-						blocks are going.
+						Swings come at the game's own mining rhythm (SWING_GAP) however
+						quickly the blocks are going, each fading into the next.
 					]]
-					if anim and not swingtrack then
+					if anim and os.clock() - lastSwing >= SWING_GAP then
+						lastSwing = os.clock()
 						pcall(function()
 							local held = store.hand.tool and bedwars.ItemMeta[store.hand.tool.Name]
 							local swing = (held and held.breakBlockSwingAnimationOverride) or bedwars.AnimationType.FP_USE_ITEM
@@ -2715,6 +2711,10 @@ run(function()
 
 						-- The character swing is the half other players can see.
 						pcall(function()
+							local previous = swingtrack
+							if previous and previous.IsPlaying then
+								previous:Stop(SWING_FADE)
+							end
 							local track = bedwars.AnimationUtil:playAnimation(lplr, bedwars.BlockController:getAnimationController():getAssetId(bedwars.AnimationType.SWORD_SWING))
 							swingtrack = track
 							endSwing(track)
@@ -12188,11 +12188,15 @@ run(function()
 		of the path right under the camera still draws in first person. A path that falls into
 		the void ends where it crosses the void height AntiFall uses - just under the lowest
 		open block on the map - with no landing marker, as it never comes down.
+	
+		Davey's cannons get the same treatment: where launching yourself from each one puts
+		you, and where anybody already flying out of one is about to come down.
 	]]
 	local Trajectories
 	local ShowOwn, ShowTeam, PearlOnly, Marker, Danger, AimPreview, AimHighlight, MaxTime, Thickness
 	local LineStyle, MarkerStyle, MarkerSize, ChargingOnly, ImpactHighlight, TypeColors
 	local LineColor, DangerColor, PearlColor, AimColor, HighlightColor, ArrowColor, FireballColor, SnowballColor
+	local Cannons, CannonJump, CannonFlights, CannonColor
 	local impactBox
 	local tracked = {}
 	local pools = {}
@@ -12292,6 +12296,9 @@ run(function()
 		pools[key] = nil
 	end
 	
+	-- Cannons whose arc is worked out, keyed by the cannon; filled in by cannonPaths below.
+	local cannonCache = {}
+	
 	local function refreshFilter()
 		local ignore = {gameCamera}
 		local bodies = {}
@@ -12302,6 +12309,7 @@ run(function()
 			end
 		end
 		for model in tracked do ignore[#ignore + 1] = model end
+		for cannon in cannonCache do ignore[#ignore + 1] = cannon end
 		rayParams.FilterDescendantsInstances = ignore
 		bodyParams.FilterDescendantsInstances = bodies
 	end
@@ -12311,10 +12319,10 @@ run(function()
 		time runs out. Returns the points along it, where it stopped, and the character it hit
 		if checkBodies is set.
 	]]
-	local function simulate(origin, velocity, gravity, checkBodies)
+	local function simulate(origin, velocity, gravity, checkBodies, maxTime)
 		local points = {origin}
 		local previous = origin
-		local limit = MaxTime and MaxTime.Value or 3
+		local limit = maxTime or (MaxTime and MaxTime.Value or 3)
 		local void = getVoidHeight()
 		local t = 0
 		while t < limit do
@@ -12614,6 +12622,83 @@ run(function()
 		setImpact(not character and part or nil, color)
 	end
 	
+	--[[
+		Davey's cannons.
+	
+		Launching yourself is CannonHandController:launchSelf: an impulse of the cannon's
+		LookVector attribute times 200, added to the speed you already have - so a jump just
+		before it adds its upward speed and carries you furthest. After that you are a character
+		falling at the world's gravity. Each cannon's arc is worked out from its barrel again
+		whenever it is turned and otherwise twice a second, and drawn every frame. Anyone flying
+		faster than walking, jumping or a knockback ever takes them gets their own landing drawn.
+	]]
+	local CANNON_SPEED = 200
+	local CANNON_TIME = 8
+	local FLIGHT_SPEED = 140
+	local flightKeys = {}
+	
+	local function jumpSpeed()
+		local ok, speed = pcall(function()
+			local humanoid = entitylib.character.Humanoid
+			if humanoid.UseJumpPower then return humanoid.JumpPower end
+			return math.sqrt(2 * workspace.Gravity * humanoid.JumpHeight)
+		end)
+		return ok and type(speed) == 'number' and speed > 0 and speed or 50
+	end
+	
+	local function cannonPaths()
+		local seen = {}
+		local color = colorOf(CannonColor, Color3.fromRGB(255, 170, 60))
+		if on(Cannons) then
+			local ok, list = pcall(function() return bedwars.CannonController:getCannons() end)
+			for _, cannon in ok and type(list) == 'table' and list or {} do
+				local barrel = typeof(cannon) == 'Instance' and cannon:FindFirstChild('Barrel')
+				local look = barrel and cannon:GetAttribute('LookVector')
+				if typeof(look) == 'Vector3' and look.Magnitude > 0 then
+					seen[cannon] = true
+					local cache = cannonCache[cannon]
+					local jump = on(CannonJump)
+					if not cache or cache.look ~= look or cache.jump ~= jump or os.clock() - cache.at > 0.5 then
+						local velocity = look * CANNON_SPEED + (jump and Vector3.new(0, jumpSpeed(), 0) or Vector3.zero)
+						local points, landing = simulate(barrel.Position + look.Unit * 3, velocity, workspace.Gravity, false, CANNON_TIME)
+						cache = {look = look, jump = jump, at = os.clock(), points = points, landing = landing}
+						cannonCache[cannon] = cache
+					end
+					draw(cannon, cache.points, cache.landing, color)
+				end
+			end
+		end
+		for cannon in cannonCache do
+			if not seen[cannon] then
+				cannonCache[cannon] = nil
+				destroyPool(cannon)
+			end
+		end
+	
+		local flying = {}
+		if on(CannonFlights) then
+			for _, entity in entitylib.List do
+				local root = entity.RootPart
+				if entity.Player and root and (entity.Health or 0) > 0 then
+					local velocity = root.AssemblyLinearVelocity
+					if velocity.Magnitude > FLIGHT_SPEED then
+						local key = 'flight' .. entity.Player.UserId
+						flying[key] = true
+						flightKeys[key] = true
+						local points, landing = simulate(root.Position, velocity, workspace.Gravity, false, CANNON_TIME)
+						draw(key, points, landing, color)
+					end
+				end
+			end
+		end
+		for key in flightKeys do
+			if not flying[key] then
+				flightKeys[key] = nil
+				destroyPool(key)
+			end
+		end
+	end
+	
 	local function step()
 		refreshFilter()
 		for model in tracked do
@@ -12655,6 +12740,7 @@ run(function()
 			draw(model, points, landing, color)
 		end
 		pcall(aimPreview)
+		pcall(cannonPaths)
 		updateHighlights()
 	end
 	
@@ -12671,6 +12757,8 @@ run(function()
 			else
 				for key in pools do destroyPool(key) end
 				table.clear(tracked)
+				table.clear(cannonCache)
+				table.clear(flightKeys)
 				clearHighlights()
 				if impactBox then
 					impactBox:Destroy()
@@ -12772,6 +12860,25 @@ run(function()
 			end
 		end
 	})
+	Cannons = Trajectories:CreateToggle({
+		Name = 'Cannons',
+		Tooltip = 'Shows where each Davey cannon launches you',
+		Default = true,
+		Function = function(callback)
+			if CannonJump and CannonJump.Object then CannonJump.Object.Visible = callback end
+		end
+	})
+	CannonJump = Trajectories:CreateToggle({
+		Name = 'Jump Before Launch',
+		Tooltip = 'Assumes a jump right before launching, for the furthest arc',
+		Default = true,
+		Darker = true
+	})
+	CannonFlights = Trajectories:CreateToggle({
+		Name = 'Cannon Flights',
+		Tooltip = 'Shows where anyone flying out of a cannon lands',
+		Default = true
+	})
 	MaxTime = Trajectories:CreateSlider({
 		Name = 'Max Time',
 		Tooltip = 'Seconds of flight each path shows',
@@ -12845,6 +12952,13 @@ run(function()
 		DefaultValue = 1,
 		Darker = true,
 		Visible = false
+	})
+	CannonColor = Trajectories:CreateColorSlider({
+		Name = 'Cannon Color',
+		Tooltip = 'Colour of cannon arcs and flights',
+		DefaultHue = 0.08,
+		DefaultSat = 0.75,
+		DefaultValue = 1
 	})
 	SnowballColor = Trajectories:CreateColorSlider({
 		Name = 'Snowball Color',
