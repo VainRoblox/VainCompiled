@@ -372,10 +372,61 @@ local function snapPosition(object, x, y)
 	return x, y
 end
 
+--[[
+	Placeholders for the overlays while the GUI is open: a faint backing with the module's
+	name and an outline, under the overlay's own content, so one with nothing to show at
+	the moment (no target, nobody dead) can still be seen and dragged into place.
+]]
+local editPlaceholders = setmetatable({}, {__mode = 'k'})
+local editWatching = false
+
+local function setEditPlaceholders(open)
+	for placeholder in editPlaceholders do
+		placeholder.Visible = open
+	end
+end
+
+local function addEditPlaceholder(frame, name)
+	local placeholder = Instance.new('Frame')
+	placeholder.Name = 'EditPlaceholder'
+	placeholder.Size = UDim2.fromScale(1, 1)
+	placeholder.BackgroundColor3 = Color3.new(0, 0, 0)
+	placeholder.BackgroundTransparency = 0.7
+	placeholder.BorderSizePixel = 0
+	placeholder.ZIndex = 0
+	placeholder.Visible = clickgui ~= nil and clickgui.Visible
+	placeholder.Parent = frame
+	local corner = Instance.new('UICorner')
+	corner.CornerRadius = UDim.new(0, 6)
+	corner.Parent = placeholder
+	local stroke = Instance.new('UIStroke')
+	stroke.Color = Color3.fromRGB(90, 170, 255)
+	stroke.Transparency = 0.3
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Parent = placeholder
+	local label = Instance.new('TextLabel')
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.fromScale(1, 1)
+	label.Text = name or ''
+	label.TextSize = 12
+	label.Font = Enum.Font.GothamBold
+	label.TextColor3 = Color3.new(1, 1, 1)
+	label.TextTransparency = 0.45
+	label.ZIndex = 0
+	label.Parent = placeholder
+	editPlaceholders[placeholder] = true
+	if not editWatching and clickgui then
+		editWatching = true
+		clickgui:GetPropertyChangedSignal('Visible'):Connect(function()
+			setEditPlaceholders(clickgui.Visible)
+		end)
+	end
+end
+
 local function makeDraggable(gui, window)
 	if window then snapTargets[gui] = true end
 	gui.InputBegan:Connect(function(inputObj)
-		if window and not window.Visible then return end
+		if window and not (window.Visible or (clickgui and clickgui.Visible)) then return end
 		if
 			(inputObj.UserInputType == Enum.UserInputType.MouseButton1 or inputObj.UserInputType == Enum.UserInputType.Touch)
 			and (inputObj.Position.Y - gui.AbsolutePosition.Y < 40 or window)
@@ -2475,6 +2526,7 @@ function mainapi:CreateLegit(categorysettings)
 			moduleholder.Visible = false
 			moduleholder.Parent = scaledgui
 			makeDraggable(moduleholder, window)
+			addEditPlaceholder(moduleholder, modulesettings.Name)
 			local objectstroke = Instance.new('UIStroke')
 			objectstroke.Color = Color3.fromRGB(5, 134, 105)
 			objectstroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
