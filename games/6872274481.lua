@@ -21398,6 +21398,407 @@ run(function()
 	    })
 	end)
 	
+	
+	kitRun(function()
+	    --[[
+	        Auto Miner.
+	
+	        A Miner kill leaves a petrified statue of the victim, tagged 'petrified-player' and
+	        carrying a PetrifyId. Digging one is the "Gather" prompt: held for 2.5 seconds
+	        within 6 studs, then sent as DestroyPetrifiedPlayer with that id. Your own team's
+	        statues cannot be mined - the game refuses before the hold even starts - so they are
+	        never tried here either.
+	
+	        How the hold is done is up to you: Legit holds it for as long as the game does,
+	        Custom for whatever time you set, Instant not at all. Whether the server checks the
+	        hold is not known, so Legit is the default.
+	    ]]
+	    local AutoMiner
+	    local Mode, HoldTime, Range, Target, Animation, StayInRange
+	    local PauseInCombat, CombatRange, Cooldown, Notify
+	    local StatueESP, ESPColor, ShowDistance
+	    local GAME_HOLD = 2.5
+	    local GAME_RANGE = 6
+	    local attempted = {}
+	    local Reference = {}
+	    local Folder = Instance.new('Folder')
+	    Folder.Parent = vain.gui
+	    local digRemote
+	
+	    local function on(setting)
+	        return setting ~= nil and setting.Enabled
+	    end
+	
+	    local function myTeam()
+	        local team = lplr:GetAttribute('Team')
+	        return team ~= nil and tostring(team) or nil
+	    end
+	
+	    local function statueTeam(statue)
+	        local team = statue:GetAttribute('Team')
+	        if team == nil and statue.PrimaryPart then team = statue.PrimaryPart:GetAttribute('Team') end
+	        return team ~= nil and tostring(team) or nil
+	    end
+	
+	    local function ownTeams(statue)
+	        local mine = myTeam()
+	        return mine ~= nil and statueTeam(statue) == mine
+	    end
+	
+	    local function statuePosition(statue)
+	        local part = statue.PrimaryPart or statue:FindFirstChildWhichIsA('BasePart', true)
+	        return part and part.Position or nil
+	    end
+	
+	    -- The dig remote, by the name the game sends it under. The name resolved from the
+	    -- prompt at load is kept as the fallback in case it is ever renamed again.
+	    local function getDigRemote()
+	        if digRemote then return digRemote end
+	        local ok, remote = pcall(function()
+	            return bedwars.Client:Get('DestroyPetrifiedPlayer')
+	        end)
+	        if not (ok and remote) then
+	            ok, remote = pcall(function()
+	                return bedwars.Client:Get(remotes.MinerDig)
+	            end)
+	        end
+	        digRemote = ok and remote or nil
+	        return digRemote
+	    end
+	
+	    -- An enemy close enough that standing still to dig would be a mistake.
+	    local function inCombat(here)
+	        if not on(PauseInCombat) then return false end
+	        for _, ent in entitylib.List do
+	            if ent.Targetable and ent.Player and ent.RootPart
+	                and (ent.RootPart.Position - here).Magnitude <= CombatRange.Value then
+	                return true
+	            end
+	        end
+	        return false
+	    end
+	
+	    local function teamLabel(statue)
+	        local team = statueTeam(statue)
+	        return team and itemAlerts.teamName(team) or 'A'
+	    end
+	
+	    --[[
+	        The statue to dig next.
+	
+	        Only statues in range, not your team's, and not one already being dug or just
+	        tried - a statue that survives a dig is retried after a few seconds rather than
+	        spammed every frame.
+	    ]]
+	    local function pickStatue(here)
+	        local best, bestScore
+	        local now = os.clock()
+	        for _, statue in collectionService:GetTagged('petrified-player') do
+	            if statue.Parent and statue:GetAttribute('PetrifyId') ~= nil and not ownTeams(statue) then
+	                local tried = attempted[statue]
+	                if not tried or now - tried > 3 then
+	                    local position = statuePosition(statue)
+	                    local distance = position and (position - here).Magnitude
+	                    if distance and distance <= Range.Value then
+	                        local score = Target.Value == 'Farthest' and -distance or distance
+	                        if not bestScore or score < bestScore then
+	                            best, bestScore = statue, score
+	                        end
+	                    end
+	                end
+	            end
+	        end
+	        return best
+	    end
+	
+	    local function holdFor()
+	        if Mode.Value == 'Legit' then return GAME_HOLD end
+	        if Mode.Value == 'Custom' then return HoldTime.Value end
+	        return 0
+	    end
+	
+	    local function dig(statue)
+	        local remote = getDigRemote()
+	        if not remote then return false end
+	
+	        attempted[statue] = os.clock()
+	        local hold = holdFor()
+	        local track
+	        if on(Animation) and hold > 0 then
+	            pcall(function()
+	                track = bedwars.GameAnimationUtil:playAnimation(lplr, bedwars.AnimationType.MINER_MINE_STONE)
+	            end)
+	        end
+	
+	        -- Held the way the prompt holds: given up if the statue goes or, when asked, if
+	        -- you walk out of reach before the time is up.
+	        local finished = true
+	        local started = os.clock()
+	        while os.clock() - started < hold do
+	            task.wait()
+	            if not (AutoMiner.Enabled and statue.Parent and entitylib.isAlive) then
+	                finished = false
+	                break
+	            end
+	            if on(StayInRange) then
+	                local position = statuePosition(statue)
+	                if not position or (position - entitylib.character.RootPart.Position).Magnitude > Range.Value then
+	                    finished = false
+	                    break
+	                end
+	            end
+	        end
+	
+	        if track then pcall(function() track:Stop() end) end
+	        if not finished then
+	            attempted[statue] = nil
+	            return false
+	        end
+	
+	        local label = teamLabel(statue)
+	        local ok = pcall(function()
+	            remote:SendToServer({petrifyId = statue:GetAttribute('PetrifyId')})
+	        end)
+	        if ok and on(Notify) then
+	            notif('Auto Miner', label .. "'s statue dug", 3)
+	        end
+	        return ok
+	    end
+	
+	    -- ── statue ESP ─────────────────────────────────────────────────────────
+	    local function espColor()
+	        return Color3.fromHSV(ESPColor and ESPColor.Hue or 0.08, ESPColor and ESPColor.Sat or 0.3, ESPColor and ESPColor.Value or 0.85)
+	    end
+	
+	    local function espRemove(statue)
+	        local billboard = Reference[statue]
+	        if billboard then
+	            billboard:Destroy()
+	            Reference[statue] = nil
+	        end
+	    end
+	
+	    local function espAdd(statue)
+	        if Reference[statue] or not on(StatueESP) then return end
+	        local part = statue.PrimaryPart or statue:FindFirstChildWhichIsA('BasePart', true)
+	        if not part then return end
+	
+	        local billboard = Instance.new('BillboardGui')
+	        billboard.Name = 'Statue'
+	        billboard.Adornee = part
+	        billboard.Size = UDim2.fromOffset(160, 20)
+	        billboard.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
+	        billboard.AlwaysOnTop = true
+	        billboard.Parent = Folder
+	
+	        local label = Instance.new('TextLabel')
+	        label.Name = 'Label'
+	        label.Size = UDim2.fromScale(1, 1)
+	        label.BackgroundTransparency = 1
+	        label.RichText = true
+	        label.Font = Enum.Font.GothamBold
+	        label.TextSize = 13
+	        label.TextStrokeTransparency = 0.5
+	        label.TextColor3 = espColor()
+	        label.Parent = billboard
+	
+	        Reference[statue] = billboard
+	    end
+	
+	    -- Labels kept current: who it belongs to, and how far off it is when that is asked for.
+	    local function espUpdate()
+	        if not on(StatueESP) then return end
+	        local here = entitylib.isAlive and entitylib.character.RootPart.Position
+	        for statue, billboard in Reference do
+	            if not statue.Parent then
+	                espRemove(statue)
+	            else
+	                local label = billboard:FindFirstChild('Label')
+	                if label then
+	                    local text = ownTeams(statue) and 'Your team' or teamLabel(statue)
+	                    text = text .. ' statue'
+	                    if on(ShowDistance) and here then
+	                        local position = statuePosition(statue)
+	                        if position then
+	                            text = text .. ' [' .. math.floor((position - here).Magnitude) .. ']'
+	                        end
+	                    end
+	                    label.Text = text
+	                    label.TextColor3 = espColor()
+	                end
+	            end
+	        end
+	    end
+	
+	    local function setupESP()
+	        AutoMiner:Clean(collectionService:GetInstanceAddedSignal('petrified-player'):Connect(function(statue)
+	            task.defer(espAdd, statue)
+	        end))
+	        AutoMiner:Clean(collectionService:GetInstanceRemovedSignal('petrified-player'):Connect(espRemove))
+	        for _, statue in collectionService:GetTagged('petrified-player') do
+	            espAdd(statue)
+	        end
+	    end
+	
+	    local function clearESP()
+	        for statue in Reference do
+	            espRemove(statue)
+	        end
+	    end
+	
+	    AutoMiner = vain.Categories.Kit:CreateModule({
+	        Name = 'Auto Miner',
+	        Tooltip = 'Digs up petrified statues for you as Miner',
+	        Function = function(callback)
+	            if callback then
+	                setupESP()
+	                task.spawn(function()
+	                    repeat
+	                        local waited = false
+	                        -- Guarded: one statue that cannot be read must not stop the module.
+	                        pcall(function()
+	                            espUpdate()
+	                            if store.equippedKit ~= 'miner' or not entitylib.isAlive then return end
+	                            local here = entitylib.character.RootPart.Position
+	                            if inCombat(here) then return end
+	
+	                            local statue = pickStatue(here)
+	                            if statue and dig(statue) then
+	                                waited = true
+	                                task.wait(Cooldown.Value)
+	                            end
+	                        end)
+	                        if not waited then task.wait(0.1) end
+	                    until not AutoMiner.Enabled
+	                end)
+	            else
+	                clearESP()
+	                table.clear(attempted)
+	            end
+	        end
+	    })
+	    Mode = AutoMiner:CreateDropdown({
+	        Name = 'Mode',
+	        Tooltip = 'How the dig prompt is held',
+	        List = {'Legit', 'Custom', 'Instant'},
+	        Tooltips = {
+	            Legit = 'Holds it for the full 2.5 seconds, like the prompt',
+	            Custom = 'Holds it for the time set below',
+	            Instant = 'Digs straight away - may be rejected'
+	        },
+	        Function = function(value)
+	            if HoldTime and HoldTime.Object then HoldTime.Object.Visible = value == 'Custom' end
+	            if StayInRange and StayInRange.Object then StayInRange.Object.Visible = value ~= 'Instant' end
+	            if Animation and Animation.Object then Animation.Object.Visible = value ~= 'Instant' end
+	        end
+	    })
+	    HoldTime = AutoMiner:CreateSlider({
+	        Name = 'Hold Time',
+	        Tooltip = 'How long to hold the dig in Custom',
+	        Min = 0,
+	        Max = 2.5,
+	        Default = 1.5,
+	        Decimal = 10,
+	        Darker = true,
+	        Visible = false,
+	        Suffix = function()
+	            return 's'
+	        end
+	    })
+	    Range = AutoMiner:CreateSlider({
+	        Name = 'Range',
+	        Tooltip = 'How close a statue has to be\nThe game allows 6',
+	        Min = 1,
+	        Max = GAME_RANGE,
+	        Default = GAME_RANGE,
+	        Decimal = 10,
+	        Suffix = function(val)
+	            return val == 1 and 'stud' or 'studs'
+	        end
+	    })
+	    Target = AutoMiner:CreateDropdown({
+	        Name = 'Target',
+	        Tooltip = 'Which statue to dig first when there are several',
+	        List = {'Nearest', 'Farthest'}
+	    })
+	    Animation = AutoMiner:CreateToggle({
+	        Name = 'Animation',
+	        Tooltip = 'Plays the mining animation while holding',
+	        Default = true
+	    })
+	    StayInRange = AutoMiner:CreateToggle({
+	        Name = 'Stay In Range',
+	        Tooltip = 'Gives up the dig if you walk out of range',
+	        Default = true
+	    })
+	    Cooldown = AutoMiner:CreateSlider({
+	        Name = 'Cooldown',
+	        Tooltip = 'Wait between digs',
+	        Min = 0,
+	        Max = 3,
+	        Default = 0.2,
+	        Decimal = 10,
+	        Suffix = function()
+	            return 's'
+	        end
+	    })
+	    PauseInCombat = AutoMiner:CreateToggle({
+	        Name = 'Pause In Combat',
+	        Tooltip = 'Waits while an enemy is close',
+	        Function = function(callback)
+	            if CombatRange and CombatRange.Object then CombatRange.Object.Visible = callback end
+	        end
+	    })
+	    CombatRange = AutoMiner:CreateSlider({
+	        Name = 'Combat Range',
+	        Tooltip = 'How close an enemy has to be to pause',
+	        Min = 5,
+	        Max = 40,
+	        Default = 15,
+	        Darker = true,
+	        Visible = false,
+	        Suffix = function(val)
+	            return val == 1 and 'stud' or 'studs'
+	        end
+	    })
+	    Notify = AutoMiner:CreateToggle({
+	        Name = 'Notify',
+	        Tooltip = 'Tells you each time a statue is dug'
+	    })
+	    StatueESP = AutoMiner:CreateToggle({
+	        Name = 'Statue ESP',
+	        Tooltip = 'Names every petrified statue on the map',
+	        Function = function(callback)
+	            for _, setting in {ESPColor, ShowDistance} do
+	                if setting and setting.Object then setting.Object.Visible = callback end
+	            end
+	            if not callback then
+	                clearESP()
+	            elseif AutoMiner.Enabled then
+	                for _, statue in collectionService:GetTagged('petrified-player') do
+	                    espAdd(statue)
+	                end
+	            end
+	        end
+	    })
+	    ESPColor = AutoMiner:CreateColorSlider({
+	        Name = 'ESP Color',
+	        Tooltip = 'Colour of the statue labels',
+	        DefaultHue = 0.08,
+	        DefaultSat = 0.3,
+	        DefaultValue = 0.85,
+	        Darker = true,
+	        Visible = false
+	    })
+	    ShowDistance = AutoMiner:CreateToggle({
+	        Name = 'Show Distance',
+	        Tooltip = 'Adds how far away each statue is',
+	        Default = true,
+	        Darker = true,
+	        Visible = false
+	    })
+	end)
+	
 end)
 
 run(function()
