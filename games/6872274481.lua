@@ -1850,6 +1850,9 @@ run(function()
 					local targetpos = attackTable.validate.targetPosition.value
 					store.attackReach = ((selfpos - targetpos).Magnitude * 100) // 1 / 100
 					store.attackReachUpdate = tick() + 1
+					-- Who was hit last, for Target HUD's Last Hit mode.
+					store.lastHitCharacter = attackTable.entityInstance
+					store.lastHitAt = tick()
 
 					if Reach.Enabled or HitBoxes.Enabled then
 						attackTable.validate.raycast = attackTable.validate.raycast or {}
@@ -7050,6 +7053,7 @@ run(function()
 	local GeneratorESP
 	local Diamond, Emerald, Team, ShowItems, ShowTier, ShowTimer, ProgressBar, Icons
 	local Background, BackgroundColor, Outline, FontOption, Range, Scale
+	local ShowDistance, Compact, HideEmpty, FullAlert, FullAmount, FullColor
 	local Folder = Instance.new('Folder')
 	Folder.Parent = vain.gui
 	local generators = {}
@@ -7199,6 +7203,7 @@ run(function()
 		local title = newText(header, 2)
 		local timer = newText(header, 3)
 		local tier = newText(header, 4)
+		local distance = newText(header, 5)
 		local contents = row(2)
 	
 		local bar = Instance.new('Frame')
@@ -7217,7 +7222,7 @@ run(function()
 	
 		generators[part] = {
 			billboard = billboard, adornee = part, card = card, stroke = stroke, padding = padding,
-			header = header, icon = icon, title = title, timer = timer, tier = tier,
+			header = header, icon = icon, title = title, timer = timer, tier = tier, distance = distance,
 			contents = contents, chips = {}, bar = bar, fill = fill
 		}
 	end
@@ -7319,12 +7324,33 @@ run(function()
 		local size = math.floor(14 * Scale.Value)
 		local font = FontOption and FontOption.Value or Font.fromEnum(Enum.Font.GothamBold)
 	
+		-- What is waiting on it: its own resource for diamond and emerald, everything for a base.
+		local counts = piles[model] or {}
+		local total = 0
+		for itemType, amount in counts do
+			if kind == 'team' or itemType == info.item then total += amount end
+		end
+		if on(HideEmpty) and total == 0 then
+			billboard.Enabled = false
+			return
+		end
+		local full = on(FullAlert) and total >= FullAmount.Value
+		local compact = on(Compact)
+	
 		-- Card
 		local bg = BackgroundColor
 		entry.card.BackgroundColor3 = Color3.fromHSV(bg.Hue, bg.Sat, bg.Value)
 		entry.card.BackgroundTransparency = on(Background) and (1 - bg.Opacity) or 1
-		entry.stroke.Enabled = on(Outline)
-		entry.stroke.Color = info.color
+		-- A full pile pulses the outline in the alert colour, outline setting or not.
+		entry.stroke.Enabled = on(Outline) or full
+		if full then
+			local pulse = 0.5 + 0.5 * math.sin(os.clock() * 6)
+			entry.stroke.Color = Color3.fromHSV(FullColor.Hue, FullColor.Sat, FullColor.Value)
+			entry.stroke.Thickness = 1.5 + pulse * 1.5
+		else
+			entry.stroke.Color = info.color
+			entry.stroke.Thickness = 1.5
+		end
 		local pad = math.floor(size * 0.35)
 		entry.padding.PaddingLeft = UDim.new(0, pad + 2)
 		entry.padding.PaddingRight = UDim.new(0, pad + 2)
@@ -7335,24 +7361,32 @@ run(function()
 		entry.header.Size = UDim2.fromOffset(0, size + 2)
 		local image = iconOf(info.item)
 		entry.icon.Image = image
-		entry.icon.Visible = on(Icons) and kind ~= 'team' and image ~= ''
-		entry.title.Text = kind == 'team' and (textOf(model, 'Title') or 'Base Generator') or info.name
-		entry.title.TextColor3 = info.color
+		-- Compact keeps just the icon, the amount and the timer.
+		entry.icon.Visible = image ~= '' and (compact or (on(Icons) and kind ~= 'team'))
+		if compact then
+			entry.title.Text = 'x' .. total
+		else
+			entry.title.Text = kind == 'team' and (textOf(model, 'Title') or 'Base Generator') or info.name
+		end
+		entry.title.TextColor3 = full and Color3.fromHSV(FullColor.Hue, FullColor.Sat, FullColor.Value) or info.color
 		local seconds = secondsOf(model)
 		entry.timer.Visible = on(ShowTimer) and seconds ~= nil
 		entry.timer.Text = seconds and (seconds % 1 == 0 and (seconds .. 's') or string.format('%.1fs', seconds)) or ''
 		local level = model:GetAttribute('GeneratorLevel')
 		local tierText = textOf(model, 'GenTier') or textOf(model, 'Tier')
-		entry.tier.Visible = on(ShowTier) and (tierText ~= nil or level ~= nil)
+		entry.tier.Visible = not compact and on(ShowTier) and (tierText ~= nil or level ~= nil)
 		entry.tier.Text = tierText and tierText:upper() or ('T' .. tostring(level or ''))
 		entry.tier.TextColor3 = Color3.fromRGB(200, 200, 200)
-		for _, label in {entry.title, entry.timer, entry.tier} do
+		entry.distance.Visible = not compact and on(ShowDistance) and here ~= nil
+		entry.distance.Text = here and string.format('%dm', math.floor((entry.adornee.Position - here).Magnitude)) or ''
+		entry.distance.TextColor3 = Color3.fromRGB(170, 170, 170)
+		for _, label in {entry.title, entry.timer, entry.tier, entry.distance} do
 			label.TextSize = size
 			label.FontFace = font
 		end
 	
 		-- Contents
-		if on(ShowItems) then
+		if on(ShowItems) and not compact then
 			setContents(entry, piles[model], size, font)
 		else
 			entry.contents.Visible = false
@@ -7360,7 +7394,7 @@ run(function()
 	
 		-- Progress to the next spawn, full just after one and empty as the next lands.
 		local cooldown = tonumber(model:GetAttribute('Cooldown'))
-		entry.bar.Visible = on(ProgressBar) and seconds ~= nil and cooldown ~= nil and cooldown > 0
+		entry.bar.Visible = not compact and on(ProgressBar) and seconds ~= nil and cooldown ~= nil and cooldown > 0
 		if entry.bar.Visible then
 			entry.bar.Size = UDim2.fromOffset(math.max(entry.header.AbsoluteSize.X, size * 4), math.max(2, math.floor(size / 5)))
 			entry.fill.Size = UDim2.fromScale(math.clamp(seconds / cooldown, 0, 1), 1)
@@ -7372,7 +7406,7 @@ run(function()
 	end
 	
 	local function update()
-		if on(ShowItems) then scanPiles() end
+		if on(ShowItems) or on(HideEmpty) or on(FullAlert) or on(Compact) then scanPiles() end
 		local here = entitylib.isAlive and entitylib.character.RootPart.Position
 	
 		for model, entry in generators do
@@ -7435,6 +7469,45 @@ run(function()
 	ShowTier = GeneratorESP:CreateToggle({
 		Name = 'Show Tier',
 		Tooltip = 'Shows each generator\'s tier'
+	})
+	ShowDistance = GeneratorESP:CreateToggle({
+		Name = 'Distance',
+		Tooltip = 'Shows how far away each one is'
+	})
+	Compact = GeneratorESP:CreateToggle({
+		Name = 'Compact',
+		Tooltip = 'Just the icon, amount and timer'
+	})
+	HideEmpty = GeneratorESP:CreateToggle({
+		Name = 'Hide Empty',
+		Tooltip = 'Hides generators with nothing on them'
+	})
+	FullAlert = GeneratorESP:CreateToggle({
+		Name = 'Full Alert',
+		Tooltip = 'Flashes a generator once its pile is big enough',
+		Function = function(callback)
+			for _, setting in {FullAmount, FullColor} do
+				if setting and setting.Object then setting.Object.Visible = callback end
+			end
+		end
+	})
+	FullAmount = GeneratorESP:CreateSlider({
+		Name = 'Full Amount',
+		Tooltip = 'How many count as full',
+		Min = 1,
+		Max = 30,
+		Default = 4,
+		Darker = true,
+		Visible = false
+	})
+	FullColor = GeneratorESP:CreateColorSlider({
+		Name = 'Full Color',
+		Tooltip = 'Colour of the full alert',
+		DefaultHue = 0.13,
+		DefaultSat = 0.9,
+		DefaultValue = 1,
+		Darker = true,
+		Visible = false
 	})
 	Icons = GeneratorESP:CreateToggle({
 		Name = 'Icons',
@@ -10338,7 +10411,9 @@ run(function()
 	]]
 	local Trajectories
 	local ShowOwn, ShowTeam, PearlOnly, Marker, Danger, AimPreview, AimHighlight, MaxTime, Thickness
-	local LineColor, DangerColor, PearlColor, AimColor, HighlightColor
+	local LineStyle, MarkerStyle, MarkerSize, ChargingOnly, ImpactHighlight, TypeColors
+	local LineColor, DangerColor, PearlColor, AimColor, HighlightColor, ArrowColor, FireballColor, SnowballColor
+	local impactBox
 	local tracked = {}
 	local pools = {}
 	local highlights = {}
@@ -10432,15 +10507,22 @@ run(function()
 	local function pool(key)
 		local entry = pools[key]
 		if not entry then
-			entry = {lines = {}, circle = nil}
+			entry = {lines = {}, circle = nil, cross = nil}
 			pools[key] = entry
 		end
 		return entry
 	end
 	
+	local function hideMarker(entry)
+		if entry.circle then entry.circle.Visible = false end
+		if entry.cross then
+			for _, line in entry.cross do line.Visible = false end
+		end
+	end
+	
 	local function hidePool(entry)
 		for _, line in entry.lines do line.Visible = false end
-		if entry.circle then entry.circle.Visible = false end
+		hideMarker(entry)
 	end
 	
 	local function destroyPool(key)
@@ -10448,6 +10530,7 @@ run(function()
 		if not entry then return end
 		for _, line in entry.lines do pcall(function() line:Remove() end) end
 		if entry.circle then pcall(function() entry.circle:Remove() end) end
+		for _, line in entry.cross or {} do pcall(function() line:Remove() end) end
 		pools[key] = nil
 	end
 	
@@ -10501,7 +10584,7 @@ run(function()
 			end
 			if hit then
 				points[#points + 1] = hit.Position
-				return points, hit.Position
+				return points, hit.Position, nil, hit.Instance
 			end
 			points[#points + 1] = point
 			previous = point
@@ -10526,12 +10609,20 @@ run(function()
 		return Vector2.new(sa.X, sa.Y), Vector2.new(sb.X, sb.Y)
 	end
 	
+	--[[
+		Lines in the chosen style - solid, dashed (every other stretch left out) or fading out
+		towards the end - and a marker where it comes down: a circle, a cross or a dot.
+	]]
 	local function draw(key, points, landing, color)
 		local entry = pool(key)
 		local thickness = Thickness and Thickness.Value or 2
+		local style = LineStyle and LineStyle.Value or 'Solid'
 		local viewport = gameCamera.ViewportSize
+		local count = #points - 1
 		local used = 0
-		for i = 1, #points - 1 do
+		for i = 1, count do
+			-- Dashes of three steps on, three off.
+			if style == 'Dashed' and math.floor((i - 1) / 3) % 2 == 1 then continue end
 			local from, to = screenSegment(points[i], points[i + 1])
 			-- Skipped only when wholly off one side of the screen.
 			if from and not ((from.X < 0 and to.X < 0) or (from.Y < 0 and to.Y < 0)
@@ -10546,29 +10637,54 @@ run(function()
 				line.To = to
 				line.Color = color
 				line.Thickness = thickness
+				-- Drawing transparency runs the other way: 1 is solid.
+				line.Transparency = style == 'Fade' and math.clamp(1 - (i / count) * 0.85, 0.15, 1) or 1
 				line.Visible = true
 			end
 		end
 		for i = used + 1, #entry.lines do entry.lines[i].Visible = false end
 	
-		if landing and on(Marker) then
-			local point, visible = gameCamera:WorldToViewportPoint(landing)
-			if visible and point.Z > 0 then
-				if not entry.circle then
-					entry.circle = Drawing.new('Circle')
-					entry.circle.NumSides = 24
-					entry.circle.Filled = false
-				end
-				entry.circle.Position = Vector2.new(point.X, point.Y)
-				entry.circle.Radius = 7
-				entry.circle.Thickness = thickness
-				entry.circle.Color = color
-				entry.circle.Visible = true
-			elseif entry.circle then
-				entry.circle.Visible = false
+		if not (landing and on(Marker)) then
+			hideMarker(entry)
+			return
+		end
+		local point, visible = gameCamera:WorldToViewportPoint(landing)
+		if not (visible and point.Z > 0) then
+			hideMarker(entry)
+			return
+		end
+		local center = Vector2.new(point.X, point.Y)
+		local size = MarkerSize and MarkerSize.Value or 7
+		local mstyle = MarkerStyle and MarkerStyle.Value or 'Circle'
+		if mstyle == 'Cross' then
+			if entry.circle then entry.circle.Visible = false end
+			if not entry.cross then
+				entry.cross = {Drawing.new('Line'), Drawing.new('Line')}
 			end
-		elseif entry.circle then
-			entry.circle.Visible = false
+			local a, b = entry.cross[1], entry.cross[2]
+			a.From, a.To = center + Vector2.new(-size, -size), center + Vector2.new(size, size)
+			b.From, b.To = center + Vector2.new(-size, size), center + Vector2.new(size, -size)
+			for _, line in entry.cross do
+				line.Color = color
+				line.Thickness = thickness
+				line.Transparency = 1
+				line.Visible = true
+			end
+		else
+			if entry.cross then
+				for _, line in entry.cross do line.Visible = false end
+			end
+			if not entry.circle then
+				entry.circle = Drawing.new('Circle')
+				entry.circle.NumSides = 24
+			end
+			entry.circle.Filled = mstyle == 'Dot'
+			entry.circle.Position = center
+			entry.circle.Radius = mstyle == 'Dot' and math.max(size * 0.6, 2) or size
+			entry.circle.Thickness = thickness
+			entry.circle.Color = color
+			entry.circle.Transparency = 1
+			entry.circle.Visible = true
 		end
 	end
 	
@@ -10694,22 +10810,50 @@ run(function()
 		table.clear(highlights)
 	end
 	
+	-- Shades the block the shot lands on.
+	local function setImpact(part, color)
+		if not (part and on(ImpactHighlight) and part:IsA('BasePart')) then
+			if impactBox then impactBox.Visible = false end
+			return
+		end
+		if not impactBox then
+			impactBox = Instance.new('BoxHandleAdornment')
+			impactBox.AlwaysOnTop = true
+			impactBox.ZIndex = 1
+			impactBox.Parent = HighlightFolder
+		end
+		impactBox.Adornee = part
+		impactBox.Size = part.Size + Vector3.new(0.05, 0.05, 0.05)
+		impactBox.Color3 = color
+		impactBox.Transparency = 0.6
+		impactBox.Visible = true
+	end
+	
+	-- Whether the game is aiming a shot right now (the bow drawn, the pearl wound up).
+	local function charging()
+		local controller = bedwars.ProjectileController
+		return controller ~= nil and controller.isTargeting == true
+	end
+	
 	local function aimPreview()
-		if not (on(AimPreview) and entitylib.isAlive) then
+		if not (on(AimPreview) and entitylib.isAlive) or (on(ChargingOnly) and not charging()) then
 			destroyPool('aim')
+			setImpact(nil)
 			return
 		end
 		local start, velocity, gravity, name = aimLaunch()
 		if not start or (on(PearlOnly) and not isPearl(name)) then
 			local entry = pools.aim
 			if entry then hidePool(entry) end
+			setImpact(nil)
 			return
 		end
 	
-		local points, landing, character = simulate(start, velocity, gravity, true)
+		local points, landing, character, part = simulate(start, velocity, gravity, true)
 		if character and on(AimHighlight) then markHit(character) end
 		local color = isPearl(name) and colorOf(PearlColor, Color3.fromRGB(200, 120, 255)) or colorOf(AimColor, Color3.fromRGB(120, 220, 255))
 		draw('aim', points, landing, color)
+		setImpact(not character and part or nil, color)
 	end
 	
 	local function step()
@@ -10736,10 +10880,17 @@ run(function()
 	
 			local points, landing = simulate(root.Position, velocity, projectileGravity(root))
 			local color
+			local lower = model.Name:lower()
 			if isPearl(model.Name) then
 				color = colorOf(PearlColor, Color3.fromRGB(200, 120, 255))
 			elseif on(Danger) and threatens(points) then
 				color = colorOf(DangerColor, Color3.fromRGB(255, 70, 70))
+			elseif on(TypeColors) and lower:find('arrow', 1, true) then
+				color = colorOf(ArrowColor, Color3.fromRGB(255, 255, 255))
+			elseif on(TypeColors) and lower:find('fireball', 1, true) then
+				color = colorOf(FireballColor, Color3.fromRGB(255, 140, 40))
+			elseif on(TypeColors) and lower:find('snowball', 1, true) then
+				color = colorOf(SnowballColor, Color3.fromRGB(170, 220, 255))
 			else
 				color = colorOf(LineColor, Color3.fromRGB(255, 220, 120))
 			end
@@ -10763,6 +10914,10 @@ run(function()
 				for key in pools do destroyPool(key) end
 				table.clear(tracked)
 				clearHighlights()
+				if impactBox then
+					impactBox:Destroy()
+					impactBox = nil
+				end
 			end
 		end
 	})
@@ -10780,8 +10935,32 @@ run(function()
 	})
 	Marker = Trajectories:CreateToggle({
 		Name = 'Landing Marker',
-		Tooltip = 'Circles where each one comes down',
-		Default = true
+		Tooltip = 'Marks where each one comes down',
+		Default = true,
+		Function = function(callback)
+			for _, setting in {MarkerStyle, MarkerSize} do
+				if setting and setting.Object then setting.Object.Visible = callback end
+			end
+		end
+	})
+	MarkerStyle = Trajectories:CreateDropdown({
+		Name = 'Marker Style',
+		List = {'Circle', 'Cross', 'Dot'},
+		Tooltips = {Circle = 'A ring', Cross = 'An X', Dot = 'A filled dot'},
+		Darker = true
+	})
+	MarkerSize = Trajectories:CreateSlider({
+		Name = 'Marker Size',
+		Tooltip = 'How big the marker is',
+		Min = 3,
+		Max = 20,
+		Default = 7,
+		Darker = true
+	})
+	LineStyle = Trajectories:CreateDropdown({
+		Name = 'Line Style',
+		List = {'Solid', 'Dashed', 'Fade'},
+		Tooltips = {Solid = 'One unbroken line', Dashed = 'A dashed line', Fade = 'Fades out towards the end'}
 	})
 	Danger = Trajectories:CreateToggle({
 		Name = 'Danger Color',
@@ -10796,7 +10975,9 @@ run(function()
 		Tooltip = 'Draws where what you are holding will land',
 		Function = function(callback)
 			if AimColor and AimColor.Object then AimColor.Object.Visible = callback end
-			if AimHighlight and AimHighlight.Object then AimHighlight.Object.Visible = callback end
+			for _, setting in {AimHighlight, ChargingOnly, ImpactHighlight} do
+				if setting and setting.Object then setting.Object.Visible = callback end
+			end
 			if HighlightColor and HighlightColor.Object then
 				HighlightColor.Object.Visible = callback and on(AimHighlight)
 			end
@@ -10812,6 +10993,25 @@ run(function()
 				HighlightColor.Object.Visible = callback and on(AimPreview)
 			end
 			if not callback then clearHighlights() end
+		end
+	})
+	ChargingOnly = Trajectories:CreateToggle({
+		Name = 'Only While Aiming',
+		Tooltip = 'Aim preview only while drawing or winding up',
+		Visible = false
+	})
+	ImpactHighlight = Trajectories:CreateToggle({
+		Name = 'Impact Highlight',
+		Tooltip = 'Shades the block your shot lands on',
+		Visible = false
+	})
+	TypeColors = Trajectories:CreateToggle({
+		Name = 'Type Colors',
+		Tooltip = 'Own colours for arrows, fireballs and snowballs',
+		Function = function(callback)
+			for _, setting in {ArrowColor, FireballColor, SnowballColor} do
+				if setting and setting.Object then setting.Object.Visible = callback end
+			end
 		end
 	})
 	MaxTime = Trajectories:CreateSlider({
@@ -10868,6 +11068,32 @@ run(function()
 		DefaultSat = 0.7,
 		DefaultValue = 1,
 		DefaultOpacity = 0.5,
+		Darker = true,
+		Visible = false
+	})
+	ArrowColor = Trajectories:CreateColorSlider({
+		Name = 'Arrow Color',
+		Tooltip = 'Colour of arrows',
+		DefaultSat = 0,
+		DefaultValue = 1,
+		Darker = true,
+		Visible = false
+	})
+	FireballColor = Trajectories:CreateColorSlider({
+		Name = 'Fireball Color',
+		Tooltip = 'Colour of fireballs',
+		DefaultHue = 0.07,
+		DefaultSat = 0.85,
+		DefaultValue = 1,
+		Darker = true,
+		Visible = false
+	})
+	SnowballColor = Trajectories:CreateColorSlider({
+		Name = 'Snowball Color',
+		Tooltip = 'Colour of snowballs',
+		DefaultHue = 0.57,
+		DefaultSat = 0.35,
+		DefaultValue = 1,
 		Darker = true,
 		Visible = false
 	})
@@ -11614,6 +11840,7 @@ run(function()
 	local TrapESP
 	local Snap, Tesla, Landmines, Spikes, Webs, Turrets
 	local ShowOwn, Distance, Highlight, EnemyColor, OwnColor, Range
+	local ArmingState, WarnRadius, WarnDistance, WarnColor, TextSize, FontOption, Icons
 	local Folder = Instance.new('Folder')
 	Folder.Name = 'TrapESP'
 	Folder.Parent = vain.gui
@@ -11668,10 +11895,29 @@ run(function()
 		return team ~= nil and tostring(team) == tostring(lplr:GetAttribute('Team'))
 	end
 	
+	--[[
+		Whether it is live yet. The Trapper kit's traps say when they arm (TrapperArmAt) and a
+		tesla coil when it activates (ActivationTime), both in server time; a landmine says
+		whether it is active (LandmineActive). Nil when the trap says nothing.
+	]]
+	local function armingText(trap)
+		local now = workspace:GetServerTimeNow()
+		local armAt = trap:GetAttribute('TrapperArmAt') or trap:GetAttribute('ActivationTime')
+		if type(armAt) == 'number' then
+			return now < armAt and string.format('arming %.1fs', armAt - now) or 'armed', now >= armAt
+		end
+		local active = trap:GetAttribute('LandmineActive')
+		if active ~= nil then
+			return active and 'armed' or 'arming', active == true
+		end
+		return nil, true
+	end
+	
 	local function remove(trap)
 		local entry = traps[trap]
 		if not entry then return end
 		entry.billboard:Destroy()
+		entry.zone:Destroy()
 		if entry.highlight then entry.highlight:Destroy() end
 		traps[trap] = nil
 	end
@@ -11689,16 +11935,49 @@ run(function()
 		billboard.Enabled = false
 		billboard.Parent = Folder
 	
+		local holder = Instance.new('Frame')
+		holder.BackgroundTransparency = 1
+		holder.Size = UDim2.fromScale(1, 1)
+		holder.Parent = billboard
+		local layout = Instance.new('UIListLayout')
+		layout.FillDirection = Enum.FillDirection.Horizontal
+		layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		layout.VerticalAlignment = Enum.VerticalAlignment.Center
+		layout.Padding = UDim.new(0, 3)
+		layout.SortOrder = Enum.SortOrder.LayoutOrder
+		layout.Parent = holder
+	
+		local icon = Instance.new('ImageLabel')
+		icon.BackgroundTransparency = 1
+		icon.SizeConstraint = Enum.SizeConstraint.RelativeYY
+		icon.Size = UDim2.fromScale(1, 1)
+		icon.ScaleType = Enum.ScaleType.Fit
+		local meta = bedwars.ItemMeta[trap.Name]
+		icon.Image = meta and meta.image or ''
+		icon.LayoutOrder = 1
+		icon.Parent = holder
+	
 		local label = Instance.new('TextLabel')
 		label.Name = 'Label'
-		label.Size = UDim2.fromScale(1, 1)
+		label.AutomaticSize = Enum.AutomaticSize.X
+		label.Size = UDim2.fromScale(0, 1)
 		label.BackgroundTransparency = 1
 		label.Font = Enum.Font.GothamBold
 		label.TextSize = 13
 		label.TextStrokeTransparency = 0.4
-		label.Parent = billboard
+		label.LayoutOrder = 2
+		label.Parent = holder
 	
-		traps[trap] = {billboard = billboard, label = label, info = info, part = part}
+		-- The warn zone: a flat disc on the ground around the trap.
+		local zone = Instance.new('CylinderHandleAdornment')
+		zone.Adornee = workspace.Terrain
+		zone.Height = 0.05
+		zone.AlwaysOnTop = false
+		zone.ZIndex = 0
+		zone.Visible = false
+		zone.Parent = Folder
+	
+		traps[trap] = {billboard = billboard, label = label, icon = icon, zone = zone, info = info, part = part}
 	end
 	
 	local function update()
@@ -11712,11 +11991,34 @@ run(function()
 			local distance = here and (entry.part.Position - here).Magnitude or 0
 			local show = on(entry.info.group()) and (not own or on(ShowOwn)) and distance <= Range.Value
 			entry.billboard.Enabled = show
+			entry.zone.Visible = false
 	
 			if show then
 				local color = own and colorOf(OwnColor) or colorOf(EnemyColor)
+				local warnRange = WarnDistance.Value
+				-- Close to an enemy trap: the warning colour, and the zone drawn round it.
+				if not own and on(WarnRadius) then
+					if here and distance <= warnRange then color = colorOf(WarnColor) end
+					local pos = entry.part.Position
+					entry.zone.Radius = warnRange
+					entry.zone.CFrame = CFrame.new(pos.X, pos.Y - entry.part.Size.Y / 2 + 0.05, pos.Z) * CFrame.Angles(math.rad(90), 0, 0)
+					entry.zone.Color3 = color
+					entry.zone.Transparency = 0.82
+					entry.zone.Visible = true
+				end
+	
+				local text = nameOf(trap, entry.info)
+				if on(ArmingState) then
+					local state = armingText(trap)
+					if state then text ..= ' (' .. state .. ')' end
+				end
+				if on(Distance) and here then text ..= string.format(' [%d]', math.floor(distance)) end
+				entry.label.Text = text
 				entry.label.TextColor3 = color
-				entry.label.Text = nameOf(trap, entry.info) .. (on(Distance) and here and string.format(' [%d]', math.floor(distance)) or '')
+				entry.label.TextSize = TextSize.Value
+				if FontOption then entry.label.FontFace = FontOption.Value end
+				entry.icon.Visible = on(Icons) and entry.icon.Image ~= ''
+				entry.billboard.Size = UDim2.fromOffset(TextSize.Value * 18, TextSize.Value + 8)
 	
 				if on(Highlight) then
 					if not entry.highlight then
@@ -11804,6 +12106,56 @@ run(function()
 		Name = 'Highlight',
 		Tooltip = 'Also outlines the trap itself',
 		Default = true
+	})
+	ArmingState = TrapESP:CreateToggle({
+		Name = 'Arming State',
+		Tooltip = 'Shows whether each trap is live yet',
+		Default = true
+	})
+	WarnRadius = TrapESP:CreateToggle({
+		Name = 'Warn Radius',
+		Tooltip = 'Draws a zone round enemy traps and warns when you are in it',
+		Function = function(callback)
+			for _, setting in {WarnDistance, WarnColor} do
+				if setting and setting.Object then setting.Object.Visible = callback end
+			end
+		end
+	})
+	WarnDistance = TrapESP:CreateSlider({
+		Name = 'Warn Distance',
+		Tooltip = 'Radius of the warn zone',
+		Min = 2,
+		Max = 30,
+		Default = 8,
+		Darker = true,
+		Visible = false,
+		Suffix = function(val) return val == 1 and 'stud' or 'studs' end
+	})
+	WarnColor = TrapESP:CreateColorSlider({
+		Name = 'Warn Color',
+		Tooltip = 'Colour when you are close',
+		DefaultHue = 0.12,
+		DefaultSat = 0.95,
+		DefaultValue = 1,
+		Darker = true,
+		Visible = false
+	})
+	Icons = TrapESP:CreateToggle({
+		Name = 'Icons',
+		Tooltip = 'Shows the trap\'s item icon',
+		Default = true
+	})
+	TextSize = TrapESP:CreateSlider({
+		Name = 'Text Size',
+		Tooltip = 'How big the labels are',
+		Min = 8,
+		Max = 24,
+		Default = 13
+	})
+	FontOption = TrapESP:CreateFont({
+		Name = 'Font',
+		Tooltip = 'Font used for the labels',
+		Blacklist = 'GothamBold'
 	})
 	Range = TrapESP:CreateSlider({
 		Name = 'Range',
@@ -30814,38 +31166,71 @@ run(function()
 	--[[
 		Target HUD.
 	
-		A card for whoever you are fighting: the enemy nearest your crosshair within range,
-		held for a moment after they leave it so the card does not flicker. It shows their
-		avatar, name in their team colour, health (the Health and MaxHealth attributes the
-		entity list keeps), distance, kit (the PlayingAsKit attribute) and what they hold and
-		wear (the inventories the game replicates, kept in store.inventories). Nothing is
-		requested from the server; the avatar is a rbxthumb image.
+		A card for whoever you are fighting, picked one of three ways: the enemy nearest your
+		crosshair within range, the last one you hit (store.lastHitCharacter, written where the
+		attack is sent), or simply the nearest. The card stays a moment after they drop out so
+		it does not flicker, and shows a preview of yourself while the GUI is open so it can be
+		placed.
+	
+		It shows their avatar, name in their team colour, health (the Health and MaxHealth
+		attributes the entity list keeps) against yours, distance, kit (PlayingAsKit), active
+		enchants (StatusEffect_*enchant* attributes) and what they hold and wear (the
+		inventories the game replicates, kept in store.inventories). Nothing is requested from
+		the server; the avatar is a rbxthumb image.
 	]]
 	local TargetHUD
-	local Range, Angle, Linger, ShowEquipment, Background
-	local card, avatar, nameLabel, infoLabel, barBack, barFill, barGhost, equipment
+	local Mode, Range, Angle, Linger, ShowEquipment, WinIndicator, Compact, Accent, ShowKitName, ShowEnchants, Background
+	local card, stroke, avatar, nameLabel, winLabel, infoLabel, extraLabel, barBack, barFill, barGhost, equipment
 	local icons = {}
-	local target, targetSince, lastSeen = nil, 0, 0
+	local target, lastSeen = nil, 0
 	local ghost = 1
+	local LAST_HIT_HOLD = 6
 	
 	local function on(setting)
 		return setting ~= nil and setting.Enabled
 	end
 	
-	-- The enemy nearest the crosshair inside the range and the cone.
+	local function guiOpen()
+		local ok, open = pcall(function()
+			return vain.gui.ScaledGui.ClickGui.Visible
+		end)
+		return ok and open == true
+	end
+	
+	local function isEnemy(entity)
+		return entity.Player and entity.Targetable and entity.RootPart and (entity.Health or 0) > 0
+	end
+	
 	local function pick()
 		if not entitylib.isAlive then return nil end
 		local here = entitylib.character.RootPart.Position
+	
+		if Mode.Value == 'Last Hit' then
+			if store.lastHitCharacter and tick() - (store.lastHitAt or 0) <= LAST_HIT_HOLD then
+				local entity = entitylib.getEntity(store.lastHitCharacter)
+				if entity and isEnemy(entity) and (entity.RootPart.Position - here).Magnitude <= Range.Value then
+					return entity
+				end
+			end
+			return nil
+		end
+	
 		local look = gameCamera.CFrame.LookVector
-		local best, bestAngle
+		local best, bestScore
 		for _, entity in entitylib.List do
-			if entity.Player and entity.Targetable and entity.RootPart and entity.Health > 0 then
+			if isEnemy(entity) then
 				local offset = entity.RootPart.Position - here
 				local distance = offset.Magnitude
 				if distance <= Range.Value and distance > 0 then
-					local angle = math.deg(math.acos(math.clamp(look:Dot(offset.Unit), -1, 1)))
-					if angle <= Angle.Value and (not bestAngle or angle < bestAngle) then
-						best, bestAngle = entity, angle
+					local score
+					if Mode.Value == 'Nearest' then
+						score = distance
+					else
+						local angle = math.deg(math.acos(math.clamp(look:Dot(offset.Unit), -1, 1)))
+						score = angle <= Angle.Value and angle or nil
+					end
+					if score and (not bestScore or score < bestScore) then
+						best, bestScore = entity, score
 					end
 				end
 			end
@@ -30859,50 +31244,112 @@ run(function()
 		icon.Visible = image ~= nil and image ~= ''
 	end
 	
-	local function update()
-		local found = pick()
-		if found then
-			if found ~= target then
-				target, targetSince = found, os.clock()
-				ghost = math.clamp(found.Health / math.max(found.MaxHealth, 1), 0, 1)
+	-- "ARMOR_ENCHANT_FROST" style status names, read as "Frost".
+	local function enchantsOf(character)
+		local list = {}
+		for name in character:GetAttributes() do
+			local effect = name:match('^StatusEffect_(.+)$')
+			if effect and not effect:find('_stacks$') and not effect:find('_extra') and effect:lower():find('enchant', 1, true) then
+				local word = effect:lower():gsub('armor_enchant_', ''):gsub('_enchant', ''):gsub('enchant_', ''):gsub('_', ' ')
+				list[#list + 1] = word:gsub('^%l', string.upper)
 			end
-			lastSeen = os.clock()
-		elseif target and os.clock() - lastSeen > Linger.Value then
-			target = nil
 		end
+		table.sort(list)
+		return list
+	end
 	
-		-- Gone from the list (left, or the entity was replaced on respawn).
-		if target and not table.find(entitylib.List, target) then target = nil end
-		card.Visible = target ~= nil
-		if not target then return end
+	local function layout()
+		local compact = on(Compact)
+		avatar.Visible = not compact
+		infoLabel.Visible = not compact
+		local left = compact and 8 or 62
+		nameLabel.Position = UDim2.fromOffset(left, 6)
+		nameLabel.Size = UDim2.new(1, -left - 70, 0, 18)
+		barBack.Position = UDim2.fromOffset(left, 27)
+		barBack.Size = UDim2.new(1, -left - 8, 0, 8)
+		infoLabel.Position = UDim2.fromOffset(left, 38)
+		infoLabel.Size = UDim2.new(1, -left - 8, 0, 16)
+		local extra = not compact and (on(ShowKitName) or on(ShowEnchants))
+		extraLabel.Visible = extra
+		extraLabel.Position = UDim2.fromOffset(left, 54)
+		equipment.Visible = not compact and on(ShowEquipment)
+		equipment.Position = UDim2.fromOffset(8, extra and 74 or 58)
+		local height = compact and 42 or (58 + (extra and 16 or 0) + (on(ShowEquipment) and 20 or 0))
+		card.Size = UDim2.new(1, 0, 0, height)
+	end
 	
-		local player = target.Player
+	local function show(entity, player)
 		local color = player.Team and player.TeamColor.Color or Color3.new(1, 1, 1)
 		avatar.Image = 'rbxthumb://type=AvatarHeadShot&id=' .. player.UserId .. '&w=150&h=150'
 		nameLabel.Text = player.DisplayName
 		nameLabel.TextColor3 = color
+		stroke.Enabled = on(Accent)
+		stroke.Color = color
 	
-		local fraction = math.clamp(target.Health / math.max(target.MaxHealth, 1), 0, 1)
+		local health, maxHealth = entity.Health or 0, math.max(entity.MaxHealth or 100, 1)
+		local fraction = math.clamp(health / maxHealth, 0, 1)
 		-- The pale bar trails the real one, so a hit shows how much it took off.
 		ghost = fraction > ghost and fraction or ghost + (fraction - ghost) * 0.08
 		barFill.Size = UDim2.fromScale(fraction, 1)
 		barGhost.Size = UDim2.fromScale(ghost, 1)
 		barFill.BackgroundColor3 = Color3.fromHSV(fraction / 3, 0.85, 0.95)
 	
-		local distance = entitylib.isAlive and (target.RootPart.Position - entitylib.character.RootPart.Position).Magnitude or 0
-		infoLabel.Text = string.format('%d / %d HP   %dm', math.ceil(target.Health), math.ceil(target.MaxHealth), math.floor(distance))
+		local mine = entitylib.isAlive and entitylib.character.Health or 0
+		winLabel.Visible = on(WinIndicator) and player ~= lplr
+		if winLabel.Visible then
+			local diff = mine - health
+			winLabel.Text = math.abs(diff) < 1 and 'EVEN' or (diff > 0 and 'WINNING' or 'LOSING')
+			winLabel.TextColor3 = math.abs(diff) < 1 and Color3.fromRGB(230, 230, 230) or (diff > 0 and Color3.fromRGB(110, 230, 120) or Color3.fromRGB(255, 90, 90))
+		end
 	
-		equipment.Visible = on(ShowEquipment)
+		local distance = (entitylib.isAlive and entity.RootPart) and (entity.RootPart.Position - entitylib.character.RootPart.Position).Magnitude or 0
+		infoLabel.Text = string.format('%d / %d HP   %dm', math.ceil(health), math.ceil(maxHealth), math.floor(distance))
+	
+		local kit = player:GetAttribute('PlayingAsKit')
+		local kitMeta = kit and kit ~= 'none' and bedwars.BedwarsKitMeta[kit]
+		local extra = {}
+		if on(ShowKitName) and kitMeta then extra[#extra + 1] = kitMeta.name or kit end
+		if on(ShowEnchants) and entity.Character then
+			local enchants = enchantsOf(entity.Character)
+			if #enchants > 0 then extra[#extra + 1] = table.concat(enchants, ', ') end
+		end
+		extraLabel.Text = table.concat(extra, '  ·  ')
+	
 		if on(ShowEquipment) then
 			local inventory = store.inventories[player]
-			local kit = player:GetAttribute('PlayingAsKit')
-			local kitMeta = kit and kit ~= 'none' and bedwars.BedwarsKitMeta[kit]
 			setIcon(1, kitMeta and kitMeta.renderImage or nil)
 			setIcon(2, inventory and inventory.hand and bedwars.getIcon(inventory.hand, true) or nil)
 			for i, slot in {4, 5, 6} do
 				local piece = inventory and inventory.armor and inventory.armor[slot]
 				setIcon(2 + i, piece and bedwars.getIcon(piece, true) or nil)
 			end
+		end
+		layout()
+	end
+	
+	local function update()
+		local found = pick()
+		if found then
+			if found ~= target then
+				target = found
+				ghost = math.clamp((found.Health or 0) / math.max(found.MaxHealth or 100, 1), 0, 1)
+			end
+			lastSeen = os.clock()
+		elseif target and os.clock() - lastSeen > Linger.Value then
+			target = nil
+		end
+		-- Gone from the list (left, or the entity was replaced on respawn).
+		if target and not table.find(entitylib.List, target) then target = nil end
+	
+		if target then
+			show(target, target.Player)
+			card.Visible = true
+		elseif guiOpen() and entitylib.isAlive then
+			-- A preview of yourself, so the card can be seen and dragged into place.
+			show(entitylib.character, lplr)
+			card.Visible = true
+		else
+			card.Visible = false
 		end
 	end
 	
@@ -30918,8 +31365,20 @@ run(function()
 				card.Visible = false
 			end
 		end,
-		Size = UDim2.fromOffset(240, 78),
+		Size = UDim2.fromOffset(240, 96),
 		Tooltip = 'Shows who you are fighting'
+	})
+	Mode = TargetHUD:CreateDropdown({
+		Name = 'Target Mode',
+		List = {'Crosshair', 'Last Hit', 'Nearest'},
+		Tooltips = {
+			Crosshair = 'The enemy nearest your crosshair',
+			['Last Hit'] = 'The last enemy you hit',
+			Nearest = 'The nearest enemy'
+		},
+		Function = function(val)
+			if Angle and Angle.Object then Angle.Object.Visible = val == 'Crosshair' end
+		end
 	})
 	Range = TargetHUD:CreateSlider({
 		Name = 'Range',
@@ -30946,10 +31405,32 @@ run(function()
 		Decimal = 10,
 		Suffix = function() return 's' end
 	})
+	WinIndicator = TargetHUD:CreateToggle({
+		Name = 'Win Indicator',
+		Tooltip = 'Compares their health with yours',
+		Default = true
+	})
+	Compact = TargetHUD:CreateToggle({
+		Name = 'Compact',
+		Tooltip = 'Just the name and health bar'
+	})
+	Accent = TargetHUD:CreateToggle({
+		Name = 'Team Accent',
+		Tooltip = 'Borders the card in their team colour',
+		Default = true
+	})
 	ShowEquipment = TargetHUD:CreateToggle({
 		Name = 'Equipment',
 		Tooltip = 'Shows their kit, held item and armour',
 		Default = true
+	})
+	ShowKitName = TargetHUD:CreateToggle({
+		Name = 'Kit Name',
+		Tooltip = 'Writes out their kit'
+	})
+	ShowEnchants = TargetHUD:CreateToggle({
+		Name = 'Enchants',
+		Tooltip = 'Lists their active enchants'
 	})
 	Background = TargetHUD:CreateColorSlider({
 		Name = 'Background',
@@ -30972,6 +31453,10 @@ run(function()
 	card.Visible = false
 	card.Parent = TargetHUD.Children
 	Instance.new('UICorner', card).CornerRadius = UDim.new(0, 8)
+	stroke = Instance.new('UIStroke')
+	stroke.Thickness = 1.5
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Parent = card
 	
 	avatar = Instance.new('ImageLabel')
 	avatar.Position = UDim2.fromOffset(8, 8)
@@ -30983,17 +31468,23 @@ run(function()
 	
 	nameLabel = Instance.new('TextLabel')
 	nameLabel.BackgroundTransparency = 1
-	nameLabel.Position = UDim2.fromOffset(62, 6)
-	nameLabel.Size = UDim2.new(1, -70, 0, 18)
 	nameLabel.Font = Enum.Font.GothamBold
 	nameLabel.TextSize = 15
 	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
 	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	nameLabel.Parent = card
 	
+	winLabel = Instance.new('TextLabel')
+	winLabel.BackgroundTransparency = 1
+	winLabel.AnchorPoint = Vector2.new(1, 0)
+	winLabel.Position = UDim2.new(1, -8, 0, 6)
+	winLabel.Size = UDim2.fromOffset(64, 18)
+	winLabel.Font = Enum.Font.GothamBold
+	winLabel.TextSize = 11
+	winLabel.TextXAlignment = Enum.TextXAlignment.Right
+	winLabel.Parent = card
+	
 	barBack = Instance.new('Frame')
-	barBack.Position = UDim2.fromOffset(62, 27)
-	barBack.Size = UDim2.new(1, -70, 0, 8)
 	barBack.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
 	barBack.BorderSizePixel = 0
 	barBack.Parent = card
@@ -31011,17 +31502,24 @@ run(function()
 	
 	infoLabel = Instance.new('TextLabel')
 	infoLabel.BackgroundTransparency = 1
-	infoLabel.Position = UDim2.fromOffset(62, 38)
-	infoLabel.Size = UDim2.new(1, -70, 0, 16)
 	infoLabel.Font = Enum.Font.Gotham
 	infoLabel.TextSize = 12
 	infoLabel.TextColor3 = Color3.fromRGB(210, 210, 210)
 	infoLabel.TextXAlignment = Enum.TextXAlignment.Left
 	infoLabel.Parent = card
 	
+	extraLabel = Instance.new('TextLabel')
+	extraLabel.BackgroundTransparency = 1
+	extraLabel.Size = UDim2.new(1, -70, 0, 16)
+	extraLabel.Font = Enum.Font.Gotham
+	extraLabel.TextSize = 11
+	extraLabel.TextColor3 = Color3.fromRGB(180, 180, 255)
+	extraLabel.TextXAlignment = Enum.TextXAlignment.Left
+	extraLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	extraLabel.Parent = card
+	
 	equipment = Instance.new('Frame')
 	equipment.BackgroundTransparency = 1
-	equipment.Position = UDim2.fromOffset(8, 58)
 	equipment.Size = UDim2.new(1, -16, 0, 16)
 	equipment.Parent = card
 	local equipmentLayout = Instance.new('UIListLayout')
@@ -31040,6 +31538,7 @@ run(function()
 		icon.Parent = equipment
 		icons[i] = icon
 	end
+	layout()
 	
 end)
 
@@ -31056,6 +31555,7 @@ run(function()
 	]]
 	local TeslaReach
 	local Mode, ShowTeam, TeamColor, Fill, ThroughWalls, Pulse, Color, DangerColor, Thickness
+	local ArmingCountdown, OwnerName
 	local Folder = Instance.new('Folder')
 	Folder.Name = 'TeslaReach'
 	Folder.Parent = vain.gui
@@ -31114,6 +31614,7 @@ run(function()
 		if not entry then return end
 		entry.sphere:Destroy()
 		entry.disc:Destroy()
+		entry.billboard:Destroy()
 		for _, line in entry.lines do line:Destroy() end
 		traps[trap] = nil
 	end
@@ -31146,10 +31647,28 @@ run(function()
 			line.Parent = Folder
 			lines[i] = line
 		end
-		traps[trap] = {sphere = sphere, disc = disc, lines = lines}
+		-- The owner and the arming countdown, over the trap.
+		local billboard = Instance.new('BillboardGui')
+		billboard.Adornee = trap:IsA('BasePart') and trap or trap:FindFirstChildWhichIsA('BasePart', true)
+		billboard.Size = UDim2.fromOffset(160, 34)
+		billboard.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
+		billboard.AlwaysOnTop = true
+		billboard.Enabled = false
+		billboard.Parent = Folder
+		local label = Instance.new('TextLabel')
+		label.Size = UDim2.fromScale(1, 1)
+		label.BackgroundTransparency = 1
+		label.Font = Enum.Font.GothamBold
+		label.TextSize = 13
+		label.TextStrokeTransparency = 0.4
+		label.TextColor3 = Color3.new(1, 1, 1)
+		label.Parent = billboard
+	
+		traps[trap] = {sphere = sphere, disc = disc, lines = lines, billboard = billboard, label = label}
 	end
 	
 	local function hide(entry)
+		entry.billboard.Enabled = false
 		entry.sphere.Visible = false
 		entry.disc.Visible = false
 		for _, line in entry.lines do line.Visible = false end
@@ -31193,6 +31712,15 @@ run(function()
 			end
 			local transparency = 1 - opacity
 			local onTop = ThroughWalls.Enabled
+	
+			local text = {}
+			if OwnerName.Enabled and owner then text[#text + 1] = owner.DisplayName end
+			if ArmingCountdown.Enabled and activation and now < activation then
+				text[#text + 1] = string.format('Arming %.1fs', activation - now)
+			end
+			entry.billboard.Enabled = #text > 0
+			entry.label.Text = table.concat(text, '\n')
+			entry.label.TextColor3 = color
 	
 			if Mode.Value == 'Sphere' then
 				for _, line in entry.lines do line.Visible = false end
@@ -31274,6 +31802,15 @@ run(function()
 		Name = 'Team Color',
 		Tooltip = 'Colours each trap by its team',
 		Default = true
+	})
+	ArmingCountdown = TeslaReach:CreateToggle({
+		Name = 'Arming Countdown',
+		Tooltip = 'Shows the seconds until it goes live',
+		Default = true
+	})
+	OwnerName = TeslaReach:CreateToggle({
+		Name = 'Owner Name',
+		Tooltip = 'Shows who placed it'
 	})
 	Fill = TeslaReach:CreateToggle({
 		Name = 'Fill',
