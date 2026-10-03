@@ -10412,7 +10412,7 @@ run(function()
 		local character = ent.Character
 		if not character then return end
 	
-		local enchants, effects, attributes = {}, {}, nil
+		local found, effects, attributes = {}, {}, nil
 		local ok, result = pcall(character.GetAttributes, character)
 		if not ok then return end
 		attributes = result
@@ -10481,15 +10481,15 @@ run(function()
 	
 			local entry = {label = label, image = image}
 			if enchant then
-				enchants[#enchants + 1] = entry
+				found[#found + 1] = entry
 			else
 				effects[#effects + 1] = entry
 			end
 		end
 	
-		table.sort(enchants, function(a, b) return a.label < b.label end)
+		table.sort(found, function(a, b) return a.label < b.label end)
 		table.sort(effects, function(a, b) return a.label < b.label end)
-		return enchants, effects
+		return found, effects
 	end
 	
 	-- One group rendered, capped, with the overflow counted rather than dropped silently.
