@@ -10161,7 +10161,9 @@ run(function()
 		are not stopped by CanCollide, and whoever it would hit is highlighted for a moment.
 	
 		Lines are clipped where they pass behind the camera rather than dropped, so the start
-		of the path right under the camera still draws in first person.
+		of the path right under the camera still draws in first person. A path that falls into
+		the void ends where it crosses the void height AntiFall uses - just under the lowest
+		open block on the map - with no landing marker, as it never comes down.
 	]]
 	local Trajectories
 	local ShowOwn, ShowTeam, PearlOnly, Marker, Danger, AimPreview, AimHighlight, MaxTime, Thickness
@@ -10192,6 +10194,32 @@ run(function()
 	
 	local function on(setting)
 		return setting ~= nil and setting.Enabled
+	end
+	
+	--[[
+		The void height: AntiFall's floor when it has one, otherwise worked out the same way -
+		2 studs under the lowest block with nothing on top of it. Read from the local block
+		store, kept for 5 seconds as walking every block each frame would be wasteful.
+	]]
+	local voidHeight, voidCheckedAt = nil, 0
+	local function getVoidHeight()
+		if AntiFallPart and AntiFallPart.Parent then
+			return AntiFallPart.Position.Y
+		end
+		if os.clock() - voidCheckedAt < 5 then return voidHeight end
+		voidCheckedAt = os.clock()
+		local ok, low = pcall(function()
+			local lowest = math.huge
+			for _, pos in bedwars.BlockController:getStore():getAllBlockPositions() do
+				pos *= 3
+				if pos.Y < lowest and not getPlacedBlock(pos + Vector3.new(0, 3, 0)) then
+					lowest = pos.Y
+				end
+			end
+			return lowest
+		end)
+		voidHeight = ok and low ~= math.huge and (low - 2) or voidHeight
+		return voidHeight
 	end
 	
 	local function colorOf(setting, fallback)
@@ -10275,10 +10303,18 @@ run(function()
 		local points = {origin}
 		local previous = origin
 		local limit = MaxTime and MaxTime.Value or 3
+		local void = getVoidHeight()
 		local t = 0
 		while t < limit do
 			t += STEP
 			local point = origin + velocity * t - Vector3.new(0, 0.5 * gravity * t * t, 0)
+			-- Into the void: cut off where it crosses, with nothing to land on.
+			if void and point.Y < void and previous.Y >= void then
+				points[#points + 1] = previous:Lerp(point, (previous.Y - void) / (previous.Y - point.Y))
+				return points, nil
+			elseif void and previous.Y < void then
+				return points, nil
+			end
 			local delta = point - previous
 			local hit = workspace:Raycast(previous, delta, rayParams)
 			if checkBodies then
