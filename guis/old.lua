@@ -3584,6 +3584,27 @@ else
 	gui.ResetOnSpawn = false
 end
 mainapi.gui = gui
+--[[
+	Anything a previous copy of Vain left behind is removed now: a ScreenGui at Vain's
+	display order holding a ScaledGui, anywhere Vain puts its GUI. Reinjecting is meant to
+	destroy the old one, but if that ever fails part way its cards and placeholders would
+	stay frozen on screen with nothing left to hide them.
+]]
+do
+	local places = {gui.Parent}
+	pcall(function() table.insert(places, cloneref(game:GetService('CoreGui'))) end)
+	pcall(function() if gethui then table.insert(places, gethui()) end end)
+	pcall(function() table.insert(places, cloneref(game:GetService('Players')).LocalPlayer.PlayerGui) end)
+	for _, place in places do
+		pcall(function()
+			for _, other in place:GetChildren() do
+				if other ~= gui and other:IsA('ScreenGui') and other.DisplayOrder == 9999999 and other:FindFirstChild('ScaledGui') then
+					other:Destroy()
+				end
+			end
+		end)
+	end
+end
 scaledgui = Instance.new('Frame')
 scaledgui.Name = 'ScaledGui'
 scaledgui.Size = UDim2.fromScale(1, 1)
