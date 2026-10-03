@@ -28576,23 +28576,31 @@ end)
 run(function()
 	local FOV
 	local Value
-	local old, old2
+	local old, old2, setHook, getHook
 	
 	FOV = vain.Legit:CreateModule({
 		Name = 'FOV',
 		Function = function(callback)
+			local controller = bedwars.FovController
 			if callback then
-				old = bedwars.FovController.setFOV
-				old2 = bedwars.FovController.getFOV
-				bedwars.FovController.setFOV = function(self) 
-					return old(self, Value.Value) 
+				local originalSet, originalGet = controller.setFOV, controller.getFOV
+				old, old2 = originalSet, originalGet
+				-- Left in place under another wrapper after turning off, these pass straight through.
+				setHook = function(self, value, ...)
+					if not FOV.Enabled then return originalSet(self, value, ...) end
+					return originalSet(self, Value.Value)
 				end
-				bedwars.FovController.getFOV = function() 
-					return Value.Value 
+				getHook = function(self, ...)
+					if not FOV.Enabled then return originalGet(self, ...) end
+					return Value.Value
 				end
+				controller.setFOV = setHook
+				controller.getFOV = getHook
 			else
-				bedwars.FovController.setFOV = old
-				bedwars.FovController.getFOV = old2
+				-- Only put back if nothing (Static FOV) wrapped them since.
+				if controller.setFOV == setHook then controller.setFOV = old end
+				if controller.getFOV == getHook then controller.getFOV = old2 end
+				setHook, getHook = nil, nil
 			end
 			
 			bedwars.FovController:setFOV(bedwars.Store:getState().Settings.fov)
@@ -29138,47 +29146,108 @@ run(function()
 	--[[
 		Static FOV.
 	
-		Most of the zoom when eating, drinking or drawing a bow is the sprint ending: the
-		SprintController tweens the camera to FovController:getFOV() * RUN_FOV_MULT while
-		sprinting and back to getFOV() when it stops, which those items do. Items and kits also
-		push modifiers into FovController.fovMultiplier, and menus tween the camera out and back.
+		Stops the game changing the field of view in the first place, at the three places it
+		does:
 	
-		So the camera is held at one field of view every frame instead - your FOV setting (or
-		the FOV module's), widened by the sprint multiplier if Sprint FOV is on. Scripted
-		cameras (cutscenes, drones, the satellite) are left alone.
+		- SprintController:tweenCameraFOV - most of the zoom when eating, drinking or drawing a
+		  bow is the sprint ending: it tweens to FovController:getFOV() * RUN_FOV_MULT when the
+		  sprint starts and back to getFOV() when it stops, which those items do.
+		- FovController:setFOV - puts FovController.fovMultiplier on, which is where the
+		  modifiers items and kits add end up.
+		- FovController:playUIOpenFOVTween / playUICloseFOVTween - the zoom when menus open.
+	
+		Each wrapper keeps the original it was built with and is only taken off if nothing
+		wrapped the method after it, as the FOV module wraps setFOV too.
 	]]
 	local StaticFOV
 	local SprintFOV
+	local hooks = {}
 	
 	local RUN_FOV_MULT = 1.1
 	
-	-- The FOV with no multiplier on it. getFOV is the controller's stored fov, which already
-	-- has the item multiplier in it - unless the FOV module replaced getFOV, which then
-	-- returns its plain value.
-	local function baseFOV()
-		local controller = bedwars.FovController
-		local fov = controller:getFOV()
-		if fov == controller.fov then
-			fov /= (controller.fovMultiplier or 1)
+	-- Something the sprint code can tidy up, standing in for the tween's maid.
+	local dummyMaid = {
+		GiveTask = function() end,
+		DoCleaning = function() end,
+		Destroy = function() end
+	}
+	
+	local function hook(object, method, make)
+		local original = object and object[method]
+		if type(original) ~= 'function' then return end
+		local wrapper = make(original)
+		object[method] = wrapper
+		table.insert(hooks, {object = object, method = method, original = original, wrapper = wrapper})
+	end
+	
+	local function unhookAll()
+		for i = #hooks, 1, -1 do
+			local entry = hooks[i]
+			if entry.object[entry.method] == entry.wrapper then
+				entry.object[entry.method] = entry.original
+			end
 		end
-		return fov
+		table.clear(hooks)
+	end
+	
+	local function sprintScale()
+		return SprintFOV.Enabled and RUN_FOV_MULT or 1
+	end
+	
+	-- Puts the FOV back through the game's own setFOV, now that it ignores the multiplier.
+	local function reapply()
+		pcall(function()
+			bedwars.FovController:setFOV(bedwars.Store:getState().Settings.fov)
+		end)
 	end
 	
 	StaticFOV = vain.Legit:CreateModule({
 		Name = 'Static FOV',
 		Function = function(callback)
 			if callback then
-				StaticFOV:Clean(runService.RenderStepped:Connect(function()
-					if gameCamera.CameraType ~= Enum.CameraType.Custom then return end
-					local ok, fov = pcall(baseFOV)
-					if not ok or type(fov) ~= 'number' then return end
-					gameCamera.FieldOfView = fov * (SprintFOV.Enabled and RUN_FOV_MULT or 1)
-				end))
+				local fov = bedwars.FovController
+				local sprint = bedwars.SprintController
+	
+				-- The FOV with no item multiplier, plus the sprint widening if kept.
+				hook(fov, 'setFOV', function(original)
+					return function(self, value, ...)
+						local multiplier = self.fovMultiplier
+						self.fovMultiplier = sprintScale()
+						local results = table.pack(pcall(original, self, value, ...))
+						self.fovMultiplier = multiplier
+						-- getFOV is read as the plain FOV by the sprint code, so it is kept so.
+						if typeof(self.fov) == 'number' then
+							self.fov /= sprintScale()
+						end
+						if not results[1] then error(results[2], 0) end
+						return table.unpack(results, 2, results.n)
+					end
+				end)
+	
+				-- No sprint tween: the camera already sits where it should.
+				hook(sprint, 'tweenCameraFOV', function()
+					return function()
+						return dummyMaid
+					end
+				end)
+	
+				-- Menus get a tween that is never played.
+				for _, method in {'playUIOpenFOVTween', 'playUICloseFOVTween'} do
+					hook(fov, method, function()
+						return function()
+							return tweenService:Create(gameCamera, TweenInfo.new(0), {FieldOfView = gameCamera.FieldOfView})
+						end
+					end)
+				end
+	
+				reapply()
 			else
+				unhookAll()
+				reapply()
 				pcall(function()
-					local controller = bedwars.FovController
-					local sprinting = bedwars.SprintController and bedwars.SprintController.sprinting
-					gameCamera.FieldOfView = controller:getFOV() * (sprinting and RUN_FOV_MULT or 1)
+					if bedwars.SprintController.sprinting then
+						gameCamera.FieldOfView = bedwars.FovController:getFOV() * RUN_FOV_MULT
+					end
 				end)
 			end
 		end,
@@ -29187,7 +29256,10 @@ run(function()
 	SprintFOV = StaticFOV:CreateToggle({
 		Name = 'Sprint FOV',
 		Tooltip = 'Keeps the wider sprinting FOV',
-		Default = true
+		Default = true,
+		Function = function()
+			if StaticFOV.Enabled then reapply() end
+		end
 	})
 	
 end)
