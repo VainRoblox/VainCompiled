@@ -18839,7 +18839,7 @@ run(function()
 	                    local angel = controller ~= nil and controller.isAngel == true
 	                    -- The angel just came up: pick and land after the delay.
 	                    if angel and not wasAngel then
-	                        task.delay(FireDelay.Value, function()
+	                        task.delay(FireDelay:GetRandomValue(), function()
 	                            pcall(fire)
 	                            escaping = false
 	                        end)
@@ -18949,14 +18949,14 @@ run(function()
 	        Default = 15,
 	        Suffix = function(val) return val == 1 and 'stud' or 'studs' end
 	    })
-	    FireDelay = AutoLani:CreateSlider({
+	    FireDelay = AutoLani:CreateTwoSlider({
 	        Name = 'Fire Delay',
-	        Tooltip = 'Wait after the angel appears',
+	        Tooltip = 'Wait after the angel appears, random between both (seconds)',
 	        Min = 0,
 	        Max = 3,
-	        Default = 0.1,
-	        Decimal = 10,
-	        Suffix = function() return 's' end
+	        DefaultMin = 0.1,
+	        DefaultMax = 0.3,
+	        Decimal = 100
 	    })
 	    SkipFalling = AutoLani:CreateToggle({
 	        Name = 'Skip Falling',
@@ -35198,14 +35198,14 @@ run(function()
 	]]
 	local TeamHealth
 	local ShowSelf, ShowKit, ShowEquipment, ShowEnchants, ShowDistance, SortMode, Scale, Background
-	local ClickLani, LaniLegit
+	local ClickLani, LaniDelay
 	local using = false
 	
 	--[[
 		Click a teammate to send your Lani scepter to them: the scepter is used, and once the
 		angel is up the teammate is pinned as the ScepterController's target and the
-		ability used, so the game sends its own request (landLani, shared with Auto Lani). Legit
-		switches to the scepter first and leaves human-like pauses between the steps.
+		ability used, so the game sends its own request (landLani, shared with Auto Lani), after
+		a wait picked between the two Lani Delay values.
 	]]
 	local function laniTo(player)
 		if using or store.equippedKit ~= 'paladin' or not (player and player.Character) then return end
@@ -35215,15 +35215,14 @@ run(function()
 		using = true
 		task.spawn(function()
 			pcall(function()
-				local legit = LaniLegit.Enabled
-				switchItem(scepter.tool, legit and 0.2 or 0)
-				if legit then task.wait(0.1 + math.random() * 0.15) end
+				switchItem(scepter.tool, 0)
 				bedwars.Client:Get(remotes.ConsumeItem).instance:InvokeServer({item = scepter.tool})
 				-- The angel comes up 0.8s after the scepter is used.
 				local started = os.clock()
 				repeat task.wait() until controller.isAngel or os.clock() - started > 2.5
 				if not controller.isAngel or not player.Character then return end
-				if legit then task.wait(0.25 + math.random() * 0.25) end
+				task.wait(LaniDelay:GetRandomValue())
+				if not controller.isAngel or not player.Character then return end
 				landLani(player.Character)
 			end)
 			using = false
@@ -35461,12 +35460,17 @@ run(function()
 		Tooltip = 'Click a teammate to send your scepter to them',
 		Default = true,
 		Function = function(callback)
-			if LaniLegit and LaniLegit.Object then LaniLegit.Object.Visible = callback end
+			if LaniDelay and LaniDelay.Object then LaniDelay.Object.Visible = callback end
 		end
 	})
-	LaniLegit = TeamHealth:CreateToggle({
-		Name = 'Legit',
-		Tooltip = 'Switches to the scepter and pauses like a person',
+	LaniDelay = TeamHealth:CreateTwoSlider({
+		Name = 'Lani Delay',
+		Tooltip = 'Wait after the angel appears, random between both (seconds)',
+		Min = 0,
+		Max = 2,
+		DefaultMin = 0.2,
+		DefaultMax = 0.4,
+		Decimal = 100,
 		Darker = true
 	})
 	Scale = TeamHealth:CreateSlider({
