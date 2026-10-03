@@ -10866,7 +10866,8 @@ run(function()
 		team's parties, marking a team that is one whole party as a full queue.
 	]]
 	local PartyFinder
-	local Matches, Required, ShowTags, ShowPanel, Teammates, Corner
+	local Matches, Required, ShowTags, ShowPanel, Teammates, Corner, ShowLeaderboard
+	local badges = setmetatable({}, {__mode = 'k'})
 	local panel, list, rows = nil, nil, {}
 	local mates = {}
 	-- What came back, for the panel to explain an empty result: histories answered, and
@@ -10976,6 +10977,26 @@ run(function()
 		return ids
 	end
 	
+	--[[
+		Every party in the match, exactly, when the game has it: the MatchController keeps a
+		parties list (members as user ids, and a displayId) filled by the server's
+		MatchPartiesUpdate - the tab list's own party markers read it, and only check on the
+		client whether you may see them. Empty when the server does not send it to you.
+	]]
+	local function exactParties()
+		local ok, parties = pcall(function()
+			return bedwars.MatchController:getParties()
+		end)
+		local list = {}
+		for _, party in (ok and type(parties) == 'table' and parties or {}) do
+			local members = type(party) == 'table' and party.members
+			if type(members) == 'table' and #members > 1 then
+				list[#list + 1] = members
+			end
+		end
+		return list
+	end
+	
 	-- In how many of the compared matches two players queued together, from either side.
 	local function shared(a, b)
 		local best = 0
@@ -11007,7 +11028,23 @@ run(function()
 		for _, player in players do parent[player.UserId] = player.UserId end
 		table.clear(confidence)
 	
-		-- Your own party first, straight from the game.
+		-- The game's own party list first, then your own party, then match history.
+		for _, members in exactParties() do
+			local first
+			for _, id in members do
+				id = tonumber(id)
+				if id and parent[id] then
+					if first then
+						local ra, rb = find(id), find(first)
+						if ra ~= rb then parent[ra] = rb end
+						confidence[first .. ':' .. id] = math.huge
+					else
+						first = id
+					end
+				end
+			end
+		end
+	
 		local own = ownParty()
 		for _, player in players do
 			if player ~= lplr and own[player.UserId] then
@@ -11107,6 +11144,80 @@ run(function()
 			if not wanted[player] then
 				tag:Destroy()
 				tags[player] = nil
+			end
+		end
+	end
+	
+	--[[
+		Party numbers in the game's tab list. Each player row shows its name in a PlayerName
+		label inside PlayerNameContainer (a horizontal list), so a small numbered badge in the
+		party's colour goes into that container, before the name. Roact leaves children it did
+		not make alone, so the badge stays until it is taken off here.
+	]]
+	local function stripTags(text)
+		return (text or ''):gsub('<[^<>]->', '')
+	end
+	
+	local function clearBadges()
+		for badge in badges do pcall(function() badge:Destroy() end) end
+		table.clear(badges)
+	end
+	
+	local function updateLeaderboard()
+		local gui = lplr:FindFirstChildOfClass('PlayerGui')
+		local tabList = gui and gui:FindFirstChild('TabListFrame', true)
+		if not tabList then return end
+	
+		local byName = {}
+		for _, player in playersService:GetPlayers() do
+			byName[player.DisplayName] = player
+			byName[player.Name] = player
+		end
+		local partyOfPlayer = {}
+		for index, group in groups do
+			for _, player in group.members do
+				partyOfPlayer[player] = {index = index, color = group.color, team = group.team}
+			end
+		end
+	
+		for _, label in tabList:GetDescendants() do
+			if label.Name == 'PlayerName' and label:IsA('TextLabel') then
+				local text = stripTags(label.Text)
+				local player = byName[text]
+				if not player then
+					for name, candidate in byName do
+						if #name > 2 and text:sub(-#name) == name then player = candidate break end
+					end
+				end
+				local party = player and partyOfPlayer[player]
+				local own = party and teamOf(lplr) ~= nil and party.team == teamOf(lplr)
+				local container = label.Parent
+				local badge = container and container:FindFirstChild('VainPartyBadge')
+				if party and on(ShowLeaderboard) and (not own or on(Teammates)) then
+					if not badge then
+						badge = Instance.new('Frame')
+						badge.Name = 'VainPartyBadge'
+						badge.SizeConstraint = Enum.SizeConstraint.RelativeYY
+						badge.Size = UDim2.fromScale(0.7, 0.7)
+						badge.LayoutOrder = -1
+						badge.Parent = container
+						Instance.new('UICorner', badge).CornerRadius = UDim.new(1, 0)
+						local number = Instance.new('TextLabel')
+						number.Name = 'Number'
+						number.BackgroundTransparency = 1
+						number.Size = UDim2.fromScale(1, 1)
+						number.TextScaled = true
+						number.Font = Enum.Font.GothamBold
+						number.TextColor3 = Color3.new(0, 0, 0)
+						number.Parent = badge
+						badges[badge] = true
+					end
+					badge.BackgroundColor3 = party.color
+					badge.Number.Text = tostring(party.index)
+					badge.Visible = true
+				elseif badge then
+					badge.Visible = false
+				end
 			end
 		end
 	end
@@ -11240,9 +11351,11 @@ run(function()
 					pcall(regroup)
 					pcall(updateTags)
 					pcall(updatePanel)
+					pcall(updateLeaderboard)
 				end))
 			else
 				clearTags()
+				clearBadges()
 				table.clear(rows)
 				panel, list = nil, nil
 				-- Answers stay in the shared cache, so turning it back on asks nobody again.
@@ -11270,15 +11383,18 @@ run(function()
 		Darker = true,
 		Visible = false
 	})
+	ShowLeaderboard = PartyFinder:CreateToggle({
+		Name = 'Leaderboard',
+		Tooltip = 'Numbers each party next to names in the tab list',
+		Default = true
+	})
 	ShowTags = PartyFinder:CreateToggle({
 		Name = 'Tags',
-		Tooltip = 'Tags partied players with their party',
-		Default = true
+		Tooltip = 'Tags partied players with their party'
 	})
 	ShowPanel = PartyFinder:CreateToggle({
 		Name = 'Panel',
 		Tooltip = 'Lists every team\'s parties',
-		Default = true,
 		Function = function(callback)
 			if Corner and Corner.Object then Corner.Object.Visible = callback end
 		end
