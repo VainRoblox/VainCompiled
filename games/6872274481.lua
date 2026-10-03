@@ -12196,7 +12196,7 @@ run(function()
 	local ShowOwn, ShowTeam, PearlOnly, Marker, Danger, AimPreview, AimHighlight, MaxTime, Thickness
 	local LineStyle, MarkerStyle, MarkerSize, ChargingOnly, ImpactHighlight, TypeColors
 	local LineColor, DangerColor, PearlColor, AimColor, HighlightColor, ArrowColor, FireballColor, SnowballColor
-	local Cannons, CannonJump, CannonFlights, CannonColor
+	local Cannons, CannonColor, TntColor
 	local impactBox
 	local tracked = {}
 	local pools = {}
@@ -12626,16 +12626,32 @@ run(function()
 		Davey's cannons.
 	
 		Launching yourself is CannonHandController:launchSelf: an impulse of the cannon's
-		LookVector attribute times 200, added to the speed you already have - so a jump just
-		before it adds its upward speed and carries you furthest. After that you are a character
-		falling at the world's gravity. Each cannon's arc is worked out from its barrel again
-		whenever it is turned and otherwise twice a second, and drawn every frame. Anyone flying
-		faster than walking, jumping or a knockback ever takes them gets their own landing drawn.
+		LookVector attribute times 200, added to whatever speed you already have, from wherever
+		you are standing - the prompt reaches 10 studs, and nothing moves you to the barrel. So
+		the cannon you would launch from (the nearest in reach) is drawn from your own feet with
+		your own movement, and a jump's speed on top, since jumping just before launching goes
+		furthest. Other cannons are drawn from beside them, as someone standing there would go.
+	
+		Holding TNT shows where each cannon would fire it instead, from the barrel at the
+		speed and fall measured for cannon TNT (the shot is made on the server).
 	]]
 	local CANNON_SPEED = 200
 	local CANNON_TIME = 8
-	local FLIGHT_SPEED = 140
-	local flightKeys = {}
+	local CANNON_REACH = 10
+	local cannonBlocks = {}
+	-- Cannon TNT is fired by the server; its speed and fall are set from measurements.
+	local TNT_SPEED = CANNON_SPEED
+	local TNT_GRAVITY = nil
+	
+	local function watchBlock(block)
+		if block.Name == 'cannon' then cannonBlocks[block] = true end
+	end
+	
+	local function holdingTnt()
+		local tool = store.hand and store.hand.tool
+		local name = tool and tool.Name
+		return name == 'tnt' or name == 'siege_tnt'
+	end
 	
 	local function jumpSpeed()
 		local ok, speed = pcall(function()
@@ -12646,55 +12662,74 @@ run(function()
 		return ok and type(speed) == 'number' and speed > 0 and speed or 50
 	end
 	
+	local function barrelPoint(cannon)
+		local barrel = cannon:FindFirstChild('Barrel')
+		local attachment = barrel and barrel:FindFirstChild('Attachment')
+		return attachment and attachment.WorldPosition or (barrel and barrel.Position) or cannon.Position
+	end
+	
+	local cannonTime = 0
 	local function cannonPaths()
 		local seen = {}
-		local color = colorOf(CannonColor, Color3.fromRGB(255, 170, 60))
-		if on(Cannons) then
-			local ok, list = pcall(function() return bedwars.CannonController:getCannons() end)
-			for _, cannon in ok and type(list) == 'table' and list or {} do
-				local barrel = typeof(cannon) == 'Instance' and cannon:FindFirstChild('Barrel')
-				local look = barrel and cannon:GetAttribute('LookVector')
-				if typeof(look) == 'Vector3' and look.Magnitude > 0 then
-					seen[cannon] = true
-					local cache = cannonCache[cannon]
-					local jump = on(CannonJump)
-					if not cache or cache.look ~= look or cache.jump ~= jump or os.clock() - cache.at > 0.5 then
-						local velocity = look * CANNON_SPEED + (jump and Vector3.new(0, jumpSpeed(), 0) or Vector3.zero)
-						local points, landing = simulate(barrel.Position + look.Unit * 3, velocity, workspace.Gravity, false, CANNON_TIME)
-						cache = {look = look, jump = jump, at = os.clock(), points = points, landing = landing}
-						cannonCache[cannon] = cache
-					end
-					draw(cannon, cache.points, cache.landing, color)
+		if not on(Cannons) then
+			for cannon in cannonCache do destroyPool(cannon) end
+			table.clear(cannonCache)
+			return
+		end
+		local tnt = holdingTnt()
+		local color = tnt and colorOf(TntColor, Color3.fromRGB(255, 80, 60)) or colorOf(CannonColor, Color3.fromRGB(255, 170, 60))
+		local root = entitylib.isAlive and entitylib.character.RootPart
+		local mine, mineGap
+		if root and not tnt then
+			for cannon in cannonBlocks do
+				if cannon.Parent then
+					local gap = (cannon.Position - root.Position).Magnitude
+					if gap <= CANNON_REACH and (not mineGap or gap < mineGap) then mine, mineGap = cannon, gap end
 				end
 			end
+		end
+		-- The arcs move with you and with the cannon's aim, so ten times a second is plenty.
+		local refresh = os.clock() - cannonTime > 0.1
+		if refresh then cannonTime = os.clock() end
+	
+		for cannon in cannonBlocks do
+			if not cannon.Parent then
+				cannonBlocks[cannon] = nil
+				continue
+			end
+			local look = cannon:GetAttribute('LookVector')
+			if typeof(look) ~= 'Vector3' or look.Magnitude == 0 then continue end
+			seen[cannon] = true
+			local cache = cannonCache[cannon]
+			if refresh or not cache or cache.look ~= look or cache.tnt ~= tnt then
+				local start, velocity, gravity
+				if tnt then
+					start = barrelPoint(cannon)
+					velocity = look * TNT_SPEED
+					gravity = TNT_GRAVITY or workspace.Gravity
+				else
+					local up = Vector3.new(0, jumpSpeed(), 0)
+					if cannon == mine then
+						-- From your feet, with your own movement carried into the launch.
+						local hip = entitylib.character.HipHeight or 3
+						start = root.Position - Vector3.new(0, hip, 0)
+						velocity = look * CANNON_SPEED + root.AssemblyLinearVelocity * Vector3.new(1, 0, 1) + up
+					else
+						start = cannon.Position - Vector3.new(0, 1.5, 0)
+						velocity = look * CANNON_SPEED + up
+					end
+					gravity = workspace.Gravity
+				end
+				local points, landing = simulate(start, velocity, gravity, false, CANNON_TIME)
+				cache = {look = look, tnt = tnt, points = points, landing = landing}
+				cannonCache[cannon] = cache
+			end
+			draw(cannon, cache.points, cache.landing, color)
 		end
 		for cannon in cannonCache do
 			if not seen[cannon] then
 				cannonCache[cannon] = nil
 				destroyPool(cannon)
-			end
-		end
-	
-		local flying = {}
-		if on(CannonFlights) then
-			for _, entity in entitylib.List do
-				local root = entity.RootPart
-				if entity.Player and root and (entity.Health or 0) > 0 then
-					local velocity = root.AssemblyLinearVelocity
-					if velocity.Magnitude > FLIGHT_SPEED then
-						local key = 'flight' .. entity.Player.UserId
-						flying[key] = true
-						flightKeys[key] = true
-						local points, landing = simulate(root.Position, velocity, workspace.Gravity, false, CANNON_TIME)
-						draw(key, points, landing, color)
-					end
-				end
-			end
-		end
-		for key in flightKeys do
-			if not flying[key] then
-				flightKeys[key] = nil
-				destroyPool(key)
 			end
 		end
 	end
@@ -12751,6 +12786,8 @@ run(function()
 			if callback then
 				for _, child in workspace:GetChildren() do track(child) end
 				Trajectories:Clean(workspace.ChildAdded:Connect(track))
+				for _, block in collectionService:GetTagged('block') do watchBlock(block) end
+				Trajectories:Clean(collectionService:GetInstanceAddedSignal('block'):Connect(watchBlock))
 				Trajectories:Clean(runService.RenderStepped:Connect(function()
 					pcall(step)
 				end))
@@ -12758,7 +12795,7 @@ run(function()
 				for key in pools do destroyPool(key) end
 				table.clear(tracked)
 				table.clear(cannonCache)
-				table.clear(flightKeys)
+				table.clear(cannonBlocks)
 				clearHighlights()
 				if impactBox then
 					impactBox:Destroy()
@@ -12862,21 +12899,7 @@ run(function()
 	})
 	Cannons = Trajectories:CreateToggle({
 		Name = 'Cannons',
-		Tooltip = 'Shows where each Davey cannon launches you',
-		Default = true,
-		Function = function(callback)
-			if CannonJump and CannonJump.Object then CannonJump.Object.Visible = callback end
-		end
-	})
-	CannonJump = Trajectories:CreateToggle({
-		Name = 'Jump Before Launch',
-		Tooltip = 'Assumes a jump right before launching, for the furthest arc',
-		Default = true,
-		Darker = true
-	})
-	CannonFlights = Trajectories:CreateToggle({
-		Name = 'Cannon Flights',
-		Tooltip = 'Shows where anyone flying out of a cannon lands',
+		Tooltip = 'Where Davey cannons launch you, or fire TNT while you hold it',
 		Default = true
 	})
 	MaxTime = Trajectories:CreateSlider({
@@ -12955,8 +12978,15 @@ run(function()
 	})
 	CannonColor = Trajectories:CreateColorSlider({
 		Name = 'Cannon Color',
-		Tooltip = 'Colour of cannon arcs and flights',
+		Tooltip = 'Colour of cannon launch arcs',
 		DefaultHue = 0.08,
+		DefaultSat = 0.75,
+		DefaultValue = 1
+	})
+	TntColor = Trajectories:CreateColorSlider({
+		Name = 'TNT Color',
+		Tooltip = 'Colour of cannon TNT arcs',
+		DefaultHue = 0.01,
 		DefaultSat = 0.75,
 		DefaultValue = 1
 	})
