@@ -8816,6 +8816,220 @@ run(function()
 end)
 
 run(function()
+	--[[
+		Item ESP.
+	
+		Items lying on the ground are parts tagged ItemDrop, named by their item type and
+		carrying their stack size in Amount. Each wanted one gets a small label - its icon, how
+		many and how far - through walls, optionally with an outline. Drops sitting on a
+		generator can be left out, since Generator ESP already counts those.
+	]]
+	local ItemESP
+	local Diamonds, Emeralds, Iron, Gold, Pearls, TNT, Others, OtherList
+	local SkipGenerators, Range, ShowDistance, Outline, TextSize
+	local Folder = Instance.new('Folder')
+	Folder.Name = 'ItemESP'
+	Folder.Parent = vain.gui
+	local drops = {}
+	
+	local GROUPS = {
+		diamond = function() return Diamonds end,
+		emerald = function() return Emeralds end,
+		iron = function() return Iron end,
+		gold = function() return Gold end,
+		telepearl = function() return Pearls end,
+		tnt = function() return TNT end
+	}
+	local COLORS = {
+		diamond = Color3.fromRGB(110, 210, 255),
+		emerald = Color3.fromRGB(90, 230, 120),
+		iron = Color3.fromRGB(220, 220, 220),
+		gold = Color3.fromRGB(255, 210, 80),
+		telepearl = Color3.fromRGB(200, 120, 255),
+		tnt = Color3.fromRGB(255, 90, 80)
+	}
+	
+	local function on(setting)
+		return setting ~= nil and setting.Enabled
+	end
+	
+	local function wanted(itemType)
+		local group = GROUPS[itemType]
+		if group then return on(group()) end
+		return on(Others) and table.find(OtherList.ListEnabled, itemType) ~= nil
+	end
+	
+	-- Whether a drop is lying on a generator's pile.
+	local function onGenerator(position)
+		for _, generator in collectionService:GetTagged('Generator') do
+			if generator:IsA('BasePart') then
+				local offset = position - generator.Position
+				if Vector2.new(offset.X, offset.Z).Magnitude <= 9 and offset.Y <= 4 and offset.Y >= -14 then
+					return true
+				end
+			end
+		end
+		return false
+	end
+	
+	local function remove(drop)
+		local entry = drops[drop]
+		if not entry then return end
+		entry.billboard:Destroy()
+		if entry.highlight then entry.highlight:Destroy() end
+		drops[drop] = nil
+	end
+	
+	local function add(drop)
+		if drops[drop] then return end
+		local part = drop:IsA('BasePart') and drop or drop:FindFirstChildWhichIsA('BasePart', true)
+		if not part then return end
+	
+		local billboard = Instance.new('BillboardGui')
+		billboard.Adornee = part
+		billboard.Size = UDim2.fromOffset(120, 20)
+		billboard.StudsOffsetWorldSpace = Vector3.new(0, 1.5, 0)
+		billboard.AlwaysOnTop = true
+		billboard.Enabled = false
+		billboard.Parent = Folder
+		local holder = Instance.new('Frame')
+		holder.BackgroundTransparency = 1
+		holder.Size = UDim2.fromScale(1, 1)
+		holder.Parent = billboard
+		local layout = Instance.new('UIListLayout')
+		layout.FillDirection = Enum.FillDirection.Horizontal
+		layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		layout.VerticalAlignment = Enum.VerticalAlignment.Center
+		layout.Padding = UDim.new(0, 3)
+		layout.SortOrder = Enum.SortOrder.LayoutOrder
+		layout.Parent = holder
+		local icon = Instance.new('ImageLabel')
+		icon.BackgroundTransparency = 1
+		icon.SizeConstraint = Enum.SizeConstraint.RelativeYY
+		icon.Size = UDim2.fromScale(1, 1)
+		icon.ScaleType = Enum.ScaleType.Fit
+		icon.LayoutOrder = 1
+		local meta = bedwars.ItemMeta[drop.Name]
+		icon.Image = meta and meta.image or ''
+		icon.Parent = holder
+		local label = Instance.new('TextLabel')
+		label.BackgroundTransparency = 1
+		label.AutomaticSize = Enum.AutomaticSize.X
+		label.Size = UDim2.fromScale(0, 1)
+		label.Font = Enum.Font.GothamBold
+		label.TextStrokeTransparency = 0.4
+		label.LayoutOrder = 2
+		label.Parent = holder
+	
+		drops[drop] = {billboard = billboard, label = label, part = part}
+	end
+	
+	local function update()
+		local here = entitylib.isAlive and entitylib.character.RootPart.Position
+		for drop, entry in drops do
+			if not (drop.Parent and entry.part.Parent) then
+				remove(drop)
+				continue
+			end
+			local position = entry.part.Position
+			local distance = here and (position - here).Magnitude or 0
+			local show = wanted(drop.Name) and distance <= Range.Value
+				and not (on(SkipGenerators) and onGenerator(position))
+			entry.billboard.Enabled = show
+			if show then
+				local color = COLORS[drop.Name] or Color3.new(1, 1, 1)
+				local amount = tonumber(drop:GetAttribute('Amount')) or 1
+				entry.label.Text = 'x' .. amount .. (on(ShowDistance) and here and string.format('  %dm', math.floor(distance)) or '')
+				entry.label.TextColor3 = color
+				entry.label.TextSize = TextSize.Value
+				entry.billboard.Size = UDim2.fromOffset(TextSize.Value * 9, TextSize.Value + 6)
+				if on(Outline) then
+					if not entry.highlight then
+						entry.highlight = Instance.new('Highlight')
+						entry.highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+						entry.highlight.FillTransparency = 0.6
+						entry.highlight.Adornee = drop
+						entry.highlight.Parent = Folder
+					end
+					entry.highlight.FillColor = color
+					entry.highlight.OutlineColor = color
+					entry.highlight.Enabled = true
+				elseif entry.highlight then
+					entry.highlight.Enabled = false
+				end
+			elseif entry.highlight then
+				entry.highlight.Enabled = false
+			end
+		end
+	end
+	
+	ItemESP = vain.Categories.Render:CreateModule({
+		Name = 'Item ESP',
+		Tooltip = 'Shows valuable items lying on the ground',
+		Function = function(callback)
+			if callback then
+				for _, drop in collectionService:GetTagged('ItemDrop') do add(drop) end
+				ItemESP:Clean(collectionService:GetInstanceAddedSignal('ItemDrop'):Connect(function(drop)
+					task.defer(add, drop)
+				end))
+				ItemESP:Clean(collectionService:GetInstanceRemovedSignal('ItemDrop'):Connect(remove))
+				-- Five times a second; drops do not move much once they land.
+				local last = 0
+				ItemESP:Clean(runService.Heartbeat:Connect(function()
+					if os.clock() - last < 0.2 then return end
+					last = os.clock()
+					pcall(update)
+				end))
+			else
+				for drop in drops do remove(drop) end
+			end
+		end
+	})
+	Diamonds = ItemESP:CreateToggle({Name = 'Diamonds', Tooltip = 'Shows diamonds', Default = true})
+	Emeralds = ItemESP:CreateToggle({Name = 'Emeralds', Tooltip = 'Shows emeralds', Default = true})
+	Iron = ItemESP:CreateToggle({Name = 'Iron', Tooltip = 'Shows iron'})
+	Gold = ItemESP:CreateToggle({Name = 'Gold', Tooltip = 'Shows gold'})
+	Pearls = ItemESP:CreateToggle({Name = 'Pearls', Tooltip = 'Shows telepearls', Default = true})
+	TNT = ItemESP:CreateToggle({Name = 'TNT', Tooltip = 'Shows TNT', Default = true})
+	Others = ItemESP:CreateToggle({
+		Name = 'Other Items',
+		Tooltip = 'Also shows the items listed below',
+		Function = function(callback)
+			if OtherList and OtherList.Object then OtherList.Object.Visible = callback end
+		end
+	})
+	OtherList = ItemESP:CreateTextList({
+		Name = 'Items',
+		Tooltip = 'Item names to show too',
+		Placeholder = 'item name (fireball)',
+		Visible = false
+	})
+	SkipGenerators = ItemESP:CreateToggle({
+		Name = 'Skip Generators',
+		Tooltip = 'Leaves out drops piled on generators',
+		Default = true
+	})
+	ShowDistance = ItemESP:CreateToggle({Name = 'Distance', Tooltip = 'Shows how far away each one is', Default = true})
+	Outline = ItemESP:CreateToggle({Name = 'Outline', Tooltip = 'Outlines the item itself'})
+	Range = ItemESP:CreateSlider({
+		Name = 'Range',
+		Tooltip = 'How far away items are shown',
+		Min = 10,
+		Max = 500,
+		Default = 120,
+		Suffix = function(val) return val == 1 and 'stud' or 'studs' end
+	})
+	TextSize = ItemESP:CreateSlider({
+		Name = 'Text Size',
+		Tooltip = 'How big the labels are',
+		Min = 8,
+		Max = 22,
+		Default = 13
+	})
+	
+end)
+
+run(function()
 	local KitESP = {Enabled = false}
 	local Notify
 	local Tracers
@@ -9857,7 +10071,6 @@ run(function()
 	local DistanceCheck
 	local DistanceLimit
 	local Rank
-	local Device
 	local Enchants
 	local Effects
 	local Strings, Sizes, Reference, Prefixes = {}, {}, {}, {}
@@ -10125,31 +10338,6 @@ run(function()
 		held open in the text. The gap is measured in spaces at the tag's own font and size, so
 		it stays the right width at any Scale rather than being a fixed guess.
 	]]
-	--[[
-		The ranked badge sits just outside the tag's left edge, centred on it, rather than in
-		a run of spaces cut into the text. Placing it inside meant measuring the text in front
-		of it, and the measurement and the rendered rich text never quite agreed - which put
-		the badge over the middle of the name.
-	]]
-	local function rankGap()
-		return ''
-	end
-	
-	local function placeRankIcon(nametag, ent)
-		local icon = nametag:FindFirstChild('RankIcon')
-		if not icon then return end
-	
-		local image = (Rank and Rank.Enabled) and ent.Player and divisionImage(ent.Player) or nil
-		icon.Image = image or ''
-		icon.Visible = image ~= nil
-		if not image then return end
-	
-		local height = nametag.Size.Y.Offset
-		icon.AnchorPoint = Vector2.new(1, 0.5)
-		icon.Size = UDim2.fromOffset(height, height)
-		icon.Position = UDim2.new(0, -2, 0.5, 0)
-	end
-	
 	local function fetchDivisions()
 		if DivisionFetching or not (Rank and Rank.Enabled) then return end
 	
@@ -10280,7 +10468,7 @@ run(function()
 				word.TextColor3 = Color3.new(1, 1, 1)
 				word.TextStrokeTransparency = 0.4
 				word.TextSize = math.max(8, math.floor(size * 0.6))
-				word.FontFace = nametag.FontFace
+				word.FontFace = FontOption.Value
 				word.LayoutOrder = shown
 				word.Parent = strip
 			end
@@ -10290,82 +10478,99 @@ run(function()
 		strip.Visible = shown > 0
 	end
 	
+	--[[
+		A tag is a row of separate pieces - the distance, the ranked badge, the name and the
+		health - laid out side by side by a UIListLayout inside a Row frame, with the tag's
+		background sized to that row. Nothing is measured: each piece takes its own room, so
+		a badge or an icon can never end up over the text. The equipment icons and the status
+		strip sit above the tag, outside the row.
+	]]
+	local function newPiece(row, name, order)
+		local label = Instance.new('TextLabel')
+		label.Name = name
+		label.BackgroundTransparency = 1
+		label.AutomaticSize = Enum.AutomaticSize.X
+		label.Size = UDim2.fromScale(0, 1)
+		label.RichText = true
+		label.TextColor3 = Color3.new(1, 1, 1)
+		label.LayoutOrder = order
+		label.Parent = row
+		return label
+	end
+	
+	local function textHeight()
+		return math.floor(14 * Scale.Value) + 3
+	end
+	
 	local Added = {
 		Normal = function(ent)
 			if not Targets.Players.Enabled and ent.Player then return end
 			if not Targets.NPCs.Enabled and ent.NPC then return end
 			if Teammates.Enabled and (not ent.Targetable) and (not ent.Friend) then return end
 	
-			local nametag = Instance.new('TextLabel')
-			Strings[ent] = ent.Player and whitelist:tag(ent.Player, true, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
+			local height = textHeight()
+			local nametag = Instance.new('Frame')
+			nametag.Name = ent.Player and ent.Player.Name or ent.Character.Name
+			nametag.AnchorPoint = Vector2.new(0.5, 1)
+			nametag.BackgroundColor3 = Color3.new()
+			nametag.BackgroundTransparency = Background.Value
+			nametag.BorderSizePixel = 0
+			nametag.Size = UDim2.fromOffset(60, height + 4)
+			nametag.Visible = false
+			Instance.new('UICorner', nametag).CornerRadius = UDim.new(0, 4)
 	
-			if Device.Enabled and ent.Player then
-				local executor = (identifyexecutor and identifyexecutor() or {'Unknown'})[1] or 'Unknown'
-				local deviceIcon = executor:find('Mobile') and '📱' or '💻'
-				Strings[ent] = Strings[ent]..' '..deviceIcon
-			end
+			local row = Instance.new('Frame')
+			row.Name = 'Row'
+			row.BackgroundTransparency = 1
+			row.AutomaticSize = Enum.AutomaticSize.X
+			row.Size = UDim2.fromOffset(0, height)
+			row.Position = UDim2.fromOffset(4, 2)
+			row.Parent = nametag
+			local layout = Instance.new('UIListLayout')
+			layout.FillDirection = Enum.FillDirection.Horizontal
+			layout.VerticalAlignment = Enum.VerticalAlignment.Center
+			layout.SortOrder = Enum.SortOrder.LayoutOrder
+			layout.Padding = UDim.new(0, 4)
+			layout.Parent = row
 	
-			if Health.Enabled then
-				local healthColor = Color3.fromHSV(math.clamp(ent.Health / ent.MaxHealth, 0, 1) / 2.5, 0.89, 0.75)
-				Strings[ent] = Strings[ent]..' <font color="rgb('..tostring(math.floor(healthColor.R * 255))..','..tostring(math.floor(healthColor.G * 255))..','..tostring(math.floor(healthColor.B * 255))..')">'..math.round(ent.Health)..'</font>'
-			end
-	
-			Strings[ent] = appendStatus(ent, Strings[ent], true)
-	
-			-- The badge sits between the distance and the name, so the distance is kept aside
-			-- as the run of text the badge has to clear.
-			Prefixes[ent] = Distance.Enabled and '<font color="rgb(85, 255, 85)">[</font><font color="rgb(255, 255, 255)">%s</font><font color="rgb(85, 255, 85)">]</font> ' or ''
-			Strings[ent] = Prefixes[ent]..rankGap(ent, 14 * Scale.Value, FontOption.Value)..Strings[ent]
+			newPiece(row, 'Distance', 1)
+			local rankicon = Instance.new('ImageLabel')
+			rankicon.Name = 'RankIcon'
+			rankicon.BackgroundTransparency = 1
+			rankicon.Size = UDim2.fromOffset(height, height)
+			rankicon.ScaleType = Enum.ScaleType.Fit
+			rankicon.LayoutOrder = 2
+			rankicon.Visible = false
+			rankicon.Parent = row
+			newPiece(row, 'NameLabel', 3)
+			newPiece(row, 'HealthLabel', 4)
 	
 			if Equipment.Enabled then
 				for i, v in {'Hand', 'Helmet', 'Chestplate', 'Boots', 'Kit'} do
 					local Icon = Instance.new('ImageLabel')
 					Icon.Name = v
 					Icon.Size = UDim2.fromOffset(30, 30)
-					Icon.Position = UDim2.fromOffset(-60 + (i * 30), -30)
+					Icon.AnchorPoint = Vector2.new(0.5, 1)
+					Icon.Position = UDim2.new(0.5, (i - 3) * 30, 0, -2)
 					Icon.BackgroundTransparency = 1
 					Icon.Image = ''
 					Icon.Parent = nametag
 				end
 			end
 	
-			nametag.TextSize = 14 * Scale.Value
-			nametag.FontFace = FontOption.Value
-			local size = getfontsize(removeTags(Strings[ent]), nametag.TextSize, nametag.FontFace, Vector2.new(100000, 100000))
-			nametag.Name = ent.Player and ent.Player.Name or ent.Character.Name
-			nametag.Size = UDim2.fromOffset(size.X + 8, size.Y + 7)
-			nametag.AnchorPoint = Vector2.new(0.5, 1)
-			nametag.BackgroundColor3 = Color3.new()
-			nametag.BackgroundTransparency = Background.Value
-			nametag.BorderSizePixel = 0
-			nametag.Visible = false
-			nametag.Text = Strings[ent]
-	
 			local strip = Instance.new('Frame')
 			strip.Name = 'Effects'
 			strip.AnchorPoint = Vector2.new(0.5, 1)
-			strip.Position = UDim2.new(0.5, 0, 0, -2)
+			strip.Position = UDim2.new(0.5, 0, 0, Equipment.Enabled and -34 or -2)
 			strip.Size = UDim2.fromOffset(0, 0)
 			strip.AutomaticSize = Enum.AutomaticSize.X
 			strip.BackgroundTransparency = 1
 			strip.Visible = false
 			strip.Parent = nametag
-			drawEffects(nametag, ent)
 	
-			local rankicon = Instance.new('ImageLabel')
-			rankicon.Name = 'RankIcon'
-			rankicon.AnchorPoint = Vector2.new(0, 0.5)
-			rankicon.BackgroundTransparency = 1
-			rankicon.ScaleType = Enum.ScaleType.Fit
-			rankicon.Image = ''
-			rankicon.Visible = false
-			rankicon.Parent = nametag
-			placeRankIcon(nametag, ent)
-	
-			nametag.TextColor3 = entitylib.getEntityColor(ent) or Color3.fromHSV(Color.Hue, Color.Sat, Color.Value)
-			nametag.RichText = true
 			nametag.Parent = Folder
 			Reference[ent] = nametag
+			-- Filled in by Updated, which the loop runs for any tag not built yet.
 		end,
 		Drawing = function(ent)
 			if not Targets.Players.Enabled and ent.Player then return end
@@ -10389,12 +10594,6 @@ run(function()
 				if division then
 					Strings[ent] = Strings[ent]..' '..division
 				end
-			end
-	
-			if Device.Enabled and ent.Player then
-				local executor = (identifyexecutor and identifyexecutor() or {'Unknown'})[1] or 'Unknown'
-				local deviceIcon = executor:find('Mobile') and '📱' or '💻'
-				Strings[ent] = Strings[ent]..' '..deviceIcon
 			end
 	
 			if Health.Enabled then
@@ -10447,43 +10646,48 @@ run(function()
 	local Updated = {
 		Normal = function(ent)
 			local nametag = Reference[ent]
-			if nametag then
-				Sizes[ent] = nil
-				Strings[ent] = ent.Player and whitelist:tag(ent.Player, true, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
+			if not nametag then return end
+			local row = nametag:FindFirstChild('Row')
+			if not row then return end
+			Sizes[ent] = nil
+			-- Marks the tag as built, for the loop's rebuild check.
+			Strings[ent] = true
 	
-				if Device.Enabled and ent.Player then
-					local executor = (identifyexecutor and identifyexecutor() or {'Unknown'})[1] or 'Unknown'
-					local deviceIcon = executor:find('Mobile') and '📱' or '💻'
-					Strings[ent] = Strings[ent]..' '..deviceIcon
-				end
-	
-				if Health.Enabled then
-					local healthColor = Color3.fromHSV(math.clamp(ent.Health / ent.MaxHealth, 0, 1) / 2.5, 0.89, 0.75)
-					Strings[ent] = Strings[ent]..' <font color="rgb('..tostring(math.floor(healthColor.R * 255))..','..tostring(math.floor(healthColor.G * 255))..','..tostring(math.floor(healthColor.B * 255))..')">'..math.round(ent.Health)..'</font>'
-				end
-	
-				Strings[ent] = appendStatus(ent, Strings[ent], true)
-	
-				Prefixes[ent] = Distance.Enabled and '<font color="rgb(85, 255, 85)">[</font><font color="rgb(255, 255, 255)">%s</font><font color="rgb(85, 255, 85)">]</font> ' or ''
-				Strings[ent] = Prefixes[ent]..rankGap(ent, nametag.TextSize, nametag.FontFace)..Strings[ent]
-	
-				if Equipment.Enabled and store.inventories[ent.Player] then
-					local kit = ent.Player:GetAttribute('PlayingAsKit')
-					local inventory = store.inventories[ent.Player]
-					nametag.Hand.Image = bedwars.getIcon(inventory.hand or {itemType = ''}, true)
-					nametag.Helmet.Image = bedwars.getIcon(inventory.armor[4] or {itemType = ''}, true)
-					nametag.Chestplate.Image = bedwars.getIcon(inventory.armor[5] or {itemType = ''}, true)
-					nametag.Boots.Image = bedwars.getIcon(inventory.armor[6] or {itemType = ''}, true)
-					nametag.Kit.Image = kit and kit ~= 'none' and bedwars.BedwarsKitMeta[kit].renderImage or ''
-				end
-	
-				local size = getfontsize(removeTags(Strings[ent]), nametag.TextSize, nametag.FontFace, Vector2.new(100000, 100000))
-				nametag.Size = UDim2.fromOffset(size.X + 8, size.Y + 7)
-				nametag.Text = Strings[ent]
-				drawEffects(nametag, ent)
-				-- Outside the tag, so nothing in the text has to be measured first.
-				placeRankIcon(nametag, ent)
+			local size = math.floor(14 * Scale.Value)
+			local font = FontOption.Value
+			local height = textHeight()
+			row.Size = UDim2.fromOffset(0, height)
+			for _, piece in {row.Distance, row.NameLabel, row.HealthLabel} do
+				piece.TextSize = size
+				piece.FontFace = font
 			end
+	
+			row.Distance.Visible = Distance.Enabled
+			row.NameLabel.Text = ent.Player and whitelist:tag(ent.Player, true, true)..(DisplayName.Enabled and ent.Player.DisplayName or ent.Player.Name) or ent.Character.Name
+			row.NameLabel.TextColor3 = entitylib.getEntityColor(ent) or Color3.fromHSV(Color.Hue, Color.Sat, Color.Value)
+	
+			row.HealthLabel.Visible = Health.Enabled
+			if Health.Enabled then
+				row.HealthLabel.Text = tostring(math.round(ent.Health))
+				row.HealthLabel.TextColor3 = Color3.fromHSV(math.clamp(ent.Health / math.max(ent.MaxHealth, 1), 0, 1) / 2.5, 0.89, 0.75)
+			end
+	
+			local image = Rank and Rank.Enabled and ent.Player and divisionImage(ent.Player) or nil
+			row.RankIcon.Image = image or ''
+			row.RankIcon.Visible = image ~= nil
+			row.RankIcon.Size = UDim2.fromOffset(height, height)
+	
+			if Equipment.Enabled and store.inventories[ent.Player] and nametag:FindFirstChild('Hand') then
+				local kit = ent.Player:GetAttribute('PlayingAsKit')
+				local inventory = store.inventories[ent.Player]
+				nametag.Hand.Image = bedwars.getIcon(inventory.hand or {itemType = ''}, true)
+				nametag.Helmet.Image = bedwars.getIcon(inventory.armor[4] or {itemType = ''}, true)
+				nametag.Chestplate.Image = bedwars.getIcon(inventory.armor[5] or {itemType = ''}, true)
+				nametag.Boots.Image = bedwars.getIcon(inventory.armor[6] or {itemType = ''}, true)
+				nametag.Kit.Image = kit and kit ~= 'none' and bedwars.BedwarsKitMeta[kit] and bedwars.BedwarsKitMeta[kit].renderImage or ''
+			end
+	
+			drawEffects(nametag, ent)
 		end,
 		Drawing = function(ent)
 			local nametag = Reference[ent]
@@ -10499,12 +10703,6 @@ run(function()
 					if division then
 						Strings[ent] = Strings[ent]..' '..division
 					end
-				end
-	
-				if Device.Enabled and ent.Player then
-					local executor = (identifyexecutor and identifyexecutor() or {'Unknown'})[1] or 'Unknown'
-					local deviceIcon = executor:find('Mobile') and '📱' or '💻'
-					Strings[ent] = Strings[ent]..' '..deviceIcon
 				end
 	
 				if Health.Enabled then
@@ -10530,7 +10728,8 @@ run(function()
 		Normal = function(hue, sat, val)
 			local color = Color3.fromHSV(hue, sat, val)
 			for i, v in Reference do
-				v.TextColor3 = entitylib.getEntityColor(i) or color
+				local row = v:FindFirstChild('Row')
+				if row then row.NameLabel.TextColor3 = entitylib.getEntityColor(i) or color end
 			end
 		end,
 		Drawing = function(hue, sat, val)
@@ -10613,15 +10812,19 @@ run(function()
 						return
 					end
 	
-					if Distance.Enabled then
+					local row = nametag:FindFirstChild('Row')
+					if Distance.Enabled and row then
 						local mag = entitylib.isAlive and math.floor((entitylib.character.RootPart.Position - ent.RootPart.Position).Magnitude) or 0
 						if Sizes[ent] ~= mag then
-							nametag.Text = string.format(Strings[ent], mag)
-							local ize = getfontsize(removeTags(nametag.Text), nametag.TextSize, nametag.FontFace, Vector2.new(100000, 100000))
-							nametag.Size = UDim2.fromOffset(ize.X + 8, ize.Y + 7)
+							row.Distance.Text = '<font color="rgb(85, 255, 85)">[</font>' .. mag .. '<font color="rgb(85, 255, 85)">]</font>'
 							Sizes[ent] = mag
-							-- The tag's height can change with the text; the badge follows it.
-							placeRankIcon(nametag, ent)
+						end
+					end
+					-- The background follows the row, which lays itself out.
+					if row then
+						local width = row.AbsoluteSize.X + 8
+						if nametag.Size.X.Offset ~= width then
+							nametag.Size = UDim2.fromOffset(width, row.AbsoluteSize.Y + 4)
 						end
 					end
 					nametag.Position = UDim2.fromOffset(headPos.X, headPos.Y)
@@ -10899,16 +11102,8 @@ run(function()
 			end
 		end
 	})
-	Device = NameTags:CreateToggle({
-		Name = 'Device',
-		Tooltip = 'Shows executor type with an icon',
-		Function = function()
-			if NameTags.Enabled then
-				NameTags:Toggle()
-				NameTags:Toggle()
-			end
-		end
-	})
+	-- Device was removed: the game tells no client what device anyone else is on, so it
+	-- showed your own executor's device for every player.
 end)
 
 run(function()
@@ -28722,22 +28917,27 @@ run(function()
 		Tooltip = 'Saves everything for iron armor first\nNeeds Buy Armor on'
 	})
 	--[[
-		Custom items: priority/item/amount/after, where "after" (anything in the fourth field)
-		buys it after the sword, armor and tools instead of before.
+		Custom items: picked from a searchable item list and kept in the Buy List in the order
+		they should be bought, each with its own amount slider. The amounts live in a second,
+		hidden list (item=amount) so they save with the config. Lists in the old
+		priority/item/amount/after text format are converted the first time they load.
 	
-		Topped up to the amount you set, a stack at a time: whatever is short is rounded up to
-		whole stacks - rounding down left it never topping up once you had used less than a
-		stack - and as many of those as you can afford are bought now, rather than nothing at
-		all until you could afford every one. Entries run in priority order, and two with the
-		same priority both run instead of one replacing the other.
+		Each item is topped up to its amount a stack at a time: whatever is short is rounded up
+		to whole stacks, and as many of those as you can afford are bought now.
 	]]
-	local function customBuyer(itemType, amount)
+	local BuyItem, BuyList, BuyAmounts, AfterTools, OldList
+	local amountSliders, amounts = {}, {}
+	local listBusy = false
+	local DEFAULT_BUY_AMOUNT = 16
+	
+	local function customBuyer(itemType)
 		return function(currencytable, shop)
 			if not shop then return end
 			-- Held back too: these are bought with the same iron the armor needs, so buying
 			-- them first is why there was none left for it.
 			if savingForArmor() then return end
 	
+			local amount = amounts[itemType]
 			local v = bedwars.Shop.getShopItem(itemType, lplr)
 			if not (v and amount) then return end
 			-- getTeamWool was renamed getTeamWoolById upstream; same signature (team id in,
@@ -28756,26 +28956,182 @@ run(function()
 		end
 	end
 	
-	AutoBuy:CreateTextList({
-		Name = 'Item',
-		Tooltip = 'Which items this applies to',
-		Placeholder = 'priority/item/amount/after',
-		Function = function(list)
-			table.clear(Custom)
-			table.clear(CustomPost)
-			local before, after = {}, {}
-			for _, entry in list do
-				local tab = entry:split('/')
-				local priority = tonumber(tab[1])
-				if priority and tab[2] then
-					table.insert(tab[4] and after or before, {priority = priority, buy = customBuyer(tab[2], tonumber(tab[3]))})
+	local function storedAmounts()
+		local map = {}
+		for _, text in (BuyAmounts and BuyAmounts.List or {}) do
+			local itemType, amount = tostring(text):match('^(.-)=(%d+)$')
+			if itemType then map[itemType] = tonumber(amount) end
+		end
+		return map
+	end
+	
+	local function writeAmounts(map)
+		local list = {}
+		for itemType, amount in map do list[#list + 1] = itemType .. '=' .. math.max(1, math.floor(amount)) end
+		table.sort(list)
+		listBusy = true
+		BuyAmounts:Load({List = list, ListEnabled = table.clone(list)})
+		listBusy = false
+	end
+	
+	local function sliderName(itemType)
+		return itemAlerts.label(itemType) .. ' Amount'
+	end
+	
+	local function removeSlider(itemType)
+		local slider = amountSliders[itemType]
+		amountSliders[itemType] = nil
+		if not slider then return end
+		if AutoBuy.Options and slider.Name and AutoBuy.Options[slider.Name] == slider then
+			AutoBuy.Options[slider.Name] = nil
+		end
+		if slider.Object then slider.Object:Destroy() end
+	end
+	
+	local function addSlider(itemType, amount)
+		local name = sliderName(itemType)
+		local slider = AutoBuy:CreateSlider({
+			Name = name,
+			Tooltip = 'How many ' .. itemAlerts.label(itemType) .. ' to keep',
+			Min = 1,
+			Max = 128,
+			Default = amount,
+			Darker = true,
+			Function = function(value, final)
+				amounts[itemType] = value
+				if final and not listBusy then
+					local map = storedAmounts()
+					map[itemType] = value
+					writeAmounts(map)
 				end
 			end
-			for target, entries in {[Custom] = before, [CustomPost] = after} do
-				table.sort(entries, function(a, b) return a.priority < b.priority end)
-				for i, entry in entries do target[i] = entry.buy end
+		})
+		if slider then
+			slider.Name = name
+			amountSliders[itemType] = slider
+		end
+	end
+	
+	-- Buyers rebuilt from the Buy List, in its order; sliders made or removed to match.
+	local function syncCustom()
+		if listBusy or not (BuyList and BuyAmounts) then return end
+		local map = storedAmounts()
+		local seen = {}
+		table.clear(Custom)
+		table.clear(CustomPost)
+		local target = (AfterTools and AfterTools.Enabled) and CustomPost or Custom
+		for _, itemType in BuyList.List do
+			if bedwars.ItemMeta[itemType] and not seen[itemType] then
+				seen[itemType] = true
+				amounts[itemType] = map[itemType] or DEFAULT_BUY_AMOUNT
+				if not amountSliders[itemType] then addSlider(itemType, amounts[itemType]) end
+				if table.find(BuyList.ListEnabled, itemType) then
+					target[#target + 1] = customBuyer(itemType)
+				end
 			end
-			npctick = tick()
+		end
+		for itemType in table.clone(amountSliders) do
+			if not seen[itemType] then
+				removeSlider(itemType)
+				amounts[itemType] = nil
+			end
+		end
+		npctick = tick()
+	end
+	
+	-- An old priority/item/amount/after list, moved into the new lists in priority order.
+	local function migrate(list)
+		if listBusy or not list or #list == 0 then return end
+		local entries, after = {}, false
+		for _, text in list do
+			local tab = tostring(text):split('/')
+			local priority, itemType = tonumber(tab[1]), tab[2]
+			if priority and itemType and bedwars.ItemMeta[itemType] then
+				entries[#entries + 1] = {priority = priority, itemType = itemType, amount = tonumber(tab[3]) or DEFAULT_BUY_AMOUNT}
+				after = after or tab[4] ~= nil
+			end
+		end
+		if #entries == 0 then return end
+		table.sort(entries, function(a, b) return a.priority < b.priority end)
+		local items, map = table.clone(BuyList.List), storedAmounts()
+		for _, entry in entries do
+			if not table.find(items, entry.itemType) then items[#items + 1] = entry.itemType end
+			map[entry.itemType] = entry.amount
+		end
+		listBusy = true
+		BuyList:Load({List = items, ListEnabled = table.clone(items)})
+		OldList:Load({List = {}, ListEnabled = {}})
+		listBusy = false
+		writeAmounts(map)
+		if after and AfterTools and not AfterTools.Enabled then AfterTools:Toggle() end
+		syncCustom()
+	end
+	
+	do
+		local names, labels = itemAlerts.items()
+		BuyItem = AutoBuy:CreateDropdown({
+			Name = 'Buy Item',
+			Tooltip = 'An item to keep stocked - type to search',
+			List = names,
+			Labels = labels,
+			Search = true
+		})
+	end
+	AutoBuy:CreateButton({
+		Name = 'Add Item',
+		Tooltip = 'Adds the item above to the Buy List',
+		Function = function()
+			local itemType = BuyItem.Value
+			if not (itemType and bedwars.ItemMeta[itemType]) or table.find(BuyList.List, itemType) then return end
+			local items = table.clone(BuyList.List)
+			local enabled = table.clone(BuyList.ListEnabled)
+			items[#items + 1] = itemType
+			enabled[#enabled + 1] = itemType
+			listBusy = true
+			BuyList:Load({List = items, ListEnabled = enabled})
+			listBusy = false
+			syncCustom()
+		end
+	})
+	BuyList = AutoBuy:CreateTextList({
+		Name = 'Buy List',
+		Tooltip = 'Bought top to bottom; untick to pause one',
+		Placeholder = 'item name (wool_white)',
+		Function = function()
+			syncCustom()
+		end
+	})
+	BuyAmounts = AutoBuy:CreateTextList({
+		Name = 'Buy Amounts',
+		Tooltip = 'Amount for each item, set by its slider',
+		Visible = false,
+		Function = function()
+			if listBusy then return end
+			local map = storedAmounts()
+			for itemType, slider in amountSliders do
+				if map[itemType] and slider.Value ~= map[itemType] and slider.SetValue then
+					listBusy = true
+					pcall(slider.SetValue, slider, map[itemType])
+					listBusy = false
+				end
+				amounts[itemType] = map[itemType] or amounts[itemType]
+			end
+		end
+	})
+	AfterTools = AutoBuy:CreateToggle({
+		Name = 'Buy List After Tools',
+		Tooltip = 'Buys the list after sword, armor and tools',
+		Function = function()
+			syncCustom()
+		end
+	})
+	-- The old text list, kept hidden only to carry an old config over.
+	OldList = AutoBuy:CreateTextList({
+		Name = 'Item',
+		Tooltip = 'Old format list, converted on load',
+		Visible = false,
+		Function = function(list)
+			migrate(list)
 		end
 	})
 	
@@ -31609,9 +31965,9 @@ run(function()
 	--[[
 		Hotbar.
 	
-		Recolours the game's hotbar. Each slot's tile is a frame the game paints #1D242E with a
-		lighter border, so tiles are found by that colour the first time they are seen and
-		remembered; which one is selected comes from your hotbar slot (store.inventory
+		Recolours the game's hotbar. Tiles are found by where they sit, not by their colour, so
+		a recolour in a game update does not lose them: every slot is a direct child of
+		ItemsHotbar, and its tile is the square, bordered frame inside it; which one is selected comes from your hotbar slot (store.inventory
 		.hotbarSlot) and the tiles' order across the screen. The health bar is
 		HotbarHealthbarContainer, its fill the first frame inside HealthbarProgressWrapper.
 	
@@ -31634,9 +31990,6 @@ run(function()
 		return Color3.fromHSV(setting.Hue, setting.Sat, setting.Value)
 	end
 	
-	local function close(a, b)
-		return math.abs(a.R - b.R) + math.abs(a.G - b.G) + math.abs(a.B - b.B) < 0.02
-	end
 	
 	-- Finds the hotbar's tiles and health bar, once a second.
 	local function scan()
@@ -31647,10 +32000,19 @@ run(function()
 		healthContainer = gui:FindFirstChild('HotbarHealthbarContainer', true)
 		local items = gui:FindFirstChild('ItemsHotbar', true)
 		if not items then return end
-		for _, object in items:GetDescendants() do
-			if object:IsA('GuiObject') and not tiles[object] and object.SizeConstraint == Enum.SizeConstraint.RelativeYY
-				and object.BorderSizePixel == 1 and close(object.BackgroundColor3, GAME_TILE) then
-				tiles[object] = true
+		for _, slot in items:GetChildren() do
+			if slot:IsA('GuiObject') then
+				-- The tile: the square frame inside the slot whose border is drawn inset - the
+				-- game sets that on the tile alone, the slot around it keeps the default.
+				local found
+				for _, object in {slot, unpack(slot:GetDescendants())} do
+					if object:IsA('GuiObject') and object.SizeConstraint == Enum.SizeConstraint.RelativeYY
+						and object.BorderMode == Enum.BorderMode.Inset then
+						found = object
+						break
+					end
+				end
+				if found then tiles[found] = true end
 			end
 		end
 	end
@@ -32295,7 +32657,7 @@ run(function()
 	]]
 	local RespawnTimers
 	local Teammates, ShowFinals, WorldMarkers, Corner, Background
-	local RespawnSound, WarnBefore, OnlyNearby, NearbyRange, AlwaysShow, PanelScale, FontOption
+	local RespawnSound, WarnBefore, OnlyNearby, NearbyRange, AlwaysShow, PanelScale, FontOption, ShowKit
 	local panel, list, scaler
 	local dead = {}
 	local rows = {}
@@ -32461,6 +32823,14 @@ run(function()
 		avatar.Parent = frame
 		Instance.new('UICorner', avatar).CornerRadius = UDim.new(1, 0)
 	
+		local kit = Instance.new('ImageLabel')
+		kit.BackgroundTransparency = 1
+		kit.Size = UDim2.fromOffset(16, 16)
+		kit.Position = UDim2.fromOffset(19, 2)
+		kit.ScaleType = Enum.ScaleType.Crop
+		kit.Parent = frame
+		Instance.new('UICorner', kit).CornerRadius = UDim.new(0.3, 0)
+	
 		local name = Instance.new('TextLabel')
 		name.BackgroundTransparency = 1
 		name.Position = UDim2.fromOffset(22, 1)
@@ -32493,7 +32863,7 @@ run(function()
 		fill.Parent = track
 		Instance.new('UICorner', fill).CornerRadius = UDim.new(1, 0)
 	
-		entry = {frame = frame, avatar = avatar, name = name, timer = timer, track = track, fill = fill}
+		entry = {frame = frame, avatar = avatar, kit = kit, name = name, timer = timer, track = track, fill = fill}
 		rows[index] = entry
 		return entry
 	end
@@ -32503,6 +32873,14 @@ run(function()
 			local entry = row(i)
 			local color = item.player.Team and item.player.TeamColor.Color or Color3.fromRGB(230, 230, 230)
 			entry.avatar.Image = 'rbxthumb://type=AvatarHeadShot&id=' .. item.player.UserId .. '&w=48&h=48'
+			-- The kit they play, next to their avatar, with the name moved over for it.
+			local kitName = item.player:GetAttribute('PlayingAsKit')
+			local kitMeta = kitName and kitName ~= 'none' and bedwars.BedwarsKitMeta[kitName]
+			local showKit = on(ShowKit) and kitMeta ~= nil and kitMeta.renderImage ~= nil
+			entry.kit.Visible = showKit
+			entry.kit.Image = showKit and kitMeta.renderImage or ''
+			entry.name.Position = UDim2.fromOffset(showKit and 40 or 22, 1)
+			entry.name.Size = UDim2.new(1, showKit and -88 or -70, 0, 18)
 			entry.name.Text = item.player.DisplayName
 			entry.name.TextColor3 = color
 			entry.name.FontFace = font
@@ -32741,6 +33119,11 @@ run(function()
 		Darker = true,
 		Visible = false,
 		Suffix = function(val) return val == 1 and 'stud' or 'studs' end
+	})
+	ShowKit = RespawnTimers:CreateToggle({
+		Name = 'Show Kit',
+		Tooltip = 'Shows the kit each player respawns with',
+		Default = true
 	})
 	AlwaysShow = RespawnTimers:CreateToggle({
 		Name = 'Always Show',
