@@ -4477,6 +4477,17 @@ run(function()
 			hitbox.CanTouch = false
 			hitbox.CastShadow = false
 			hitbox.Massless = true
+			--[[
+				Never copied along with the character.
+	
+				Miner turns whoever it kills into a statue by cloning their character, and when
+				the statue is mined or crumbles every copied part is dropped as loose debris -
+				solid if it was visible. With Show Hitboxes on, this part came back as a huge
+				block that knocked you off the map. Clone skips anything that is not
+				Archivable, so the statue, and anything else the game copies from a character,
+				now never gets one.
+			]]
+			hitbox.Archivable = false
 			styleHitbox(hitbox)
 			hitbox.Parent = ent.Character
 			local weld = Instance.new('Motor6D')
