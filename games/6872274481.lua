@@ -34394,20 +34394,21 @@ run(function()
 		local compact = on(Compact)
 		avatar.Visible = not compact
 		infoLabel.Visible = not compact
-		local left = compact and 14 or 60
-		nameLabel.Position = UDim2.fromOffset(left, 8)
-		nameLabel.Size = UDim2.new(1, -left - 82, 0, 16)
-		barBack.Position = UDim2.fromOffset(left, 28)
-		barBack.Size = UDim2.new(1, -left - 12, 0, 6)
-		infoLabel.Position = UDim2.fromOffset(left, 37)
-		infoLabel.Size = UDim2.new(1, -left - 12, 0, 14)
+		local left = compact and 12 or 52
+		nameLabel.Position = UDim2.fromOffset(left, 6)
+		-- The full width when there is no verdict pill beside it.
+		nameLabel.Size = UDim2.new(1, -left - (winLabel.Visible and 78 or 12), 0, 15)
+		barBack.Position = UDim2.fromOffset(left, 24)
+		barBack.Size = UDim2.new(1, -left - 12, 0, 5)
+		infoLabel.Position = UDim2.fromOffset(left, 31)
+		infoLabel.Size = UDim2.new(1, -left - 12, 0, 13)
 		local extra = not compact and on(ShowKitName)
 		extraLabel.Visible = extra
-		extraLabel.Position = UDim2.fromOffset(left, 51)
+		extraLabel.Position = UDim2.fromOffset(left, 44)
 		local chips = not compact and (on(ShowEquipment) or on(ShowEnchants))
 		equipment.Visible = chips
-		equipment.Position = UDim2.fromOffset(14, extra and 70 or 56)
-		local height = compact and 42 or (56 + (extra and 14 or 0) + (chips and 28 or 4))
+		equipment.Position = UDim2.fromOffset(12, extra and 61 or 48)
+		local height = compact and 38 or (48 + (extra and 13 or 0) + (chips and 24 or 4))
 		card.Size = UDim2.new(1, 0, 0, height)
 	end
 	
@@ -34758,7 +34759,7 @@ run(function()
 				liveReset()
 			end
 		end,
-		Size = UDim2.fromOffset(204, 82),
+		Size = UDim2.fromOffset(204, 72),
 		Tooltip = 'Shows who you are fighting'
 	})
 	Mode = TargetHUD:CreateDropdown({
@@ -34903,8 +34904,8 @@ run(function()
 	accent.Parent = card
 	
 	avatar = Instance.new('ImageLabel')
-	avatar.Position = UDim2.fromOffset(12, 9)
-	avatar.Size = UDim2.fromOffset(38, 38)
+	avatar.Position = UDim2.fromOffset(11, 7)
+	avatar.Size = UDim2.fromOffset(32, 32)
 	avatar.BackgroundColor3 = Color3.fromRGB(36, 36, 42)
 	avatar.BorderSizePixel = 0
 	avatar.Parent = card
@@ -34978,7 +34979,7 @@ run(function()
 	
 	equipment = Instance.new('Frame')
 	equipment.BackgroundTransparency = 1
-	equipment.Size = UDim2.new(1, -28, 0, 22)
+	equipment.Size = UDim2.new(1, -24, 0, 18)
 	equipment.Parent = card
 	local equipmentLayout = Instance.new('UIListLayout')
 	equipmentLayout.FillDirection = Enum.FillDirection.Horizontal
@@ -34991,12 +34992,12 @@ run(function()
 		local icon = Instance.new('ImageLabel')
 		icon.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
 		icon.BackgroundTransparency = 0.2
-		icon.Size = UDim2.fromOffset(22, 22)
+		icon.Size = UDim2.fromOffset(18, 18)
 		icon.ScaleType = Enum.ScaleType.Fit
 		icon.LayoutOrder = i
 		icon.Visible = false
 		icon.Parent = equipment
-		Instance.new('UICorner', icon).CornerRadius = UDim.new(0, 5)
+		Instance.new('UICorner', icon).CornerRadius = UDim.new(0, 4)
 		icons[i] = icon
 	end
 	layout()
