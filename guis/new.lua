@@ -5626,12 +5626,10 @@ function mainapi:CreateLegit()
 		if mainapi.ThreadFix then
 			setthreadidentity(8)
 		end
-		-- Enabled overlays always show - with their placeholders while any of the GUI is
-		-- open, so they can be seen and dragged from wherever.
+		-- Enabled overlays always show - with their placeholders while the click GUI or the
+		-- Legit window is open, so they can be seen and dragged. Other windows are left out:
+		-- pinned and HUD windows stay visible with the GUI closed.
 		local open = clickgui.Visible or window.Visible
-		for _, v2 in self.Windows do
-			open = open or v2.Visible
-		end
 		for _, v in legitapi.Modules do
 			if v.Children then
 				v.Children.Visible = v.Enabled
