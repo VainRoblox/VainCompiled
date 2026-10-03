@@ -3547,6 +3547,80 @@ run(function()
 end)
 
 run(function()
+	--[[
+		Fast Charge.
+	
+		ProjectileAimbot's Instant Charge on its own, for when you would rather aim yourself.
+	
+		A charged weapon's strength comes from how long it has been drawn: the game takes the
+		draw time against the projectile source's maxStrengthChargeSec and scales the launch
+		from there, every time it works out a launch. So the draw time is raised to the share of
+		a full charge you set, at that moment - the shot leaves as strong as if you had held it
+		that long, and the aim arc shows it too.
+	]]
+	local FastCharge
+	local ChargeSpeed
+	local old, hook
+	
+	local function applyCharge(projmeta)
+		if type(projmeta) ~= 'table' or projmeta.drawDurationSeconds == nil then return end
+	
+		local tool = store.hand and store.hand.tool
+		local meta = tool and bedwars.ItemMeta[tool.Name]
+		local source = meta and meta.projectileSource
+		local maxcharge = source and source.maxStrengthChargeSec
+		if not maxcharge then return end
+	
+		local wanted = maxcharge * (ChargeSpeed.Value / 100)
+		if projmeta.drawDurationSeconds < wanted then
+			projmeta.drawDurationSeconds = wanted
+		end
+	end
+	
+	FastCharge = vain.Categories.Combat:CreateModule({
+		Name = 'FastCharge',
+		Tooltip = 'Fully charges bows and crossbows straight away',
+		Function = function(callback)
+			local controller = bedwars.ProjectileController
+			if callback then
+				if not controller then return end
+				--[[
+					Wrapped on the controller, and safe to stack: ProjectileAimbot and the
+					fishing rod wrap this same method, so each wrapper keeps the original it was
+					built with, and putting it back is skipped if something wrapped after it.
+				]]
+				local original = controller.calculateImportantLaunchValues
+				if type(original) ~= 'function' then return end
+				old = original
+				hook = function(self, projmeta, ...)
+					if FastCharge.Enabled then
+						pcall(applyCharge, projmeta)
+					end
+					return original(self, projmeta, ...)
+				end
+				controller.calculateImportantLaunchValues = hook
+			else
+				if hook and old and controller and controller.calculateImportantLaunchValues == hook then
+					controller.calculateImportantLaunchValues = old
+				end
+				hook = nil
+			end
+		end
+	})
+	ChargeSpeed = FastCharge:CreateSlider({
+		Name = 'Charge Speed',
+		Tooltip = 'How much of a full draw is applied straight away',
+		Min = 0,
+		Max = 100,
+		Default = 100,
+		Suffix = function()
+			return '%'
+		end
+	})
+	
+end)
+
+run(function()
 	local old
 	
 	vain.Categories.Combat:CreateModule({
@@ -6904,6 +6978,236 @@ run(function()
 end)
 
 run(function()
+	--[[
+		Generator ESP.
+	
+		Every diamond and emerald generator on the map is a GlobalOreGeneratorModel carrying the
+		game's own label - "Diamond Generator [10]", the seconds to the next spawn in brackets -
+		and each team generator a label with its own timer. The game hides those labels a short
+		way off. This reads them and shows them over every generator, through walls and at any
+		distance, together with how many of its resource are piled up on it waiting to be taken.
+	]]
+	local GeneratorESP
+	local Diamond, Emerald, Team, ShowItems, ShowTier, Range, TextSize
+	local Folder = Instance.new('Folder')
+	Folder.Parent = vain.gui
+	local generators = {}
+	local piles = {}
+	local lastPileScan = 0
+	
+	local KINDS = {
+		diamond = {color = Color3.fromRGB(110, 210, 255), item = 'diamond'},
+		emerald = {color = Color3.fromRGB(90, 230, 120), item = 'emerald'},
+		team = {color = Color3.fromRGB(235, 235, 235)}
+	}
+	
+	local function on(setting)
+		return setting ~= nil and setting.Enabled
+	end
+	
+	local function textOf(model, name)
+		local label = model:FindFirstChild(name, true)
+		return label and label:IsA('TextLabel') and label.Text or nil
+	end
+	
+	-- Which kind of generator this is, from its own label.
+	local function kindOf(model)
+		local countdown = textOf(model, 'Countdown')
+		if countdown then
+			local lower = countdown:lower()
+			if lower:find('diamond', 1, true) then return 'diamond' end
+			if lower:find('emerald', 1, true) then return 'emerald' end
+		end
+		if textOf(model, 'Timer') then return 'team' end
+		return nil
+	end
+	
+	-- Seconds to the next spawn, as the game's own label has it.
+	local function secondsOf(model, kind)
+		if kind == 'team' then
+			local text = textOf(model, 'Timer')
+			return text and tonumber(text:match('([%d%.]+)')) or nil
+		end
+		local text = textOf(model, 'Countdown')
+		return text and tonumber(text:match('%[(%d+)%]')) or nil
+	end
+	
+	local function enabledKind(kind)
+		if kind == 'diamond' then return on(Diamond) end
+		if kind == 'emerald' then return on(Emerald) end
+		if kind == 'team' then return on(Team) end
+		return false
+	end
+	
+	local function remove(model)
+		local entry = generators[model]
+		if entry then
+			entry.billboard:Destroy()
+			generators[model] = nil
+		end
+	end
+	
+	local function add(model)
+		if generators[model] or not (model:IsA('Model') and model.Name == 'GlobalOreGeneratorModel') then return end
+		local adornee = model:FindFirstChild('GeneratorAdornee') or model.PrimaryPart or model:FindFirstChildWhichIsA('BasePart', true)
+		if not adornee then return end
+	
+		local billboard = Instance.new('BillboardGui')
+		billboard.Name = 'GeneratorESP'
+		billboard.Adornee = adornee
+		billboard.Size = UDim2.fromOffset(150, 24)
+		billboard.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
+		billboard.AlwaysOnTop = true
+		billboard.Enabled = false
+		billboard.Parent = Folder
+	
+		local label = Instance.new('TextLabel')
+		label.Name = 'Label'
+		label.Size = UDim2.fromScale(1, 1)
+		label.BackgroundTransparency = 1
+		label.Font = Enum.Font.GothamBold
+		label.TextStrokeTransparency = 0.4
+		label.TextColor3 = Color3.new(1, 1, 1)
+		label.Parent = billboard
+	
+		generators[model] = {billboard = billboard, adornee = adornee}
+	end
+	
+	-- How many of each generator's resource are lying on it. Item drops carry the CollectionService
+	-- tag ItemDrop and are named by item type; read every half second rather than every frame.
+	local function scanPiles()
+		if os.clock() - lastPileScan < 0.5 then return end
+		lastPileScan = os.clock()
+		table.clear(piles)
+	
+		local drops = collectionService:GetTagged('ItemDrop')
+		for model, entry in generators do
+			local kind = entry.kind
+			local wanted = kind and KINDS[kind] and KINDS[kind].item
+			if wanted and entry.adornee.Parent then
+				local center = entry.adornee.Position
+				local count = 0
+				for _, drop in drops do
+					if drop.Name == wanted then
+						local part = drop:IsA('BasePart') and drop or drop:FindFirstChildWhichIsA('BasePart', true)
+						if part and (part.Position - center).Magnitude <= 7 then
+							count += tonumber(drop:GetAttribute('Amount')) or 1
+						end
+					end
+				end
+				piles[model] = count
+			end
+		end
+	end
+	
+	local function update()
+		if on(ShowItems) then scanPiles() end
+		local here = entitylib.isAlive and entitylib.character.RootPart.Position
+		local size = TextSize and TextSize.Value or 14
+	
+		for model, entry in generators do
+			if not (model.Parent and entry.adornee.Parent) then
+				remove(model)
+				continue
+			end
+			entry.kind = entry.kind or kindOf(model)
+			local kind = entry.kind
+			local billboard = entry.billboard
+			local inRange = not here or (entry.adornee.Position - here).Magnitude <= Range.Value
+	
+			if kind and enabledKind(kind) and inRange then
+				local parts = {}
+				local seconds = secondsOf(model, kind)
+				local name = kind == 'diamond' and 'Diamond' or kind == 'emerald' and 'Emerald' or (textOf(model, 'Title') or 'Generator')
+				parts[1] = name
+				if seconds then
+					parts[#parts + 1] = (kind == 'team' and string.format('%.1fs', seconds) or (seconds .. 's'))
+				end
+				if on(ShowItems) and piles[model] and piles[model] > 0 then
+					parts[#parts + 1] = 'x' .. piles[model]
+				end
+				if on(ShowTier) then
+					local tier = textOf(model, 'GenTier') or textOf(model, 'Tier')
+					if tier then parts[#parts + 1] = tier:upper() end
+				end
+				billboard.Label.Text = table.concat(parts, '  ')
+				billboard.Label.TextColor3 = KINDS[kind].color
+				billboard.Label.TextSize = size
+				billboard.Size = UDim2.fromOffset(math.max(150, size * 14), size + 10)
+				billboard.Enabled = true
+			else
+				billboard.Enabled = false
+			end
+		end
+	end
+	
+	GeneratorESP = vain.Categories.Render:CreateModule({
+		Name = 'GeneratorESP',
+		Tooltip = 'Shows generator timers and resource piles through walls',
+		Function = function(callback)
+			if callback then
+				-- Generators are part of the map, so they are found once and then watched for.
+				task.spawn(function()
+					for _, descendant in workspace:GetDescendants() do
+						if descendant.Name == 'GlobalOreGeneratorModel' then add(descendant) end
+					end
+				end)
+				GeneratorESP:Clean(workspace.DescendantAdded:Connect(function(descendant)
+					if descendant.Name == 'GlobalOreGeneratorModel' then
+						task.defer(add, descendant)
+					end
+				end))
+				GeneratorESP:Clean(runService.RenderStepped:Connect(function()
+					pcall(update)
+				end))
+			else
+				for model in generators do remove(model) end
+				table.clear(piles)
+			end
+		end
+	})
+	Diamond = GeneratorESP:CreateToggle({
+		Name = 'Diamond',
+		Tooltip = 'Shows diamond generators',
+		Default = true
+	})
+	Emerald = GeneratorESP:CreateToggle({
+		Name = 'Emerald',
+		Tooltip = 'Shows emerald generators',
+		Default = true
+	})
+	Team = GeneratorESP:CreateToggle({
+		Name = 'Team Generators',
+		Tooltip = 'Also shows the iron and gold generators at bases'
+	})
+	ShowItems = GeneratorESP:CreateToggle({
+		Name = 'Show Items',
+		Tooltip = 'Shows how many are piled up on each generator',
+		Default = true
+	})
+	ShowTier = GeneratorESP:CreateToggle({
+		Name = 'Show Tier',
+		Tooltip = 'Shows each generator\'s tier'
+	})
+	Range = GeneratorESP:CreateSlider({
+		Name = 'Range',
+		Tooltip = 'How far away generators are shown',
+		Min = 50,
+		Max = 2000,
+		Default = 2000,
+		Suffix = function(val) return val == 1 and 'stud' or 'studs' end
+	})
+	TextSize = GeneratorESP:CreateSlider({
+		Name = 'Text Size',
+		Tooltip = 'How big the labels are',
+		Min = 8,
+		Max = 30,
+		Default = 14
+	})
+	
+end)
+
+run(function()
 	local Health
 	
 	Health = vain.Categories.Render:CreateModule({
@@ -9391,6 +9695,350 @@ run(function()
 			end
 		end
 	})
+end)
+
+run(function()
+	--[[
+		Projectile Trajectories.
+	
+		Every projectile in flight is a model in Workspace named by its type, carrying the
+		shooter's id in ProjectileShooter. The game makes each one fall at its own gravity with a
+		BodyForce cancelling part of the world's - so that gravity is read straight back off the
+		force, and the rest of the flight is simply worked out from where it is and how fast it
+		is going. The path is drawn ahead of it, with a marker where it comes down: incoming
+		arrows and fireballs you can step out of the way of, and the exact spot an enemy's pearl
+		is about to put them.
+	
+		Aim Preview does the same for whatever you are holding, from your cursor, so a pearl or
+		a fireball lands where you meant it to.
+	]]
+	local Trajectories
+	local ShowOwn, ShowTeam, Marker, Danger, AimPreview, MaxTime, Thickness
+	local LineColor, DangerColor, PearlColor, AimColor
+	local tracked = {}
+	local pools = {}
+	local STEP = 0.03
+	
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.RespectCanCollide = true
+	
+	local function on(setting)
+		return setting ~= nil and setting.Enabled
+	end
+	
+	local function colorOf(setting, fallback)
+		if not setting then return fallback end
+		return Color3.fromHSV(setting.Hue or 0, setting.Sat or 0, setting.Value or 1)
+	end
+	
+	local function sameTeam(userId)
+		local plr = playersService:GetPlayerByUserId(userId or 0)
+		if not plr then return false end
+		local mine, theirs = lplr:GetAttribute('Team'), plr:GetAttribute('Team')
+		return mine ~= nil and theirs ~= nil and tostring(mine) == tostring(theirs)
+	end
+	
+	local function wanted(model)
+		local shooter = model:GetAttribute('ProjectileShooter')
+		if shooter == nil then return false end
+		if shooter == lplr.UserId then return on(ShowOwn) end
+		if sameTeam(shooter) then return on(ShowTeam) end
+		return true
+	end
+	
+	local function track(model)
+		if not model:IsA('Model') or tracked[model] then return end
+		-- The shooter attribute can land a moment after the model does.
+		task.defer(function()
+			if model.Parent and model.PrimaryPart and model:GetAttribute('ProjectileShooter') ~= nil then
+				tracked[model] = true
+			end
+		end)
+	end
+	
+	-- Drawing lines kept per path and reused, so a frame costs no allocation.
+	local function pool(key)
+		local entry = pools[key]
+		if not entry then
+			entry = {lines = {}, circle = nil}
+			pools[key] = entry
+		end
+		return entry
+	end
+	
+	local function hidePool(entry)
+		for _, line in entry.lines do line.Visible = false end
+		if entry.circle then entry.circle.Visible = false end
+	end
+	
+	local function destroyPool(key)
+		local entry = pools[key]
+		if not entry then return end
+		for _, line in entry.lines do pcall(function() line:Remove() end) end
+		if entry.circle then pcall(function() entry.circle:Remove() end) end
+		pools[key] = nil
+	end
+	
+	local function refreshFilter()
+		local ignore = {gameCamera}
+		for _, plr in playersService:GetPlayers() do
+			if plr.Character then ignore[#ignore + 1] = plr.Character end
+		end
+		for model in tracked do ignore[#ignore + 1] = model end
+		rayParams.FilterDescendantsInstances = ignore
+	end
+	
+	-- The flight from a point at a velocity under a gravity, until it hits something or the
+	-- time runs out. Returns the points along it and where it stopped.
+	local function simulate(origin, velocity, gravity)
+		local points = {origin}
+		local previous = origin
+		local limit = MaxTime and MaxTime.Value or 3
+		local t = 0
+		while t < limit do
+			t += STEP
+			local point = origin + velocity * t - Vector3.new(0, 0.5 * gravity * t * t, 0)
+			local hit = workspace:Raycast(previous, point - previous, rayParams)
+			if hit then
+				points[#points + 1] = hit.Position
+				return points, hit.Position
+			end
+			points[#points + 1] = point
+			previous = point
+			if #points > 160 then break end
+		end
+		return points, nil
+	end
+	
+	local function draw(key, points, landing, color)
+		local entry = pool(key)
+		local thickness = Thickness and Thickness.Value or 2
+		local used = 0
+		for i = 1, #points - 1 do
+			local a, aVisible = gameCamera:WorldToViewportPoint(points[i])
+			local b, bVisible = gameCamera:WorldToViewportPoint(points[i + 1])
+			if a.Z > 0 and b.Z > 0 and (aVisible or bVisible) then
+				used += 1
+				local line = entry.lines[used]
+				if not line then
+					line = Drawing.new('Line')
+					entry.lines[used] = line
+				end
+				line.From = Vector2.new(a.X, a.Y)
+				line.To = Vector2.new(b.X, b.Y)
+				line.Color = color
+				line.Thickness = thickness
+				line.Visible = true
+			end
+		end
+		for i = used + 1, #entry.lines do entry.lines[i].Visible = false end
+	
+		if landing and on(Marker) then
+			local point, visible = gameCamera:WorldToViewportPoint(landing)
+			if visible and point.Z > 0 then
+				if not entry.circle then
+					entry.circle = Drawing.new('Circle')
+					entry.circle.NumSides = 24
+					entry.circle.Filled = false
+				end
+				entry.circle.Position = Vector2.new(point.X, point.Y)
+				entry.circle.Radius = 7
+				entry.circle.Thickness = thickness
+				entry.circle.Color = color
+				entry.circle.Visible = true
+			elseif entry.circle then
+				entry.circle.Visible = false
+			end
+		elseif entry.circle then
+			entry.circle.Visible = false
+		end
+	end
+	
+	-- Whether a path passes close enough to you to hit.
+	local function threatens(points)
+		if not entitylib.isAlive then return false end
+		local here = entitylib.character.RootPart.Position
+		for _, point in points do
+			if (point - here).Magnitude <= 4 then return true end
+		end
+		return false
+	end
+	
+	local function projectileGravity(root)
+		local force = root:FindFirstChildOfClass('BodyForce')
+		local mass = root.AssemblyMass
+		if force and mass > 0 then
+			return workspace.Gravity - force.Force.Y / mass
+		end
+		return workspace.Gravity
+	end
+	
+	-- What you are holding, if it throws or fires something: speed and gravity from its meta.
+	local function heldProjectile()
+		local tool = store.hand and store.hand.tool
+		local meta = tool and bedwars.ItemMeta[tool.Name]
+		local source = meta and meta.projectileSource
+		if not source then return nil end
+		local ok, name = pcall(function()
+			local ammo = source.ammoItemTypes and source.ammoItemTypes[1] or 'arrow'
+			return type(source.projectileType) == 'function' and source.projectileType(ammo) or source.projectileType
+		end)
+		local pmeta = ok and name and bedwars.ProjectileMeta[name]
+		if not pmeta then return nil end
+		return pmeta.launchVelocity or 100, pmeta.gravitationalAcceleration or 196.2, name
+	end
+	
+	local function aimPreview()
+		if not (on(AimPreview) and entitylib.isAlive) then
+			destroyPool('aim')
+			return
+		end
+		local speed, gravity, name = heldProjectile()
+		if not speed then
+			local entry = pools.aim
+			if entry then hidePool(entry) end
+			return
+		end
+	
+		local origin = entitylib.character.Head.Position
+		local ray = cloneref(lplr:GetMouse()).UnitRay
+		local hit = workspace:Raycast(ray.Origin, ray.Direction * 1000, rayParams)
+		local aimAt = hit and hit.Position or (ray.Origin + ray.Direction * 1000)
+		local direction = aimAt - origin
+		if direction.Magnitude <= 0 then return end
+		local points, landing = simulate(origin, direction.Unit * speed, gravity)
+		draw('aim', points, landing, (name or ''):find('pearl') and colorOf(PearlColor, Color3.fromRGB(200, 120, 255)) or colorOf(AimColor, Color3.fromRGB(120, 220, 255)))
+	end
+	
+	local function step()
+		refreshFilter()
+		for model in tracked do
+			local root = model.PrimaryPart
+			if not (model.Parent and root and root.Parent) then
+				tracked[model] = nil
+				destroyPool(model)
+				continue
+			end
+			if not wanted(model) then
+				local entry = pools[model]
+				if entry then hidePool(entry) end
+				continue
+			end
+	
+			local velocity = root.AssemblyLinearVelocity
+			if velocity.Magnitude < 2 then
+				local entry = pools[model]
+				if entry then hidePool(entry) end
+				continue
+			end
+	
+			local points, landing = simulate(root.Position, velocity, projectileGravity(root))
+			local color
+			if model.Name:lower():find('pearl', 1, true) then
+				color = colorOf(PearlColor, Color3.fromRGB(200, 120, 255))
+			elseif on(Danger) and threatens(points) then
+				color = colorOf(DangerColor, Color3.fromRGB(255, 70, 70))
+			else
+				color = colorOf(LineColor, Color3.fromRGB(255, 220, 120))
+			end
+			draw(model, points, landing, color)
+		end
+		aimPreview()
+	end
+	
+	Trajectories = vain.Categories.Render:CreateModule({
+		Name = 'Trajectories',
+		Tooltip = 'Draws where projectiles in flight will land',
+		Function = function(callback)
+			if callback then
+				for _, child in workspace:GetChildren() do track(child) end
+				Trajectories:Clean(workspace.ChildAdded:Connect(track))
+				Trajectories:Clean(runService.RenderStepped:Connect(function()
+					pcall(step)
+				end))
+			else
+				for key in pools do destroyPool(key) end
+				table.clear(tracked)
+			end
+		end
+	})
+	ShowOwn = Trajectories:CreateToggle({
+		Name = 'Show Own',
+		Tooltip = 'Also draws your own projectiles'
+	})
+	ShowTeam = Trajectories:CreateToggle({
+		Name = 'Show Teammates',
+		Tooltip = 'Also draws your teammates\' projectiles'
+	})
+	Marker = Trajectories:CreateToggle({
+		Name = 'Landing Marker',
+		Tooltip = 'Circles where each one comes down',
+		Default = true
+	})
+	Danger = Trajectories:CreateToggle({
+		Name = 'Danger Color',
+		Tooltip = 'Colours a path that will hit you',
+		Default = true,
+		Function = function(callback)
+			if DangerColor and DangerColor.Object then DangerColor.Object.Visible = callback end
+		end
+	})
+	AimPreview = Trajectories:CreateToggle({
+		Name = 'Aim Preview',
+		Tooltip = 'Draws where what you are holding will land',
+		Function = function(callback)
+			if AimColor and AimColor.Object then AimColor.Object.Visible = callback end
+		end
+	})
+	MaxTime = Trajectories:CreateSlider({
+		Name = 'Max Time',
+		Tooltip = 'How far ahead each path is drawn',
+		Min = 0.5,
+		Max = 6,
+		Default = 3,
+		Decimal = 10,
+		Suffix = function() return 's' end
+	})
+	Thickness = Trajectories:CreateSlider({
+		Name = 'Thickness',
+		Tooltip = 'How thick the lines are',
+		Min = 1,
+		Max = 5,
+		Default = 2
+	})
+	LineColor = Trajectories:CreateColorSlider({
+		Name = 'Line Color',
+		Tooltip = 'Colour of other players\' projectiles',
+		DefaultHue = 0.12,
+		DefaultSat = 0.55,
+		DefaultValue = 1
+	})
+	DangerColor = Trajectories:CreateColorSlider({
+		Name = 'Hit Color',
+		Tooltip = 'Colour of a path that will hit you',
+		DefaultHue = 0,
+		DefaultSat = 0.75,
+		DefaultValue = 1,
+		Darker = true
+	})
+	PearlColor = Trajectories:CreateColorSlider({
+		Name = 'Pearl Color',
+		Tooltip = 'Colour of pearls, which show where someone will appear',
+		DefaultHue = 0.78,
+		DefaultSat = 0.55,
+		DefaultValue = 1
+	})
+	AimColor = Trajectories:CreateColorSlider({
+		Name = 'Aim Color',
+		Tooltip = 'Colour of your aim preview',
+		DefaultHue = 0.55,
+		DefaultSat = 0.55,
+		DefaultValue = 1,
+		Darker = true,
+		Visible = false
+	})
+	
 end)
 
 run(function()
@@ -28157,6 +28805,119 @@ run(function()
 			end
 		end
 	})
+end)
+
+run(function()
+	--[[
+		TNT Timer.
+	
+		Placed TNT carries the CollectionService tag 'tnt' and the game's timeUntilExplosion
+		attribute - three seconds when it does not say otherwise - and the fuse runs from the
+		moment it appears. So each one is timed from when it shows up, and a countdown to a tenth
+		of a second hangs over it, running from green at a fresh fuse to red as it is about to go.
+	]]
+	local TNTTimer
+	local ThroughWalls, TextSize, ShowSuffix
+	local Folder = Instance.new('Folder')
+	Folder.Parent = vain.gui
+	local timers = {}
+	
+	local function on(setting)
+		return setting ~= nil and setting.Enabled
+	end
+	
+	local function partOf(tnt)
+		if tnt:IsA('BasePart') then return tnt end
+		return tnt:FindFirstChildWhichIsA('BasePart', true)
+	end
+	
+	local function remove(tnt)
+		local entry = timers[tnt]
+		if entry then
+			entry.billboard:Destroy()
+			timers[tnt] = nil
+		end
+	end
+	
+	local function add(tnt)
+		if timers[tnt] then return end
+		local part = partOf(tnt)
+		if not part then return end
+	
+		local fuse = tonumber(tnt:GetAttribute('timeUntilExplosion')) or 3
+		local billboard = Instance.new('BillboardGui')
+		billboard.Name = 'TNTTimer'
+		billboard.Adornee = part
+		billboard.Size = UDim2.fromOffset(80, 36)
+		billboard.StudsOffsetWorldSpace = Vector3.new(0, 3, 0)
+		billboard.AlwaysOnTop = on(ThroughWalls)
+		billboard.Parent = Folder
+	
+		local label = Instance.new('TextLabel')
+		label.Name = 'Label'
+		label.Size = UDim2.fromScale(1, 1)
+		label.BackgroundTransparency = 1
+		label.Font = Enum.Font.GothamBlack
+		label.TextStrokeTransparency = 0.3
+		label.Parent = billboard
+	
+		timers[tnt] = {billboard = billboard, started = os.clock(), fuse = math.max(fuse, 0.1)}
+	end
+	
+	local function update()
+		local now = os.clock()
+		local size = TextSize and TextSize.Value or 22
+		for tnt, entry in timers do
+			local remaining = entry.fuse - (now - entry.started)
+			if not tnt.Parent or remaining < -1 then
+				remove(tnt)
+				continue
+			end
+			remaining = math.max(remaining, 0)
+			-- Green with the whole fuse left, red as it runs out.
+			local fraction = math.clamp(remaining / entry.fuse, 0, 1)
+			local label = entry.billboard.Label
+			label.Text = string.format('%.1f', remaining) .. (on(ShowSuffix) and 's' or '')
+			label.TextColor3 = Color3.fromHSV(fraction * 0.33, 0.95, 1)
+			label.TextSize = size
+			entry.billboard.Size = UDim2.fromOffset(size * 4, size + 12)
+			entry.billboard.AlwaysOnTop = on(ThroughWalls)
+		end
+	end
+	
+	TNTTimer = vain.Legit:CreateModule({
+		Name = 'TNT Timer',
+		Tooltip = 'Shows how long until each placed TNT explodes',
+		Function = function(callback)
+			if callback then
+				for _, tnt in collectionService:GetTagged('tnt') do add(tnt) end
+				TNTTimer:Clean(collectionService:GetInstanceAddedSignal('tnt'):Connect(add))
+				TNTTimer:Clean(collectionService:GetInstanceRemovedSignal('tnt'):Connect(remove))
+				TNTTimer:Clean(runService.RenderStepped:Connect(function()
+					pcall(update)
+				end))
+			else
+				for tnt in timers do remove(tnt) end
+			end
+		end
+	})
+	ThroughWalls = TNTTimer:CreateToggle({
+		Name = 'Through Walls',
+		Tooltip = 'Shows the timer even behind blocks',
+		Default = true
+	})
+	TextSize = TNTTimer:CreateSlider({
+		Name = 'Text Size',
+		Tooltip = 'How big the timer is',
+		Min = 10,
+		Max = 40,
+		Default = 22
+	})
+	ShowSuffix = TNTTimer:CreateToggle({
+		Name = 'Show Seconds',
+		Tooltip = 'Adds an s after the number'
+	})
+	
 end)
 
 run(function()
