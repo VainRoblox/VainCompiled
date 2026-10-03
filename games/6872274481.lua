@@ -17432,7 +17432,10 @@ run(function()
 	    local CatchSpeedSlider
 	    local PullAnimationToggle, MinigameAnimationToggle, LegitToggle
 	    local BlacklistOption, Blacklist
-	    local AutoCast, AutoCastDelay
+	    local AutoCast, AutoCastDelay, CastAtShoals, ShoalRange
+	    -- Filled in by the fish group section further down, which keeps the tiers the shoal
+	    -- spawn event reports; the casting code above it is what asks.
+	    local shoalTier
 	    local SpyToggle, Teammates, GoldNotify, SharkNotify, LootWhitelist
 	    local FishGroupESP
 	
@@ -17797,25 +17800,131 @@ run(function()
 	    castParams.FilterType = Enum.RaycastFilterType.Exclude
 	
 	    --[[
-	        You fish off the edge of the map, not into water.
+	        Where a cast can go, worked out along the bobber's real path.
 	
-	        The bobber is cast out over the void, so a castable direction is one where the
-	        ground stops: nothing blocking the way out, and nothing underneath once you are
-	        past the edge. That is the test the module already used - it just had no way to
-	        go and find such a direction, and only fired if you happened to be facing one.
+	        You fish off the edge of the map, so a cast has to fly clear and come down over the
+	        void. The old test checked six studs straight out at head height and then straight
+	        down - but the bobber flies on an arc for twenty-odd studs, so a block past those six
+	        studs, or a little below head height, caught it every time. That is what cast into
+	        blocks.
 	
-	        Sweeping the yaw around the player and applying the same test to each heading
-	        finds the nearest edge to cast over whichever way you are facing.
+	        The bobber is a slow, light projectile (25 studs a second, falling at 30), so each
+	        candidate cast is simulated step by step and every step is checked for anything in
+	        the way. A cast that touches a block - or lands on ground rather than dropping into
+	        the void - is not a cast.
 	    ]]
-	    local VOID_REACH = 6
-	    local VOID_DROP = Vector3.new(0, -20, 0)
+	    local BOBBER_SPEED, BOBBER_GRAVITY = 25, 30
+	    local SIM_TIME, SIM_STEP = 1.6, 0.08
 	
-	    local function castableFrom(head, direction)
-	        castParams.FilterDescendantsInstances = {lplr.Character}
-	        if workspace:Raycast(head, direction * VOID_REACH, castParams) then
-	            return false
+	    local function bobberMeta()
+	        local meta = bedwars.ProjectileMeta and bedwars.ProjectileMeta.fisherman_bobber
+	        return (meta and meta.launchVelocity) or BOBBER_SPEED, (meta and meta.gravitationalAcceleration) or BOBBER_GRAVITY
+	    end
+	
+	    -- Characters and the shoal models are never what stops a bobber.
+	    local function refreshCastFilter(extra)
+	        local ignore = {}
+	        for _, plr in playersService:GetPlayers() do
+	            if plr.Character then ignore[#ignore + 1] = plr.Character end
 	        end
-	        return not workspace:Raycast(head + direction * VOID_REACH, VOID_DROP, castParams)
+	        if extra then ignore[#ignore + 1] = extra end
+	        castParams.FilterDescendantsInstances = ignore
+	        castParams.RespectCanCollide = true
+	    end
+	
+	    -- A sphere the bobber's size rather than a line, so a cast that grazes an edge counts.
+	    local function blocked(from, to)
+	        local direction = to - from
+	        local ok, hit = pcall(workspace.Spherecast, workspace, from, 0.6, direction, castParams)
+	        if not ok then hit = workspace:Raycast(from, direction, castParams) end
+	        return hit ~= nil
+	    end
+	
+	    -- True when a bobber launched from origin at velocity flies clear and drops into the
+	    -- void. arrival, when given, is the flight time to a shoal: the check ends exactly
+	    -- there, rather than going on into the water.
+	    local function clearArc(origin, velocity, gravity, arrival)
+	        local previous = origin
+	        local limit = arrival or SIM_TIME
+	        local t = 0
+	        while t < limit do
+	            t = math.min(t + SIM_STEP, limit)
+	            local point = origin + velocity * t - Vector3.new(0, 0.5 * gravity * t * t, 0)
+	            if blocked(previous, point) then return false end
+	            previous = point
+	        end
+	        if arrival then return true end
+	        -- Nothing under where it ends up: the void, not a platform below.
+	        return workspace:Raycast(previous, Vector3.new(0, -200, 0), castParams) == nil
+	    end
+	
+	    -- Of the headings that cast clear, the one closest to where you are looking.
+	    local function findVoid()
+	        if not entitylib.isAlive then return end
+	
+	        local head = entitylib.character.Head.Position
+	        local speed, gravity = bobberMeta()
+	        refreshCastFilter()
+	
+	        local look = workspace.CurrentCamera and workspace.CurrentCamera.CFrame.LookVector * Vector3.new(1, 0, 1)
+	        look = (look and look.Magnitude > 0) and look.Unit or Vector3.new(0, 0, -1)
+	
+	        local best, bestDot
+	        for i = 0, 23 do
+	            local angle = (i / 24) * math.pi * 2
+	            local direction = Vector3.new(math.cos(angle), 0, math.sin(angle))
+	            local dot = direction:Dot(look)
+	            if (not bestDot or dot > bestDot) and clearArc(head, direction * speed, gravity) then
+	                best, bestDot = direction, dot
+	            end
+	        end
+	        return best
+	    end
+	
+	    --[[
+	        A shoal within reach, aimed at properly.
+	
+	        The bobber falls fast for how slowly it flies, so pointing straight at a shoal lands
+	        short; the launch is solved as a ballistic shot onto the shoal instead, and taken
+	        only if that arc is clear too. Shark shoals come first, then the nearest.
+	    ]]
+	    local TIER_RANK = {[2] = 4, [3] = 3, [1] = 2, [0] = 1}
+	
+	    local function findShoal()
+	        if not (entitylib.isAlive and on(CastAtShoals)) then return end
+	
+	        local head = entitylib.character.Head.Position
+	        local speed, gravity = bobberMeta()
+	        local candidates = {}
+	        for _, child in workspace:GetChildren() do
+	            if child:IsA('Model') and child.Name:lower():find('pond', 1, true) then
+	                local part = child.PrimaryPart or child:FindFirstChildWhichIsA('BasePart', true)
+	                if part then
+	                    local flat = (part.Position - head) * Vector3.new(1, 0, 1)
+	                    if flat.Magnitude <= ShoalRange.Value then
+	                        local tier = shoalTier and shoalTier(part.Position)
+	                        local big = child.Name:lower():find('two', 1, true) ~= nil
+	                        local rank = (tier and TIER_RANK[tier]) or (big and 4 or 1)
+	                        candidates[#candidates + 1] = {model = child, point = part.Position, rank = rank, distance = flat.Magnitude}
+	                    end
+	                end
+	            end
+	        end
+	        table.sort(candidates, function(a, b)
+	            if a.rank ~= b.rank then return a.rank > b.rank end
+	            return a.distance < b.distance
+	        end)
+	
+	        for _, shoal in candidates do
+	            local ok, calc, _, flight = pcall(prediction.SolveTrajectory, head, speed, gravity, shoal.point, Vector3.zero, workspace.Gravity, 0, 0)
+	            if ok and calc and flight then
+	                local velocity = (calc - head).Unit * speed
+	                refreshCastFilter(shoal.model)
+	                if clearArc(head, velocity, gravity, flight) then
+	                    return calc
+	                end
+	            end
+	        end
 	    end
 	
 	    --[[
@@ -17922,19 +18031,6 @@ run(function()
 	        aimWrapper = nil
 	    end
 	
-	    local function findVoid()
-	        if not entitylib.isAlive then return end
-	
-	        local head = entitylib.character.Head.Position
-	        for i = 0, 23 do
-	            local angle = (i / 24) * math.pi * 2
-	            local direction = Vector3.new(math.cos(angle), 0, math.sin(angle))
-	            if castableFrom(head, direction) then
-	                return direction
-	            end
-	        end
-	    end
-	
 	    local castLoop = false
 	    local function setupAutoCast()
 	        if castLoop then return end
@@ -17947,14 +18043,20 @@ run(function()
 	                    and store.hand.tool and isFishingRod(store.hand.tool.Name)
 	                    and not getBait() then
 	
-	                    if findVoid() then
+	                    if findShoal() or findVoid() then
 	                        task.wait(AutoCastDelay:GetRandomValue())
 	
 	                        -- Aimed at the moment of the throw, since the delay above is long
-	                        -- enough to have walked somewhere else.
-	                        local direction = entitylib.isAlive and findVoid()
-	                        if direction then
-	                            castTarget = entitylib.character.Head.Position + direction * 30
+	                        -- enough to have walked somewhere else. A shoal in reach wins;
+	                        -- otherwise the clearest edge, cast level so it flies the arc that
+	                        -- was checked.
+	                        local target = entitylib.isAlive and findShoal()
+	                        if not target then
+	                            local direction = entitylib.isAlive and findVoid()
+	                            target = direction and entitylib.character.Head.Position + direction * 30
+	                        end
+	                        if target then
+	                            castTarget = target
 	
 	                            local centre = camera.ViewportSize / 2
 	                            for _, down in {true, false} do
@@ -17970,7 +18072,8 @@ run(function()
 	                        end
 	                    end
 	                end
-	                task.wait(0.1)
+	                -- Each look checks a couple of dozen arcs, so it is not repeated every frame.
+	                task.wait(0.4)
 	            until not Fisherman.Enabled
 	            castLoop = false
 	        end)
@@ -18067,6 +18170,8 @@ run(function()
 	        end
 	        return bestTier
 	    end
+	
+	    shoalTier = tierNear
 	
 	    local function clearFishGroups()
 	        for pond, marker in groupMarkers do
@@ -18470,9 +18575,12 @@ run(function()
 	    AutoCast = Fisherman:CreateToggle({
 	        Name = 'AutoCast',
 	        Default = false,
-	        Tooltip = 'Finds an edge to cast over, whichever way you are facing',
+	        Tooltip = 'Casts over a clear edge, or into a nearby shoal',
 	        Function = function(cv)
-	            if AutoCastDelay and AutoCastDelay.Object then AutoCastDelay.Object.Visible = cv end
+	            for _, setting in {AutoCastDelay, CastAtShoals} do
+	                if setting and setting.Object then setting.Object.Visible = cv end
+	            end
+	            if ShoalRange and ShoalRange.Object then ShoalRange.Object.Visible = cv and on(CastAtShoals) end
 	            if Fisherman.Enabled and cv then setupAutoCast() end
 	        end
 	    })
@@ -18486,6 +18594,28 @@ run(function()
 	        Visible = false,
 	        Darker = true,
 	        Tooltip = 'How long to wait before each cast'
+	    })
+	    CastAtShoals = Fisherman:CreateToggle({
+	        Name = 'Cast At Shoals',
+	        Default = true,
+	        Visible = false,
+	        Darker = true,
+	        Tooltip = 'Aims into a shoal in reach - shark shoals first',
+	        Function = function(cv)
+	            if ShoalRange and ShoalRange.Object then ShoalRange.Object.Visible = cv and on(AutoCast) end
+	        end
+	    })
+	    ShoalRange = Fisherman:CreateSlider({
+	        Name = 'Shoal Range',
+	        Min = 5,
+	        Max = 40,
+	        Default = 25,
+	        Visible = false,
+	        Darker = true,
+	        Tooltip = 'How far away a shoal can be\nThe bobber reaches about 21 studs on the level',
+	        Suffix = function(val)
+	            return val == 1 and 'stud' or 'studs'
+	        end
 	    })
 	    FishGroupESP = Fisherman:CreateToggle({
 	        Name = 'Fish Group ESP',
