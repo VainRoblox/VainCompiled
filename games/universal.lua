@@ -7632,13 +7632,16 @@ run(function()
 		VAIN1: marker, so anything the profile saves travels with it. Keybinds stay behind
 		unless Include Binds is on - they are personal, and an import keeps yours.
 	
+		It lives in the Profiles window's settings (the gear) where the GUI allows options there,
+		and as a Utility module where it does not.
+	
 		Importing writes the settings into the profile file and reloads it, so it goes through
 		the exact path a normal profile load does. With a New Profile name it becomes a profile
 		of its own and is switched to; otherwise it is merged into the one you are on, and only
 		the modules the code carries change.
 	]]
 	local ConfigCodes
-	local Scope, ModuleName, IncludeBinds, PasteCode, NewProfile
+	local Scope, ModuleName, IncludeBinds, PasteCode, NewProfile, host
 	local PREFIX = 'VAIN1:'
 	local SELF = 'Config Codes'
 	
@@ -7719,6 +7722,8 @@ run(function()
 			payload.Legit = data.Legit or {}
 			payload.Categories = data.Categories or {}
 			payload.Modules[SELF] = nil
+			-- The Profiles window holds the paste box itself; a code is not worth carrying.
+			payload.Categories.Profiles = nil
 		end
 	
 		if not IncludeBinds.Enabled then
@@ -7759,7 +7764,9 @@ run(function()
 				target.Modules[name] = entry
 			end
 			for name, entry in payload.Legit or {} do target.Legit[name] = entry end
-			for name, entry in payload.Categories or {} do target.Categories[name] = entry end
+			for name, entry in payload.Categories or {} do
+				if name ~= 'Profiles' then target.Categories[name] = entry end
+			end
 		end
 	
 		local name = profileName ~= '' and profileName or vain.Profile
@@ -7776,7 +7783,7 @@ run(function()
 		return true
 	end
 	
-	local function copyCode()
+	local function exportCode()
 		local code, err = buildCode()
 		if not code then
 			notif('Config Codes', err, 4, 'alert')
@@ -7790,17 +7797,76 @@ run(function()
 		end
 	end
 	
-	ConfigCodes = vain.Categories.Utility:CreateModule({
-		Name = SELF,
-		Function = function(callback)
-			if callback then
-				ConfigCodes:Toggle()
-				copyCode()
-			end
-		end,
-		Tooltip = 'Share or import configs as a code; clicking copies one'
+	local function runImport(code)
+		if not code or code == '' then return end
+		local ok, result, err = pcall(importCode, code, NewProfile.Value)
+		if ok and result then
+			notif('Config Codes', 'Imported', 3)
+		else
+			notif('Config Codes', ok and err or 'Import failed', 5, 'alert')
+		end
+	end
+	
+	local function importClipboard()
+		local read = getclipboard or (syn and syn.read_clipboard)
+		if not read then
+			notif('Config Codes', 'Your executor cannot read the clipboard - paste into Paste Code', 5, 'alert')
+			return
+		end
+		local ok, code = pcall(read)
+		if not ok or type(code) ~= 'string' or code == '' then
+			notif('Config Codes', 'Your clipboard is empty', 4, 'alert')
+			return
+		end
+		runImport(code)
+	end
+	
+	-- The Profiles window's settings when the GUI gives it options; a Utility module otherwise.
+	local profiles = vain.Categories.Profiles
+	if profiles and type(profiles.CreateButton) == 'function' and type(profiles.CreateTextBox) == 'function' then
+		host = profiles
+	else
+		ConfigCodes = vain.Categories.Utility:CreateModule({
+			Name = SELF,
+			Function = function(callback)
+				if callback then
+					ConfigCodes:Toggle()
+					exportCode()
+				end
+			end,
+			Tooltip = 'Share or import profiles as a code; clicking copies one'
+		})
+		host = ConfigCodes
+	end
+	
+	host:CreateButton({
+		Name = 'Export To Clipboard',
+		Tooltip = 'Copies your profile as a code',
+		Function = exportCode
 	})
-	Scope = ConfigCodes:CreateDropdown({
+	host:CreateButton({
+		Name = 'Import From Clipboard',
+		Tooltip = 'Applies the code on your clipboard',
+		Function = importClipboard
+	})
+	NewProfile = host:CreateTextBox({
+		Name = 'Import As',
+		Placeholder = 'Empty applies it here',
+		Tooltip = 'Imports a whole-profile code as a new profile with this name'
+	})
+	PasteCode = host:CreateTextBox({
+		Name = 'Paste Code',
+		Placeholder = 'Paste a code, press Enter',
+		Tooltip = 'For executors that cannot read the clipboard',
+		Function = function(enter)
+			if not enter then return end
+			local code = PasteCode.Value
+			-- Cleared first, so the code is not saved into the profile it is about to load.
+			PasteCode:SetValue('')
+			runImport(code)
+		end
+	})
+	Scope = host:CreateDropdown({
 		Name = 'Share',
 		List = {'Whole Profile', 'One Module'},
 		Tooltips = {
@@ -7811,46 +7877,16 @@ run(function()
 			if ModuleName and ModuleName.Object then ModuleName.Object.Visible = val == 'One Module' end
 		end
 	})
-	ModuleName = ConfigCodes:CreateTextBox({
+	ModuleName = host:CreateTextBox({
 		Name = 'Module',
 		Placeholder = 'Module name',
 		Tooltip = 'The module to share, as named in the GUI',
 		Darker = true,
 		Visible = false
 	})
-	IncludeBinds = ConfigCodes:CreateToggle({
+	IncludeBinds = host:CreateToggle({
 		Name = 'Include Binds',
 		Tooltip = 'Sends your keybinds along too'
-	})
-	ConfigCodes:CreateButton({
-		Name = 'Copy Code',
-		Tooltip = 'Copies the code to your clipboard',
-		Function = copyCode
-	})
-	PasteCode = ConfigCodes:CreateTextBox({
-		Name = 'Paste Code',
-		Placeholder = 'Paste a VAIN1: code',
-		Tooltip = 'The code to import'
-	})
-	NewProfile = ConfigCodes:CreateTextBox({
-		Name = 'New Profile',
-		Placeholder = 'Empty applies it here',
-		Tooltip = 'Imports a whole-profile code as its own profile'
-	})
-	ConfigCodes:CreateButton({
-		Name = 'Import',
-		Tooltip = 'Applies the pasted code',
-		Function = function()
-			local code = PasteCode.Value
-			-- Cleared first, so the code is not saved into the profile it is about to load.
-			PasteCode:SetValue('')
-			local ok, result, err = pcall(importCode, code, NewProfile.Value)
-			if ok and result then
-				notif('Config Codes', 'Imported', 3)
-			else
-				notif('Config Codes', ok and err or 'Import failed', 5, 'alert')
-			end
-		end
 	})
 	
 end)

@@ -8878,9 +8878,8 @@ run(function()
 	
 		Invisibility is written on the character: status effects as StatusEffect_<type>
 		attributes (StatusEffectUtil:getAttributeName) - invisibility potions, smoke bombs, the
-		ninja's jutsu, the snake's agility - and the potion's fade as a Transparency attribute,
-		which InvisibilityPotionController applies. The cloak sets the character see-through
-		directly. Anyone showing any of these is outlined, with a tag saying so, through walls,
+		ninja's jutsu, the snake's agility - and the cloak through the server's
+		InvisibleCloakState event. Anyone showing any of these is outlined, with a tag saying so, through walls,
 		and can leave footsteps behind and have a line drawn to them.
 	]]
 	local InvisibilityDetector
@@ -8896,17 +8895,33 @@ run(function()
 	
 	local EFFECTS = {'invisibility', 'smoke_invisibility', 'ninja_invisible', 'snake_agility_invisible'}
 	
-	local function invisible(character)
+	--[[
+		Who is cloaked, from the game's own InvisibleCloakState event: the cloak hides you by a
+		transparency modifier, which nothing on the character records. Listened to from load,
+		so a cloak put on before the module is switched on is still known.
+	]]
+	local cloaked = {}
+	pcall(function()
+		vain:Clean(bedwars.Client:Get('InvisibleCloakState'):Connect(function(data)
+			if type(data) == 'table' and data.player then
+				cloaked[data.player] = data.active == true or nil
+			end
+		end))
+	end)
+	
+	--[[
+		Invisible means one of the game's invisibility effects is on them, or their cloak is.
+	
+		The Transparency attribute and the head's own transparency used to count as well, and
+		that is what made this wrong so often: the game sets Transparency to 1 whenever it plays
+		a teleport - Lani landing, comet volley, portals, emotes - while a copy of the character
+		does the animation, and a headless or custom head is see-through all the time.
+	]]
+	local function invisible(character, player)
 		for _, effect in EFFECTS do
 			if character:GetAttribute('StatusEffect_' .. effect) ~= nil then return true end
 		end
-		local transparency = character:GetAttribute('Transparency')
-		if type(transparency) == 'number' and transparency > 0.5 then return true end
-		-- The cloak (and block disguises) fade the body itself, through Transparency or the
-		-- CharacterTransparencyController's LocalTransparencyModifier; the head is a part every
-		-- character keeps.
-		local head = character:FindFirstChild('Head')
-		return head ~= nil and head:IsA('BasePart') and math.max(head.Transparency, head.LocalTransparencyModifier) >= 0.85
+		return player ~= nil and cloaked[player] == true
 	end
 	
 	-- Seconds left on a status effect, when its attribute holds the server time it ends.
@@ -9027,7 +9042,7 @@ run(function()
 			local character = entity.Character
 			if entity.Player and character and entity.Player ~= lplr and (entity.Targetable or Teammates.Enabled) then
 				local head = entity.Head or character:FindFirstChild('Head')
-				if head and invisible(character) then
+				if head and (entity.Health or 0) > 0 and invisible(character, entity.Player) then
 					seen[character] = true
 					mark(character, head)
 					local root = entity.RootPart
