@@ -3742,6 +3742,12 @@ run(function()
 	local Duration
 	local ItemCooldown
 	local BarColor
+	local BarStyle, PosX, PosY, Width, ReadyFlash, ReadySound
+	local ringLines = {}
+	local counting, readyAt = false, 0
+	local READY_HOLD = 0.4
+	local RING_SEGMENTS = 40
+	local RING_RADIUS = 24
 	local old, hook
 	local cooldownController, oldCooldown, cooldownHook
 	local screen, bar, fill, label
@@ -3786,7 +3792,39 @@ run(function()
 		label.Parent = screen
 	end
 	
+	local function hideRing()
+		for _, line in ringLines do line.Visible = false end
+	end
+	
+	-- The ring round the crosshair: an arc that unwinds clockwise from the top as it runs out.
+	local function drawRing(fraction, color)
+		local viewport = gameCamera.ViewportSize
+		local center = Vector2.new(viewport.X / 2, viewport.Y / 2)
+		local shown = math.floor(RING_SEGMENTS * fraction + 0.5)
+		for i = 1, RING_SEGMENTS do
+			local line = ringLines[i]
+			if not line then
+				line = Drawing.new('Line')
+				line.Thickness = 3
+				ringLines[i] = line
+			end
+			if i <= shown then
+				local a0 = (i - 1) / RING_SEGMENTS * math.pi * 2
+				local a1 = i / RING_SEGMENTS * math.pi * 2
+				line.From = center + Vector2.new(math.sin(a0), -math.cos(a0)) * RING_RADIUS
+				line.To = center + Vector2.new(math.sin(a1), -math.cos(a1)) * RING_RADIUS
+				line.Color = color
+				line.Transparency = 1
+				line.Visible = true
+			else
+				line.Visible = false
+			end
+		end
+	end
+	
 	local function clearBar()
+		for _, line in ringLines do pcall(function() line:Remove() end) end
+		table.clear(ringLines)
 		if screen then
 			screen:Destroy()
 			screen = nil
@@ -3803,14 +3841,48 @@ run(function()
 	local function step()
 		if not (screen and Duration) then return end
 	
+		local style = BarStyle and BarStyle.Value or 'Bar'
+		local color = BarColor and Color3.fromHSV(BarColor.Hue, BarColor.Sat, BarColor.Value) or Color3.fromRGB(90, 170, 255)
+		screen.Position = UDim2.fromScale(PosX.Value / 100, PosY.Value / 100)
+		screen.Size = UDim2.fromOffset(Width.Value, 16)
+		-- Text only drops the bar behind the numbers.
+		screen.BackgroundTransparency = style == 'Bar' and 0.35 or 1
+		fill.Visible = style == 'Bar'
+	
 		local remaining = resetAt - tick()
 		if remaining <= 0 then
+			-- Just ran out: a short READY, and the sound if wanted.
+			if counting then
+				counting = false
+				if ReadyFlash.Enabled then readyAt = tick() end
+				if ReadySound.Enabled then
+					pcall(function() bedwars.SoundManager:playSound(bedwars.SoundList.PING) end)
+				end
+			end
+			if ReadyFlash.Enabled and tick() - readyAt < READY_HOLD then
+				screen.Visible = style ~= 'Ring'
+				fill.Size = UDim2.fromScale(1, 1)
+				fill.BackgroundColor3 = Color3.new(1, 1, 1)
+				label.Text = 'READY'
+				if style == 'Ring' then drawRing(1, Color3.new(1, 1, 1)) end
+				return
+			end
 			screen.Visible = false
+			hideRing()
 			return
 		end
+		counting = true
 	
+		local fraction = math.clamp(remaining / length, 0, 1)
+		if style == 'Ring' then
+			screen.Visible = false
+			drawRing(fraction, color)
+			return
+		end
+		hideRing()
 		screen.Visible = true
-		fill.Size = UDim2.fromScale(math.clamp(remaining / length, 0, 1), 1)
+		fill.BackgroundColor3 = color
+		fill.Size = UDim2.fromScale(fraction, 1)
 		label.Text = string.format('%.1fs', remaining)
 	end
 	
@@ -3935,6 +4007,52 @@ run(function()
 				fill.BackgroundColor3 = Color3.fromHSV(hue, sat, val)
 			end
 		end
+	})
+	BarStyle = StrafeCooldown:CreateDropdown({
+		Name = 'Style',
+		List = {'Bar', 'Ring', 'Text'},
+		Tooltips = {Bar = 'A bar that drains', Ring = 'A ring round the crosshair', Text = 'Just the seconds'},
+		Function = function(val)
+			for _, setting in {PosX, PosY, Width} do
+				if setting and setting.Object then setting.Object.Visible = val ~= 'Ring' end
+			end
+		end
+	})
+	PosX = StrafeCooldown:CreateSlider({
+		Name = 'Position X',
+		Tooltip = 'Across the screen',
+		Min = 0,
+		Max = 100,
+		Default = 50,
+		Darker = true,
+		Suffix = function() return '%' end
+	})
+	PosY = StrafeCooldown:CreateSlider({
+		Name = 'Position Y',
+		Tooltip = 'Down the screen',
+		Min = 0,
+		Max = 100,
+		Default = 78,
+		Darker = true,
+		Suffix = function() return '%' end
+	})
+	Width = StrafeCooldown:CreateSlider({
+		Name = 'Width',
+		Tooltip = 'How wide the bar is',
+		Min = 60,
+		Max = 500,
+		Default = 220,
+		Darker = true,
+		Suffix = function() return 'px' end
+	})
+	ReadyFlash = StrafeCooldown:CreateToggle({
+		Name = 'Ready Flash',
+		Tooltip = 'Flashes READY when it runs out',
+		Default = true
+	})
+	ReadySound = StrafeCooldown:CreateToggle({
+		Name = 'Ready Sound',
+		Tooltip = 'Pings when it runs out'
 	})
 	
 end)
@@ -8233,10 +8351,15 @@ run(function()
 		attributes (StatusEffectUtil:getAttributeName) - invisibility potions, smoke bombs, the
 		ninja's jutsu, the snake's agility - and the potion's fade as a Transparency attribute,
 		which InvisibilityPotionController applies. The cloak sets the character see-through
-		directly. Anyone showing any of these is outlined, with a tag saying so, through walls.
+		directly. Anyone showing any of these is outlined, with a tag saying so, through walls,
+		and can leave footsteps behind and have a line drawn to them.
 	]]
 	local InvisibilityDetector
-	local Teammates, ShowTag, Color
+	local Teammates, ShowTag, Color, Footsteps, TrailLength, Tracer, ShowDuration
+	local steps = {}
+	local tracers = {}
+	local lastStep = 0
+	local STEP_EVERY = 0.2
 	local Folder = Instance.new('Folder')
 	Folder.Name = 'InvisibilityDetector'
 	Folder.Parent = vain.gui
@@ -8257,12 +8380,77 @@ run(function()
 		return head ~= nil and head:IsA('BasePart') and math.max(head.Transparency, head.LocalTransparencyModifier) >= 0.85
 	end
 	
+	-- Seconds left on a status effect, when its attribute holds the server time it ends.
+	local function remaining(character)
+		local now = workspace:GetServerTimeNow()
+		for _, effect in EFFECTS do
+			local value = character:GetAttribute('StatusEffect_' .. effect)
+			if type(value) == 'number' and value > now and value - now < 600 then
+				return value - now
+			end
+		end
+		return nil
+	end
+	
 	local function unmark(character)
 		local entry = marked[character]
 		if not entry then return end
 		entry.highlight:Destroy()
 		entry.billboard:Destroy()
 		marked[character] = nil
+		local line = tracers[character]
+		if line then
+			pcall(function() line:Remove() end)
+			tracers[character] = nil
+		end
+	end
+	
+	-- A dot where their feet are, every fifth of a second, fading out along the trail.
+	local function addStep(root, color)
+		local dot = Instance.new('SphereHandleAdornment')
+		dot.Adornee = workspace.Terrain
+		dot.Radius = 0.35
+		dot.CFrame = CFrame.new(root.Position - Vector3.new(0, 2.8, 0))
+		dot.AlwaysOnTop = true
+		dot.ZIndex = 1
+		dot.Color3 = color
+		dot.Parent = Folder
+		table.insert(steps, dot)
+		while #steps > TrailLength.Value / STEP_EVERY do
+			table.remove(steps, 1):Destroy()
+		end
+	end
+	
+	local function fadeSteps()
+		local count = #steps
+		for i, dot in steps do
+			dot.Transparency = 0.2 + 0.75 * (1 - i / count)
+		end
+	end
+	
+	local function clearSteps()
+		for _, dot in steps do dot:Destroy() end
+		table.clear(steps)
+	end
+	
+	local function drawTracer(character, root, color)
+		local line = tracers[character]
+		if not Tracer.Enabled then
+			if line then line.Visible = false end
+			return
+		end
+		if not line then
+			line = Drawing.new('Line')
+			line.Thickness = 1.5
+			tracers[character] = line
+		end
+		local point, visible = gameCamera:WorldToViewportPoint(root.Position)
+		local viewport = gameCamera.ViewportSize
+		line.Visible = point.Z > 0
+		line.From = Vector2.new(viewport.X / 2, viewport.Y)
+		line.To = Vector2.new(point.X, point.Y)
+		line.Color = color
+		line.Transparency = 1
 	end
 	
 	local function mark(character, head)
@@ -8296,11 +8484,16 @@ run(function()
 		entry.highlight.OutlineColor = color
 		entry.highlight.FillTransparency = 1 - Color.Opacity
 		entry.label.TextColor3 = color
+		local left = ShowDuration.Enabled and remaining(character)
+		entry.label.Text = left and string.format('INVISIBLE %.1fs', left) or 'INVISIBLE'
 		entry.billboard.Enabled = ShowTag.Enabled
 	end
 	
 	local function update()
 		local seen = {}
+		local stepNow = Footsteps.Enabled and os.clock() - lastStep >= STEP_EVERY
+		if stepNow then lastStep = os.clock() end
+		local color = Color3.fromHSV(Color.Hue, Color.Sat, Color.Value)
 		for _, entity in entitylib.List do
 			local character = entity.Character
 			if entity.Player and character and entity.Player ~= lplr and (entity.Targetable or Teammates.Enabled) then
@@ -8308,9 +8501,16 @@ run(function()
 				if head and invisible(character) then
 					seen[character] = true
 					mark(character, head)
+					local root = entity.RootPart
+					if root then
+						if stepNow then addStep(root, color) end
+						drawTracer(character, root, color)
+					end
 				end
 			end
 		end
+		if not Footsteps.Enabled and #steps > 0 then clearSteps() end
+		fadeSteps()
 		for character in marked do
 			if not seen[character] then unmark(character) end
 		end
@@ -8326,6 +8526,7 @@ run(function()
 				end))
 			else
 				for character in marked do unmark(character) end
+				clearSteps()
 			end
 		end
 	})
@@ -8337,6 +8538,32 @@ run(function()
 		Name = 'Tag',
 		Tooltip = 'Writes INVISIBLE above them',
 		Default = true
+	})
+	ShowDuration = InvisibilityDetector:CreateToggle({
+		Name = 'Duration',
+		Tooltip = 'Shows how long they stay invisible, when known',
+		Default = true
+	})
+	Footsteps = InvisibilityDetector:CreateToggle({
+		Name = 'Footsteps',
+		Tooltip = 'Leaves dots where they walk',
+		Default = true,
+		Function = function(callback)
+			if TrailLength and TrailLength.Object then TrailLength.Object.Visible = callback end
+		end
+	})
+	TrailLength = InvisibilityDetector:CreateSlider({
+		Name = 'Trail Length',
+		Tooltip = 'How many seconds of footsteps stay',
+		Min = 1,
+		Max = 15,
+		Default = 5,
+		Darker = true,
+		Suffix = function() return 's' end
+	})
+	Tracer = InvisibilityDetector:CreateToggle({
+		Name = 'Tracer',
+		Tooltip = 'Draws a line to each of them'
 	})
 	Color = InvisibilityDetector:CreateColorSlider({
 		Name = 'Color',
@@ -8810,6 +9037,8 @@ run(function()
 	local RankedOnly
 	local KitHistory
 	local HistoryCount
+	local ShowTeam, MostPlayed, IconSize, RowPosition, WinTint
+	local showsPlayer
 	
 	--[[
 		The kits someone played in their last matches, from their match history.
@@ -8864,6 +9093,20 @@ run(function()
 		end))
 	end
 	
+	-- Whether they won: their team in match.teams is the one placed first (placement 0).
+	-- Nil when the match does not say.
+	local function wonMatch(match, userId)
+		for _, team in (type(match.teams) == 'table' and match.teams or {}) do
+			local members = type(team) == 'table' and team.members
+			if type(members) == 'table' and (members[userId] ~= nil or members[tostring(userId)] ~= nil) then
+				local placement = tonumber(team.placement)
+				if placement == nil then return nil end
+				return placement == 0
+			end
+		end
+		return nil
+	end
+	
 	local historyCache, historyWaiters = {}, {}
 	local historyQueue = 0
 	
@@ -8897,7 +9140,7 @@ run(function()
 						if info and tonumber(info.userId) == userId then
 							local kit = entry.bedwars and entry.bedwars.kit
 							if type(kit) == 'string' and kit ~= '' then
-								kits[#kits + 1] = kit
+								kits[#kits + 1] = {kit = kit, won = wonMatch(match, userId)}
 							end
 							break
 						end
@@ -8914,20 +9157,27 @@ run(function()
 	
 	-- A small row of kit icons in the bottom right of a player's card, newest on the right
 	-- edge. Kept inside the card, as anything hanging off it is clipped by the draft list.
+	local POSITIONS = {
+		['Bottom Right'] = {Vector2.new(1, 1), UDim2.new(1, -4, 1, -4), Enum.HorizontalAlignment.Right},
+		['Top Right'] = {Vector2.new(1, 0), UDim2.new(1, -4, 0, 4), Enum.HorizontalAlignment.Right},
+		['Bottom Left'] = {Vector2.new(0, 1), UDim2.new(0, 4, 1, -4), Enum.HorizontalAlignment.Left}
+	}
+	
 	local function newRow(card)
+		local place = POSITIONS[RowPosition and RowPosition.Value or 'Bottom Right'] or POSITIONS['Bottom Right']
 		local row = Instance.new('Frame')
 		row.Name = 'KitHistory'
 		row.BackgroundTransparency = 1
-		row.AnchorPoint = Vector2.new(1, 1)
-		row.Position = UDim2.new(1, -4, 1, -4)
-		row.Size = UDim2.new(0.62, 0, 0.2, 0)
+		row.AnchorPoint = place[1]
+		row.Position = place[2]
+		row.Size = UDim2.new(0.62, 0, IconSize and IconSize.Value / 100 or 0.2, 0)
 		row.ZIndex = 10
 		row.Parent = card
 		KitDisplay:Clean(row)
 	
 		local layout = Instance.new('UIListLayout')
 		layout.FillDirection = Enum.FillDirection.Horizontal
-		layout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+		layout.HorizontalAlignment = place[3]
 		layout.VerticalAlignment = Enum.VerticalAlignment.Center
 		layout.SortOrder = Enum.SortOrder.LayoutOrder
 		layout.Padding = UDim.new(0, 2)
@@ -8944,9 +9194,35 @@ run(function()
 		label.Font = Enum.Font.GothamBold
 		label.TextColor3 = Color3.fromRGB(200, 200, 200)
 		label.TextStrokeTransparency = 0.5
-		label.TextXAlignment = Enum.TextXAlignment.Right
+		label.TextXAlignment = RowPosition and RowPosition.Value == 'Bottom Left' and Enum.TextXAlignment.Left or Enum.TextXAlignment.Right
 		label.ZIndex = 10
 		label.Parent = row
+	end
+	
+	-- Show Team off leaves your own team's cards, yours included, alone.
+	showsPlayer = function(player)
+		if not ShowTeam or ShowTeam.Enabled then return true end
+		if player == lplr then return false end
+		local mine, theirs = lplr:GetAttribute('Team'), player:GetAttribute('Team')
+		return not (mine ~= nil and theirs ~= nil and tostring(mine) == tostring(theirs))
+	end
+	
+	local function kitIcon(row, kit, order, transparency)
+		local meta = bedwars.BedwarsKitMeta[kit]
+		local icon = Instance.new('ImageLabel')
+		icon.Name = kit
+		icon.LayoutOrder = order
+		icon.BackgroundColor3 = Color3.new(0, 0, 0)
+		icon.BackgroundTransparency = 0.45
+		icon.SizeConstraint = Enum.SizeConstraint.RelativeYY
+		icon.Size = UDim2.fromScale(1, 1)
+		icon.ScaleType = Enum.ScaleType.Crop
+		icon.Image = meta and meta.renderImage or ''
+		icon.ImageTransparency = transparency
+		icon.ZIndex = 10
+		icon.Parent = row
+		Instance.new('UICorner', icon).CornerRadius = UDim.new(0.25, 0)
+		return icon
 	end
 	
 	local function drawHistory(card, player)
@@ -8954,6 +9230,7 @@ run(function()
 		local old = card:FindFirstChild('KitHistory')
 		if old then old:Destroy() end
 		if not (KitHistory and KitHistory.Enabled and player) then return end
+		if not showsPlayer(player) then return end
 	
 		-- Cards are reused as the list reorders, so the answer is only drawn if the card still
 		-- shows the player it was asked for.
@@ -8970,22 +9247,52 @@ run(function()
 				rowText(row, 'No history')
 				return
 			end
+			local leftAligned = RowPosition and RowPosition.Value == 'Bottom Left'
 			for i = 1, shown do
-				local meta = bedwars.BedwarsKitMeta[kits[i]]
-				local icon = Instance.new('ImageLabel')
-				icon.Name = kits[i]
-				-- Laid out right to left: the newest sits on the edge.
-				icon.LayoutOrder = shown - i
-				icon.BackgroundColor3 = Color3.new(0, 0, 0)
-				icon.BackgroundTransparency = 0.45
-				icon.SizeConstraint = Enum.SizeConstraint.RelativeYY
-				icon.Size = UDim2.fromScale(1, 1)
-				icon.ScaleType = Enum.ScaleType.Crop
-				icon.Image = meta and meta.renderImage or ''
-				icon.ImageTransparency = math.clamp((i - 1) * 0.05, 0, 0.45)
-				icon.ZIndex = 10
-				icon.Parent = row
-				Instance.new('UICorner', icon).CornerRadius = UDim.new(0.25, 0)
+				-- The newest sits on the outer edge of the card.
+				local order = leftAligned and i or (shown - i)
+				local icon = kitIcon(row, kits[i].kit, order, math.clamp((i - 1) * 0.05, 0, 0.45))
+				if WinTint and WinTint.Enabled and kits[i].won ~= nil then
+					local stroke = Instance.new('UIStroke')
+					stroke.Thickness = 1.5
+					stroke.Color = kits[i].won and Color3.fromRGB(90, 220, 110) or Color3.fromRGB(235, 80, 80)
+					stroke.Parent = icon
+				end
+			end
+	
+			-- Their most played kit across those matches, with how many times.
+			if MostPlayed and MostPlayed.Enabled then
+				local counts, best, bestCount = {}, nil, 0
+				for i = 1, shown do
+					local kit = kits[i].kit
+					counts[kit] = (counts[kit] or 0) + 1
+					if counts[kit] > bestCount then best, bestCount = kit, counts[kit] end
+				end
+				if best and bestCount > 1 then
+					local order = leftAligned and -2 or (shown + 2)
+					local spacer = Instance.new('Frame')
+					spacer.BackgroundTransparency = 1
+					spacer.Size = UDim2.fromOffset(4, 0)
+					spacer.LayoutOrder = leftAligned and -1 or (shown + 1)
+					spacer.Parent = row
+					local icon = kitIcon(row, best, order, 0)
+					local count = Instance.new('TextLabel')
+					count.BackgroundTransparency = 1
+					count.AnchorPoint = Vector2.new(1, 1)
+					count.Position = UDim2.fromScale(1.1, 1.1)
+					count.Size = UDim2.fromScale(0.7, 0.55)
+					count.Text = 'x' .. bestCount
+					count.TextScaled = true
+					count.Font = Enum.Font.GothamBold
+					count.TextColor3 = Color3.new(1, 1, 1)
+					count.TextStrokeTransparency = 0.2
+					count.ZIndex = 11
+					count.Parent = icon
+					local mark = Instance.new('UIStroke')
+					mark.Thickness = 1.5
+					mark.Color = Color3.fromRGB(255, 210, 90)
+					mark.Parent = icon
+				end
 			end
 		end)
 	end
@@ -9082,11 +9389,13 @@ run(function()
 			end
 	
 			roact.Image = kitImage.renderImage
+			roact.Visible = showsPlayer(player)
 			roact.Position = UDim2.fromScale(1.05, 0)
 			tweenService:Create(roact, TweenInfo.new(0.2, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {Position = UDim2.fromScale(1.05, 0.4)}):Play()
 	
 			local function update()
 				roact.Image = getKitMeta(player).renderImage
+				roact.Visible = showsPlayer(player)
 			end
 	
 			-- Re-bind the kit listener to whichever player the card currently shows.
@@ -9140,6 +9449,7 @@ run(function()
 	
 			local function update()
 				Roact.Image = getKitMeta(player).renderImage
+				Roact.Visible = showsPlayer(player)
 			end
 	
 			-- Keep the kit listener bound to whichever player this card now shows.
@@ -9316,6 +9626,47 @@ run(function()
 		Default = 10,
 		Darker = true,
 		Visible = false
+	})
+	ShowTeam = KitDisplay:CreateToggle({
+		Name = 'Show Team',
+		Tooltip = 'Also shows your own team\'s cards',
+		Default = true,
+		Function = function()
+			if KitDisplay.Enabled then
+				KitDisplay:Toggle()
+				KitDisplay:Toggle()
+			end
+		end
+	})
+	MostPlayed = KitDisplay:CreateToggle({
+		Name = 'Most Played',
+		Tooltip = 'Marks their most played kit with a count',
+		Default = true,
+		Darker = true
+	})
+	WinTint = KitDisplay:CreateToggle({
+		Name = 'Win Tint',
+		Tooltip = 'Rings each kit green for a win, red for a loss',
+		Darker = true
+	})
+	IconSize = KitDisplay:CreateSlider({
+		Name = 'Icon Size',
+		Tooltip = 'How big the history icons are',
+		Min = 10,
+		Max = 40,
+		Default = 20,
+		Darker = true,
+		Suffix = function() return '%' end
+	})
+	RowPosition = KitDisplay:CreateDropdown({
+		Name = 'History Position',
+		List = {'Bottom Right', 'Top Right', 'Bottom Left'},
+		Tooltips = {
+			['Bottom Right'] = 'Bottom right of the card',
+			['Top Right'] = 'Top right of the card',
+			['Bottom Left'] = 'Bottom left of the card'
+		},
+		Darker = true
 	})
 	
 end)
@@ -11117,7 +11468,8 @@ run(function()
 	]]
 	local RespawnTimers
 	local Teammates, ShowFinals, WorldMarkers, Corner, Background
-	local panel, list
+	local RespawnSound, WarnBefore, OnlyNearby, NearbyRange, AlwaysShow, PanelScale, FontOption
+	local panel, list, title, scaler
 	local dead = {}
 	local rows = {}
 	local Folder = Instance.new('Folder')
@@ -11242,6 +11594,7 @@ run(function()
 		}
 	
 		local root = deathTable.entityInstance:FindFirstChild('HumanoidRootPart') or deathTable.entityInstance.PrimaryPart
+		entry.deathPosition = root and root.Position
 		if root then
 			local marker = Instance.new('BillboardGui')
 			marker.Size = UDim2.fromOffset(140, 20)
@@ -11307,6 +11660,16 @@ run(function()
 			end
 	
 			local wanted = (on(Teammates) or not sameTeam(player)) and (on(ShowFinals) or not entry.final)
+			if wanted and on(OnlyNearby) and entry.deathPosition and entitylib.isAlive then
+				wanted = (entry.deathPosition - entitylib.character.RootPart.Position).Magnitude <= NearbyRange.Value
+			end
+			-- A ping just before an enemy is back, once per death.
+			if wanted and on(RespawnSound) and not entry.final and not entry.warned and remaining <= WarnBefore.Value and not sameTeam(player) then
+				entry.warned = true
+				pcall(function()
+					bedwars.SoundManager:playSound(bedwars.SoundList.PING_DANGER)
+				end)
+			end
 			local text = entry.final and 'FINAL' or string.format('%.1fs', math.max(remaining, 0))
 			if entry.marker then
 				entry.marker.Enabled = wanted and on(WorldMarkers)
@@ -11322,8 +11685,24 @@ run(function()
 			return a.remaining < b.remaining
 		end)
 	
+		local font = FontOption and FontOption.Value or Font.fromEnum(Enum.Font.GothamBold)
+		if title then title.FontFace = font end
+		if scaler then scaler.Scale = PanelScale.Value end
+		-- Always Show keeps the panel up, saying so when nobody is dead.
+		if #shown == 0 and on(AlwaysShow) then
+			local label = row(1)
+			label.FontFace = font
+			label.TextColor3 = Color3.fromRGB(150, 150, 150)
+			label.Text = 'None'
+			label.Visible = true
+			for i = 2, #rows do rows[i].Visible = false end
+			panel.Visible = true
+			panel.Size = UDim2.fromOffset(190, 48)
+			return
+		end
 		for i, item in shown do
 			local label = row(i)
+			label.FontFace = font
 			local color = item.player.Team and item.player.TeamColor.Color or Color3.new(1, 1, 1)
 			label.TextColor3 = color
 			label.Text = item.player.DisplayName .. '  <font color="rgb(' .. (item.final and '255,90,90' or '230,230,230') .. ')">' .. item.text .. '</font>'
@@ -11354,7 +11733,10 @@ run(function()
 		padding.PaddingTop = UDim.new(0, 4)
 		padding.Parent = panel
 	
-		local title = Instance.new('TextLabel')
+		scaler = Instance.new('UIScale')
+		scaler.Parent = panel
+	
+		title = Instance.new('TextLabel')
 		title.BackgroundTransparency = 1
 		title.Size = UDim2.new(1, 0, 0, 20)
 		title.Font = Enum.Font.GothamBold
@@ -11396,7 +11778,7 @@ run(function()
 				for player in dead do forget(player) end
 				table.clear(rows)
 				table.clear(lastGround)
-				panel, list = nil, nil
+				panel, list, title, scaler = nil, nil, nil, nil
 			end
 		end
 	})
@@ -11413,6 +11795,58 @@ run(function()
 		Name = 'World Markers',
 		Tooltip = 'Marks where each one died',
 		Default = true
+	})
+	RespawnSound = RespawnTimers:CreateToggle({
+		Name = 'Respawn Sound',
+		Tooltip = 'Pings just before an enemy is back',
+		Function = function(callback)
+			if WarnBefore and WarnBefore.Object then WarnBefore.Object.Visible = callback end
+		end
+	})
+	WarnBefore = RespawnTimers:CreateSlider({
+		Name = 'Warn Before',
+		Tooltip = 'Seconds before they respawn',
+		Min = 0,
+		Max = 5,
+		Default = 1,
+		Decimal = 10,
+		Darker = true,
+		Visible = false,
+		Suffix = function() return 's' end
+	})
+	OnlyNearby = RespawnTimers:CreateToggle({
+		Name = 'Only Nearby',
+		Tooltip = 'Only players who died near you',
+		Function = function(callback)
+			if NearbyRange and NearbyRange.Object then NearbyRange.Object.Visible = callback end
+		end
+	})
+	NearbyRange = RespawnTimers:CreateSlider({
+		Name = 'Nearby Range',
+		Tooltip = 'How close they had to die',
+		Min = 10,
+		Max = 300,
+		Default = 80,
+		Darker = true,
+		Visible = false,
+		Suffix = function(val) return val == 1 and 'stud' or 'studs' end
+	})
+	AlwaysShow = RespawnTimers:CreateToggle({
+		Name = 'Always Show',
+		Tooltip = 'Keeps the panel up even when nobody is dead'
+	})
+	PanelScale = RespawnTimers:CreateSlider({
+		Name = 'Scale',
+		Tooltip = 'How big the panel is',
+		Min = 0.6,
+		Max = 2,
+		Default = 1,
+		Decimal = 10
+	})
+	FontOption = RespawnTimers:CreateFont({
+		Name = 'Font',
+		Tooltip = 'Font used for the panel',
+		Blacklist = 'GothamBold'
 	})
 	Corner = RespawnTimers:CreateDropdown({
 		Name = 'Position',
@@ -29981,14 +30415,20 @@ run(function()
 		Bed Compass.
 	
 		Every bed is a model tagged bed; your team's carries the Team<id>NoBreak attribute, and
-		the blanket is coloured in its team's colour, which is how the others are told apart. A
-		small panel lists your bed and the enemy beds still standing, each with an arrow
-		pointing to it relative to where you are looking and how far away it is.
+		the blanket is coloured in its team's colour, which is how the others are told apart.
+		Beds are remembered once seen, so a broken one - the model is removed - can still be
+		shown, greyed out.
+	
+		Shown either as a small panel listing the beds with an arrow pointing to each relative
+		to where you are looking, or as arrows on a ring around the crosshair.
 	]]
 	local BedCompass
-	local ShowOwn, EnemyMode, ShowDistance, Background
-	local holder, list
-	local rows = {}
+	local Style, RingRadius, ShowOwn, HideOwnClose, EnemyMode, ShowDistance, ShowBroken, Scale, FontOption, Background
+	local holder, list, ring
+	local rows, ringArrows = {}, {}
+	local known = {}
+	
+	local OWN_CLOSE = 20
 	
 	local function on(setting)
 		return setting ~= nil and setting.Enabled
@@ -30019,31 +30459,43 @@ run(function()
 		return best
 	end
 	
+	-- Every bed seen this match, kept after it is broken.
+	local function remember()
+		for _, bed in collectionService:GetTagged('bed') do
+			if bed:IsA('PVInstance') and not known[bed] then
+				local team = teamOf(bed)
+				known[bed] = {
+					position = bed:GetPivot().Position,
+					own = isOwn(bed),
+					name = team and team.Name or 'Enemy',
+					color = team and team.TeamColor.Color or Color3.new(1, 1, 1)
+				}
+			end
+		end
+		for bed, info in known do
+			info.broken = bed.Parent == nil
+		end
+	end
+	
 	local function row(index)
 		local entry = rows[index]
 		if entry then return entry end
 	
 		local frame = Instance.new('Frame')
 		frame.BackgroundTransparency = 1
-		frame.Size = UDim2.new(1, 0, 0, 22)
 		frame.LayoutOrder = index
 		frame.Parent = list
 	
 		local arrow = Instance.new('ImageLabel')
 		arrow.BackgroundTransparency = 1
 		arrow.AnchorPoint = Vector2.new(0.5, 0.5)
-		arrow.Position = UDim2.fromOffset(13, 11)
-		arrow.Size = UDim2.fromOffset(14, 14)
 		arrow.Image = getcustomasset('vain/assets/new/expandup.png')
 		arrow.ScaleType = Enum.ScaleType.Fit
 		arrow.Parent = frame
 	
 		local label = Instance.new('TextLabel')
 		label.BackgroundTransparency = 1
-		label.Position = UDim2.fromOffset(26, 0)
-		label.Size = UDim2.new(1, -30, 1, 0)
 		label.Font = Enum.Font.GothamBold
-		label.TextSize = 13
 		label.TextXAlignment = Enum.TextXAlignment.Left
 		label.TextStrokeTransparency = 0.5
 		label.Parent = frame
@@ -30053,50 +30505,119 @@ run(function()
 		return entry
 	end
 	
+	local function ringArrow(index)
+		local entry = ringArrows[index]
+		if entry then return entry end
+		local arrow = Instance.new('ImageLabel')
+		arrow.BackgroundTransparency = 1
+		arrow.AnchorPoint = Vector2.new(0.5, 0.5)
+		arrow.Image = getcustomasset('vain/assets/new/expandup.png')
+		arrow.ScaleType = Enum.ScaleType.Fit
+		arrow.Parent = ring
+		local label = Instance.new('TextLabel')
+		label.BackgroundTransparency = 1
+		label.AnchorPoint = Vector2.new(0.5, 0.5)
+		label.Font = Enum.Font.GothamBold
+		label.TextStrokeTransparency = 0.4
+		label.Parent = ring
+		entry = {arrow = arrow, label = label}
+		ringArrows[index] = entry
+		return entry
+	end
+	
+	local function hideAll()
+		for _, entry in rows do entry.frame.Visible = false end
+		for _, entry in ringArrows do
+			entry.arrow.Visible = false
+			entry.label.Visible = false
+		end
+	end
+	
 	local function update()
+		remember()
 		if not entitylib.isAlive then
-			for _, entry in rows do entry.frame.Visible = false end
+			hideAll()
 			return
 		end
 		local here = entitylib.character.RootPart.Position
 		local look = gameCamera.CFrame.LookVector
 		local facing = math.atan2(look.X, -look.Z)
 	
-		local own, enemies = nil, {}
-		for _, bed in collectionService:GetTagged('bed') do
-			if bed.Parent and bed:IsA('PVInstance') then
-				local position = bed:GetPivot().Position
-				local item = {bed = bed, position = position, distance = (position - here).Magnitude}
-				if isOwn(bed) then
-					own = item
-				else
-					enemies[#enemies + 1] = item
-				end
+		local own, enemies, broken = nil, {}, {}
+		for _, info in known do
+			local item = {info = info, distance = (info.position - here).Magnitude}
+			if info.own then
+				if not info.broken then own = item end
+			elseif info.broken then
+				broken[#broken + 1] = item
+			else
+				enemies[#enemies + 1] = item
 			end
 		end
 		table.sort(enemies, function(a, b) return a.distance < b.distance end)
 	
 		local shown = {}
-		if own and on(ShowOwn) then shown[#shown + 1] = own end
+		if own and on(ShowOwn) and not (on(HideOwnClose) and own.distance <= OWN_CLOSE) then
+			shown[#shown + 1] = own
+		end
 		local limit = EnemyMode.Value == 'Nearest' and 1 or #enemies
 		for i = 1, math.min(limit, #enemies) do shown[#shown + 1] = enemies[i] end
+		if on(ShowBroken) then
+			for _, item in broken do shown[#shown + 1] = item end
+		end
+	
+		local scale = Scale.Value
+		local size = math.floor(13 * scale)
+		local font = FontOption and FontOption.Value or Font.fromEnum(Enum.Font.GothamBold)
+		local isRing = Style.Value == 'Ring'
+		holder.Visible = not isRing
+		ring.Visible = isRing
+		hideAll()
 	
 		for i, item in shown do
-			local entry = row(i)
-			local team = teamOf(item.bed)
-			local flat = item.position - here
+			local info = item.info
+			local flat = info.position - here
 			-- Arrow up means straight ahead of the camera.
 			local bearing = math.atan2(flat.X, -flat.Z) - facing
-			entry.arrow.Rotation = math.deg(bearing)
-			local color = item == own and Color3.fromRGB(120, 230, 140) or (team and team.TeamColor.Color or Color3.new(1, 1, 1))
-			entry.arrow.ImageColor3 = color
-			entry.label.TextColor3 = color
-			local name = item == own and 'Your Bed' or ((team and team.Name or 'Enemy') .. ' Bed')
-			entry.label.Text = name .. (on(ShowDistance) and string.format('  %dm', math.floor(item.distance)) or '')
-			entry.frame.Visible = true
+			local color = info.broken and Color3.fromRGB(120, 120, 120) or (info.own and Color3.fromRGB(120, 230, 140) or info.color)
+			local name = info.own and 'Your Bed' or (info.name .. ' Bed')
+			local distanceText = on(ShowDistance) and string.format('%dm', math.floor(item.distance)) or ''
+	
+			if isRing then
+				local entry = ringArrow(i)
+				local radius = RingRadius.Value
+				local offset = Vector2.new(math.sin(bearing), -math.cos(bearing)) * radius
+				entry.arrow.Position = UDim2.new(0.5, offset.X, 0.5, offset.Y)
+				entry.arrow.Size = UDim2.fromOffset(size + 4, size + 4)
+				entry.arrow.Rotation = math.deg(bearing)
+				entry.arrow.ImageColor3 = color
+				entry.arrow.Visible = true
+				local labelOffset = Vector2.new(math.sin(bearing), -math.cos(bearing)) * (radius + size + 8)
+				entry.label.Position = UDim2.new(0.5, labelOffset.X, 0.5, labelOffset.Y)
+				entry.label.Size = UDim2.fromOffset(60, size)
+				entry.label.TextSize = size - 2
+				entry.label.FontFace = font
+				entry.label.TextColor3 = color
+				entry.label.Text = distanceText
+				entry.label.Visible = distanceText ~= ''
+			else
+				local entry = row(i)
+				local height = size + 9
+				entry.frame.Size = UDim2.new(1, 0, 0, height)
+				entry.arrow.Position = UDim2.fromOffset(height / 2 + 2, height / 2)
+				entry.arrow.Size = UDim2.fromOffset(size + 1, size + 1)
+				entry.arrow.Rotation = math.deg(bearing)
+				entry.arrow.ImageColor3 = color
+				entry.label.Position = UDim2.fromOffset(height + 4, 0)
+				entry.label.Size = UDim2.new(1, -height - 8, 1, 0)
+				entry.label.TextSize = size
+				entry.label.FontFace = font
+				entry.label.TextColor3 = color
+				entry.label.Text = name .. (info.broken and '  (broken)' or '') .. (distanceText ~= '' and '  ' .. distanceText or '')
+				entry.frame.Visible = true
+			end
 		end
-		for i = #shown + 1, #rows do rows[i].frame.Visible = false end
-		holder.Size = UDim2.new(1, 0, 0, math.max(#shown, 1) * 22 + 8)
+		holder.Size = UDim2.new(1, 0, 0, math.max(#shown, 1) * (size + 9) + 8)
 	end
 	
 	BedCompass = vain.Legit:CreateModule({
@@ -30106,25 +30627,71 @@ run(function()
 				BedCompass:Clean(runService.RenderStepped:Connect(function()
 					pcall(update)
 				end))
+			else
+				hideAll()
+				ring.Visible = false
 			end
 		end,
 		Size = UDim2.fromOffset(170, 80),
 		Tooltip = 'Points to your bed and the enemy beds'
 	})
+	Style = BedCompass:CreateDropdown({
+		Name = 'Style',
+		List = {'List', 'Ring'},
+		Tooltips = {List = 'A panel listing the beds', Ring = 'Arrows on a ring round the crosshair'},
+		Function = function(val)
+			if RingRadius and RingRadius.Object then RingRadius.Object.Visible = val == 'Ring' end
+		end
+	})
+	RingRadius = BedCompass:CreateSlider({
+		Name = 'Ring Radius',
+		Tooltip = 'How far from the crosshair the arrows sit',
+		Min = 40,
+		Max = 300,
+		Default = 90,
+		Darker = true,
+		Visible = false,
+		Suffix = function() return 'px' end
+	})
 	ShowOwn = BedCompass:CreateToggle({
 		Name = 'Own Bed',
 		Tooltip = 'Also points to your own bed',
-		Default = true
+		Default = true,
+		Function = function(callback)
+			if HideOwnClose and HideOwnClose.Object then HideOwnClose.Object.Visible = callback end
+		end
+	})
+	HideOwnClose = BedCompass:CreateToggle({
+		Name = 'Hide Own When Close',
+		Tooltip = 'Hides your bed while you are next to it',
+		Darker = true
 	})
 	EnemyMode = BedCompass:CreateDropdown({
 		Name = 'Enemy Beds',
 		List = {'Nearest', 'All'},
 		Tooltips = {Nearest = 'Only the nearest enemy bed', All = 'Every enemy bed still standing'}
 	})
+	ShowBroken = BedCompass:CreateToggle({
+		Name = 'Broken Beds',
+		Tooltip = 'Also shows broken beds, greyed out'
+	})
 	ShowDistance = BedCompass:CreateToggle({
 		Name = 'Distance',
 		Tooltip = 'Shows how far away each bed is',
 		Default = true
+	})
+	Scale = BedCompass:CreateSlider({
+		Name = 'Scale',
+		Tooltip = 'How big it is',
+		Min = 0.6,
+		Max = 2,
+		Default = 1,
+		Decimal = 10
+	})
+	FontOption = BedCompass:CreateFont({
+		Name = 'Font',
+		Tooltip = 'Font used for the text',
+		Blacklist = 'GothamBold'
 	})
 	Background = BedCompass:CreateColorSlider({
 		Name = 'Background',
@@ -30157,6 +30724,16 @@ run(function()
 	local layout = Instance.new('UIListLayout')
 	layout.SortOrder = Enum.SortOrder.LayoutOrder
 	layout.Parent = list
+	
+	-- The ring sits on the screen itself, centred on the crosshair.
+	ring = Instance.new('Frame')
+	ring.Name = 'BedCompassRing'
+	ring.BackgroundTransparency = 1
+	ring.AnchorPoint = Vector2.new(0.5, 0.5)
+	ring.Position = UDim2.fromScale(0.5, 0.5)
+	ring.Size = UDim2.fromOffset(0, 0)
+	ring.Visible = false
+	ring.Parent = vain.gui
 	
 end)
 
@@ -30673,14 +31250,16 @@ run(function()
 		Low HP Warning.
 	
 		Your health is on your character as the Health and MaxHealth attributes. Below the
-		threshold the screen edges glow, pulsing faster the lower you go, with your health
-		written under the crosshair and a sound as you drop under - played once per drop, not
-		on a loop.
+		threshold - a share of your max health or a flat amount - the screen edges glow,
+		pulsing faster the lower you go, with your health written under the crosshair and a
+		sound as you drop under, once or repeating. Below the critical level it pulses harder
+		and faster still.
 	]]
 	local LowHPWarning
-	local Threshold, Vignette, ShowText, Sound, SoundChoice, Color
+	local Mode, Threshold, ThresholdHP, Critical, CriticalPercent, CriticalHP
+	local Vignette, ShowText, Sound, SoundChoice, Volume, Repeat, RepeatEvery, HideSpectate, PulseSpeed, Color
 	local screen, edges, label
-	local below = false
+	local below, lastSound = false, 0
 	
 	local SOUNDS = {
 		Heartbeat = 'WEREWOLF_HEARTBEAT',
@@ -30722,36 +31301,50 @@ run(function()
 		label.Parent = screen
 	end
 	
+	local function playSound()
+		pcall(function()
+			bedwars.SoundManager:playSound(bedwars.SoundList[SOUNDS[SoundChoice.Value]], {volumeMultiplier = Volume.Value / 100})
+		end)
+		lastSound = os.clock()
+	end
+	
+	local function off()
+		screen.Visible = false
+		below = false
+	end
+	
 	local function update()
 		local character = lplr.Character
 		local health = character and character:GetAttribute('Health')
 		local maxHealth = character and character:GetAttribute('MaxHealth')
-		if not (entitylib.isAlive and health and maxHealth and maxHealth > 0) then
-			screen.Visible = false
-			below = false
-			return
+		if not (entitylib.isAlive and health and maxHealth and maxHealth > 0) or health <= 0 then
+			return off()
+		end
+		if HideSpectate.Enabled and lplr:GetAttribute('Spectator') then
+			return off()
 		end
 	
-		local fraction = health / maxHealth
-		local limit = Threshold.Value / 100
-		if fraction > limit or health <= 0 then
-			screen.Visible = false
-			below = false
-			return
+		-- The thresholds in health points, whichever way they are set.
+		local byHP = Mode.Value == 'HP'
+		local limit = byHP and ThresholdHP.Value or maxHealth * Threshold.Value / 100
+		local critical = Critical.Enabled and (byHP and CriticalHP.Value or maxHealth * CriticalPercent.Value / 100) or -1
+		if health > limit then
+			return off()
 		end
 	
-		if not below and Sound.Enabled then
-			pcall(function()
-				bedwars.SoundManager:playSound(bedwars.SoundList[SOUNDS[SoundChoice.Value]])
-			end)
+		if Sound.Enabled and (not below or (Repeat.Enabled and os.clock() - lastSound >= RepeatEvery.Value)) then
+			playSound()
 		end
 		below = true
 	
-		-- Lower health, faster pulse: from 2 beats a second at the threshold to 6 near death.
-		local urgency = 1 - math.clamp(fraction / limit, 0, 1)
-		local pulse = 0.5 + 0.5 * math.sin(os.clock() * math.pi * 2 * (2 + urgency * 4))
+		-- Lower health, faster pulse: from 2 beats a second at the threshold to 6 near death,
+		-- scaled by Pulse Speed; below critical, half again faster and at full strength.
+		local isCritical = health <= critical
+		local urgency = 1 - math.clamp(health / math.max(limit, 1), 0, 1)
+		local rate = (2 + urgency * 4) * (PulseSpeed.Value / 100) * (isCritical and 1.5 or 1)
+		local pulse = 0.5 + 0.5 * math.sin(os.clock() * math.pi * 2 * rate)
 		local color = Color3.fromHSV(Color.Hue, Color.Sat, Color.Value)
-		local strength = Color.Opacity * (0.55 + 0.45 * pulse)
+		local strength = (isCritical and 1 or Color.Opacity) * (0.55 + 0.45 * pulse)
 	
 		for _, edge in edges do
 			edge.Visible = Vignette.Enabled
@@ -30760,7 +31353,7 @@ run(function()
 		end
 		label.Visible = ShowText.Enabled
 		label.TextColor3 = color
-		label.Text = string.format('%d HP', math.ceil(health))
+		label.Text = string.format(isCritical and 'CRITICAL  %d HP' or '%d HP', math.ceil(health))
 		screen.Visible = true
 	end
 	
@@ -30779,12 +31372,71 @@ run(function()
 		end,
 		Tooltip = 'Warns you when your health gets low'
 	})
+	Mode = LowHPWarning:CreateDropdown({
+		Name = 'Mode',
+		List = {'Percent', 'HP'},
+		Tooltips = {Percent = 'Thresholds as a share of your max health', HP = 'Thresholds in health points'},
+		Function = function(val)
+			local byHP = val == 'HP'
+			local critical = Critical and Critical.Enabled
+			if Threshold and Threshold.Object then Threshold.Object.Visible = not byHP end
+			if ThresholdHP and ThresholdHP.Object then ThresholdHP.Object.Visible = byHP end
+			if CriticalPercent and CriticalPercent.Object then CriticalPercent.Object.Visible = critical and not byHP end
+			if CriticalHP and CriticalHP.Object then CriticalHP.Object.Visible = critical and byHP end
+		end
+	})
 	Threshold = LowHPWarning:CreateSlider({
 		Name = 'Threshold',
 		Tooltip = 'Health left when it starts',
 		Min = 5,
 		Max = 90,
 		Default = 35,
+		Suffix = function() return '%' end
+	})
+	ThresholdHP = LowHPWarning:CreateSlider({
+		Name = 'Threshold HP',
+		Tooltip = 'Health left when it starts',
+		Min = 1,
+		Max = 100,
+		Default = 35,
+		Visible = false,
+		Suffix = function() return ' HP' end
+	})
+	Critical = LowHPWarning:CreateToggle({
+		Name = 'Critical',
+		Tooltip = 'A stronger warning when very low',
+		Default = true,
+		Function = function(callback)
+			local byHP = Mode and Mode.Value == 'HP'
+			if CriticalPercent and CriticalPercent.Object then CriticalPercent.Object.Visible = callback and not byHP end
+			if CriticalHP and CriticalHP.Object then CriticalHP.Object.Visible = callback and byHP end
+		end
+	})
+	CriticalPercent = LowHPWarning:CreateSlider({
+		Name = 'Critical Level',
+		Tooltip = 'Health left when it turns critical',
+		Min = 1,
+		Max = 50,
+		Default = 15,
+		Darker = true,
+		Suffix = function() return '%' end
+	})
+	CriticalHP = LowHPWarning:CreateSlider({
+		Name = 'Critical HP',
+		Tooltip = 'Health left when it turns critical',
+		Min = 1,
+		Max = 50,
+		Default = 15,
+		Darker = true,
+		Visible = false,
+		Suffix = function() return ' HP' end
+	})
+	PulseSpeed = LowHPWarning:CreateSlider({
+		Name = 'Pulse Speed',
+		Tooltip = 'How fast it pulses',
+		Min = 25,
+		Max = 300,
+		Default = 100,
 		Suffix = function() return '%' end
 	})
 	Vignette = LowHPWarning:CreateToggle({
@@ -30797,12 +31449,20 @@ run(function()
 		Tooltip = 'Shows your health under the crosshair',
 		Default = true
 	})
+	HideSpectate = LowHPWarning:CreateToggle({
+		Name = 'Hide In Spectate',
+		Tooltip = 'No warning while spectating',
+		Default = true
+	})
 	Sound = LowHPWarning:CreateToggle({
 		Name = 'Sound',
 		Tooltip = 'Plays a sound when you drop below',
 		Default = true,
 		Function = function(callback)
-			if SoundChoice and SoundChoice.Object then SoundChoice.Object.Visible = callback end
+			for _, setting in {SoundChoice, Volume, Repeat, RepeatEvery} do
+				if setting and setting.Object then setting.Object.Visible = callback end
+			end
+			if callback and RepeatEvery and RepeatEvery.Object then RepeatEvery.Object.Visible = Repeat and Repeat.Enabled end
 		end
 	})
 	SoundChoice = LowHPWarning:CreateDropdown({
@@ -30810,6 +31470,34 @@ run(function()
 		List = {'Heartbeat', 'Danger', 'Beep'},
 		Tooltips = {Heartbeat = 'A heartbeat', Danger = 'The danger ping', Beep = 'A short beep'},
 		Darker = true
+	})
+	Volume = LowHPWarning:CreateSlider({
+		Name = 'Volume',
+		Tooltip = 'How loud the sound is',
+		Min = 10,
+		Max = 300,
+		Default = 100,
+		Darker = true,
+		Suffix = function() return '%' end
+	})
+	Repeat = LowHPWarning:CreateToggle({
+		Name = 'Repeat',
+		Tooltip = 'Keeps playing while you stay low',
+		Darker = true,
+		Function = function(callback)
+			if RepeatEvery and RepeatEvery.Object then RepeatEvery.Object.Visible = callback and Sound and Sound.Enabled end
+		end
+	})
+	RepeatEvery = LowHPWarning:CreateSlider({
+		Name = 'Repeat Every',
+		Tooltip = 'Seconds between sounds',
+		Min = 0.5,
+		Max = 10,
+		Default = 2,
+		Decimal = 10,
+		Darker = true,
+		Visible = false,
+		Suffix = function() return 's' end
 	})
 	Color = LowHPWarning:CreateColorSlider({
 		Name = 'Color',
@@ -31058,7 +31746,7 @@ run(function()
 		wrapped the method after it, as the FOV module wraps setFOV too.
 	]]
 	local StaticFOV
-	local SprintFOV
+	local SprintFOV, BlockSprint, BlockItems, BlockMenus
 	local hooks = {}
 	
 	local RUN_FOV_MULT = 1.1
@@ -31088,8 +31776,10 @@ run(function()
 		table.clear(hooks)
 	end
 	
+	-- The sprint widening is only folded in while the sprint zoom itself is blocked;
+	-- otherwise the game's own sprint tween still does it.
 	local function sprintScale()
-		return SprintFOV.Enabled and RUN_FOV_MULT or 1
+		return (BlockSprint.Enabled and SprintFOV.Enabled) and RUN_FOV_MULT or 1
 	end
 	
 	-- Puts the FOV back through the game's own setFOV, now that it ignores the multiplier.
@@ -31110,7 +31800,8 @@ run(function()
 				hook(fov, 'setFOV', function(original)
 					return function(self, value, ...)
 						local multiplier = self.fovMultiplier
-						self.fovMultiplier = sprintScale()
+						-- Item zoom left on keeps the game's multiplier.
+						self.fovMultiplier = (BlockItems.Enabled and 1 or (multiplier or 1)) * sprintScale()
 						local results = table.pack(pcall(original, self, value, ...))
 						self.fovMultiplier = multiplier
 						-- getFOV is read as the plain FOV by the sprint code, so it is kept so.
@@ -31123,16 +31814,18 @@ run(function()
 				end)
 	
 				-- No sprint tween: the camera already sits where it should.
-				hook(sprint, 'tweenCameraFOV', function()
-					return function()
+				hook(sprint, 'tweenCameraFOV', function(original)
+					return function(...)
+						if not BlockSprint.Enabled then return original(...) end
 						return dummyMaid
 					end
 				end)
 	
 				-- Menus get a tween that is never played.
 				for _, method in {'playUIOpenFOVTween', 'playUICloseFOVTween'} do
-					hook(fov, method, function()
-						return function()
+					hook(fov, method, function(original)
+						return function(...)
+							if not BlockMenus.Enabled then return original(...) end
 							return tweenService:Create(gameCamera, TweenInfo.new(0), {FieldOfView = gameCamera.FieldOfView})
 						end
 					end)
@@ -31151,10 +31844,33 @@ run(function()
 		end,
 		Tooltip = 'Stops the zoom when eating or drawing a bow'
 	})
+	BlockSprint = StaticFOV:CreateToggle({
+		Name = 'Block Sprint Zoom',
+		Tooltip = 'Stops the zoom when your sprint ends',
+		Default = true,
+		Function = function(callback)
+			if SprintFOV and SprintFOV.Object then SprintFOV.Object.Visible = callback end
+			if StaticFOV.Enabled then reapply() end
+		end
+	})
+	BlockItems = StaticFOV:CreateToggle({
+		Name = 'Block Item Zoom',
+		Tooltip = 'Stops FOV changes from items and kits',
+		Default = true,
+		Function = function()
+			if StaticFOV.Enabled then reapply() end
+		end
+	})
+	BlockMenus = StaticFOV:CreateToggle({
+		Name = 'Block Menu Zoom',
+		Tooltip = 'Stops the zoom when menus open',
+		Default = true
+	})
 	SprintFOV = StaticFOV:CreateToggle({
 		Name = 'Sprint FOV',
 		Tooltip = 'Keeps the wider sprinting FOV',
 		Default = true,
+		Darker = true,
 		Function = function()
 			if StaticFOV.Enabled then reapply() end
 		end
