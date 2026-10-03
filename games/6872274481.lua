@@ -13532,20 +13532,32 @@ run(function()
 	
 	kitRun(function()
 	    --[[
-	    	Pointing the cannon and firing it, on its own, for as long as it is switched on.
+	    	Davey Aim: a cannon shot that lands you where you point.
+	
+	    	The cannon launches you with an impulse of its LookVector times your mass times 200 -
+	    	you leave at 200 studs a second along the way it faces and fall at the world's
+	    	gravity from there. Pointing it straight at a target, as this used to, ignores that
+	    	fall and lands you short every time. So the launch angle is solved instead: for a
+	    	fixed speed and gravity there are two arcs onto any reachable point, a low one and a
+	    	high one, and both are worked out exactly.
+	
+	    	The low arc is quicker and less exposed, the high one gets over walls; Auto takes the
+	    	low one unless something is in the way of it. And because where you are standing
+	    	the moment you leave is what the shot starts from, it is solved once more at launch,
+	    	from exactly there - so it lands on point rather than a few studs off.
 	    ]]
 	    local DaveyAim
-	    local Activation, AimAt, AimMode, Launch, SearchRange, Delay, AvoidPowdered
+	    local Activation, AimAt, Arc, AimMode, Launch, SearchRange, Delay, AvoidPowdered, OutOfRangeNotify
+	    local LAUNCH_SPEED = 200
+	    local pendingTarget, pendingCannon
+	    local launchHook, launchOriginal
+	    local lastRangeNotice = 0
 	
 	    --[[
 	    	Powdered is the kit's own leash: "Firing yourself from a cannon will inflict
 	    	damage". Each launch adds a stack, a stack is twenty damage up to sixty, and the
-	    	whole thing lapses seven seconds after the last one.
-	
-	    	There is nothing to switch off. It is applied and charged server side, and the only
-	    	thing the client gets is an attribute saying it is there - so the counter is not to
-	    	block it but to stop feeding it: wait for the stacks to lapse rather than launching
-	    	into them, and the damage never lands in the first place.
+	    	whole thing lapses seven seconds after the last one. It is charged server side, so
+	    	the only answer is not to feed it: wait for the stacks to lapse before launching.
 	    ]]
 	    local function powderedStacks()
 	    	local char = lplr.Character
@@ -13556,20 +13568,20 @@ run(function()
 	
 	    local rayCheck = RaycastParams.new()
 	    rayCheck.RespectCanCollide = true
+	    local pathCheck = RaycastParams.new()
+	    pathCheck.FilterType = Enum.RaycastFilterType.Exclude
+	    pathCheck.RespectCanCollide = true
 	
 	    local function on(setting)
 	    	return setting ~= nil and setting.Enabled
 	    end
 	
-	    -- The nearest cannon, rather than the first one the tag list happens to hand back. The
-	    -- old search broke out of the loop on its first hit, so a cannon behind you won over
-	    -- the one at your feet whenever it was listed first.
+	    -- The nearest cannon within reach.
 	    local function nearestCannon()
 	    	if not entitylib.isAlive then return end
 	
 	    	local origin = entitylib.character.RootPart.Position
 	    	local best, bestDist
-	
 	    	for _, v in collectionService:GetTagged('block') do
 	    		if v.Name == 'cannon' then
 	    			local mag = (origin - v.Position).Magnitude
@@ -13578,20 +13590,22 @@ run(function()
 	    			end
 	    		end
 	    	end
-	
 	    	return best
 	    end
 	
-	    --[[
-	    	Where to point it.
+	    -- Your root's height above your feet, so a surface you point at is where your feet
+	    -- come down rather than where your middle does.
+	    local function rootHeight()
+	    	local height = entitylib.isAlive and entitylib.character.HipHeight
+	    	return type(height) == 'number' and height > 0 and height or 3
+	    end
 	
-	    	This used to be a dropdown called Position Mode that was never stored in a variable
-	    	and so could never be read: the choice did nothing and aiming was always by mouse. It
-	    	works now, and it gained the option that makes the module automatic rather than
-	    	something you point by hand.
+	    --[[
+	    	Where to land. A surface under the cursor or camera is raised to where your root will
+	    	be standing on it; an enemy is aimed at root to root.
 	    ]]
 	    local function aimPoint()
-	    	local choice = AimAt and AimAt.Value or 'Nearest Enemy'
+	    	local choice = AimAt and AimAt.Value or 'Mouse'
 	
 	    	if choice == 'Nearest Enemy' then
 	    		local ent = entitylib.EntityPosition({
@@ -13600,7 +13614,7 @@ run(function()
 	    			Players = true,
 	    			NPCs = false
 	    		})
-	    		return ent and ent.Position or nil
+	    		return ent and ent.RootPart and ent.RootPart.Position or nil
 	    	end
 	
 	    	local ray
@@ -13612,23 +13626,133 @@ run(function()
 	
 	    	rayCheck.FilterDescendantsInstances = {lplr.Character, gameCamera}
 	    	local hit = workspace:Raycast(ray.Origin, ray.Direction * 1000000, rayCheck)
-	    	return hit and hit.Position or nil
+	    	return hit and (hit.Position + Vector3.new(0, rootHeight(), 0)) or nil
 	    end
 	
 	    --[[
-	    	Aiming is 'AimCannon', not 'CannonAim'.
+	    	Both arcs onto a point, as unit launch directions with their flight times.
 	
-	    	The scraped table works a remote's name out by finding 'Client' among a function's
-	    	constants and taking the next one, which for this call lands on 'Get' rather than on
-	    	the name - so every aim was addressed to a remote that does not exist and the cannon
-	    	never turned. Named directly, and the vector is sent as the plain unit LookVector the
-	    	game itself sends rather than one multiplied by two hundred.
+	    	For speed v and gravity g, the angle onto a point dx across and dy up satisfies
+	    	tan(angle) = (v^2 -+ sqrt(v^4 - g(g dx^2 + 2 dy v^2))) / (g dx). Nothing under the
+	    	root means the point is out of reach at this speed.
+	    ]]
+	    local function solveArcs(origin, target)
+	    	local gravity = workspace.Gravity
+	    	local delta = target - origin
+	    	local flat = Vector3.new(delta.X, 0, delta.Z)
+	    	local dx, dy = flat.Magnitude, delta.Y
+	    	if dx < 0.5 then return nil end
+	
+	    	local v2 = LAUNCH_SPEED * LAUNCH_SPEED
+	    	local inner = v2 * v2 - gravity * (gravity * dx * dx + 2 * dy * v2)
+	    	if inner < 0 then return nil end
+	
+	    	local root = math.sqrt(inner)
+	    	local unit = flat.Unit
+	    	local function arc(sign)
+	    		local angle = math.atan((v2 + sign * root) / (gravity * dx))
+	    		local direction = unit * math.cos(angle) + Vector3.yAxis * math.sin(angle)
+	    		return direction, dx / (LAUNCH_SPEED * math.cos(angle))
+	    	end
+	    	local lowDir, lowTime = arc(-1)
+	    	local highDir, highTime = arc(1)
+	    	return lowDir, lowTime, highDir, highTime
+	    end
+	
+	    -- Whether you would fly the whole arc without clipping a block. The last moment is
+	    -- left out: that is the ground you are meant to land on.
+	    local function clearPath(origin, direction, flight, cannon)
+	    	local ignore = {gameCamera}
+	    	for _, plr in playersService:GetPlayers() do
+	    		if plr.Character then ignore[#ignore + 1] = plr.Character end
+	    	end
+	    	if cannon then ignore[#ignore + 1] = cannon end
+	    	pathCheck.FilterDescendantsInstances = ignore
+	
+	    	local gravity = workspace.Gravity
+	    	local velocity = direction * LAUNCH_SPEED
+	    	local previous = origin
+	    	local stopAt = math.max(flight - 0.08, 0)
+	    	local t = 0
+	    	while t < stopAt do
+	    		t = math.min(t + 0.04, stopAt)
+	    		local point = origin + velocity * t - Vector3.new(0, 0.5 * gravity * t * t, 0)
+	    		local ok, hit = pcall(workspace.Spherecast, workspace, previous, 1.25, point - previous, pathCheck)
+	    		if not ok then hit = workspace:Raycast(previous, point - previous, pathCheck) end
+	    		if hit then return false end
+	    		previous = point
+	    	end
+	    	return true
+	    end
+	
+	    -- The launch direction onto a point, by the arc chosen - or nil when it cannot be
+	    -- reached at all.
+	    local function launchDirection(origin, target, cannon)
+	    	local lowDir, lowTime, highDir, highTime = solveArcs(origin, target)
+	    	if not lowDir then return nil end
+	
+	    	local choice = Arc and Arc.Value or 'Auto'
+	    	if choice == 'Low' then return lowDir end
+	    	if choice == 'High' then return highDir end
+	    	if clearPath(origin, lowDir, lowTime, cannon) then return lowDir end
+	    	if clearPath(origin, highDir, highTime, cannon) then return highDir end
+	    	return lowDir
+	    end
+	
+	    --[[
+	    	Aiming is 'AimCannon', named directly: the scraped remote table resolves this one to
+	    	'Get'. The vector is the plain unit direction the game itself sends.
 	    ]]
 	    local function sendAim(cannon, lookVector)
 	    	bedwars.Client:Get('AimCannon'):SendToServer({
 	    		cannonBlockPos = bedwars.BlockController:getBlockPosition(cannon.Position),
 	    		lookVector = lookVector
 	    	})
+	    end
+	
+	    --[[
+	    	The last correction, at the moment you leave.
+	
+	    	The game's launch hands you an impulse along the direction the cannon was aimed from
+	    	wherever you stood then. Once it has gone through - the server agreed and you are
+	    	moving - the shot is solved again from exactly where you are now and your velocity
+	    	set to it, at the same 200 studs a second. Only while one of our own shots is in
+	    	flight; any other launch is left exactly as the game made it.
+	    ]]
+	    local function installLaunchHook()
+	    	local controller = bedwars.CannonHandController
+	    	if launchHook or not controller then return end
+	
+	    	local original = controller.launchSelf
+	    	if type(original) ~= 'function' then return end
+	    	launchOriginal = original
+	    	launchHook = function(self, cannon, ...)
+	    		local root = entitylib.isAlive and entitylib.character.RootPart
+	    		local before = root and root.AssemblyLinearVelocity
+	    		local result = original(self, cannon, ...)
+	
+	    		local target = pendingTarget
+	    		if target and root and root.Parent and before then
+	    			-- Only once the game actually launched you; a refused launch changes nothing.
+	    			if (root.AssemblyLinearVelocity - before).Magnitude > 50 then
+	    				local direction = launchDirection(root.Position, target, pendingCannon or cannon)
+	    				if direction then
+	    					root.AssemblyLinearVelocity = direction * LAUNCH_SPEED
+	    				end
+	    			end
+	    		end
+	    		return result
+	    	end
+	    	controller.launchSelf = launchHook
+	    end
+	
+	    local function removeLaunchHook()
+	    	local controller = bedwars.CannonHandController
+	    	if launchHook and controller and controller.launchSelf == launchHook then
+	    		controller.launchSelf = launchOriginal
+	    	end
+	    	launchHook = nil
+	    	pendingTarget, pendingCannon = nil, nil
 	    end
 	
 	    local function aimAndFire()
@@ -13641,9 +13765,19 @@ run(function()
 	    	local target = aimPoint()
 	    	if not target then return end
 	
+	    	local origin = entitylib.character.RootPart.Position
+	    	local direction = launchDirection(origin, target, cannon)
+	    	if not direction then
+	    		if on(OutOfRangeNotify) and os.clock() - lastRangeNotice > 3 then
+	    			lastRangeNotice = os.clock()
+	    			notif('DaveyAim', 'Out of range - the cannon reaches about 200 studs on the level', 3, 'warning')
+	    		end
+	    		return
+	    	end
+	
 	    	if AimMode.Value == 'Legit' then
-	    		-- The prompts the game itself binds, held for as long as it asks, so the whole
-	    		-- exchange is the one a player produces.
+	    		-- The prompts the game itself binds, held for as long as it asks, with the camera
+	    		-- turned along the launch - the game aims by where the camera faces.
 	    		local aim = cannon:FindFirstChild('AimPrompt')
 	    		if not aim then return end
 	
@@ -13652,9 +13786,11 @@ run(function()
 	
 	    		local until_ = tick() + 0.3
 	    		repeat
-	    			gameCamera.CFrame = gameCamera.CFrame:Lerp(CFrame.lookAt(gameCamera.CFrame.Position, target), 22 * runService.PostSimulation:Wait())
+	    			local position = gameCamera.CFrame.Position
+	    			gameCamera.CFrame = gameCamera.CFrame:Lerp(CFrame.lookAt(position, position + direction), 22 * runService.PostSimulation:Wait())
 	    			sendAim(cannon, gameCamera.CFrame.LookVector)
 	    		until tick() > until_
+	    		sendAim(cannon, direction)
 	
 	    		local stop = cannon:FindFirstChild('StopAimingPrompt')
 	    		if stop then
@@ -13665,31 +13801,35 @@ run(function()
 	    		if on(Launch) then
 	    			local fire = cannon:FindFirstChild('LaunchSelfPrompt')
 	    			if fire then
+	    				pendingTarget, pendingCannon = target, cannon
 	    				fire:InputHoldBegin()
 	    				task.wait(fire.HoldDuration + runService.PostSimulation:Wait())
+	    				task.wait(0.5)
+	    				pendingTarget, pendingCannon = nil, nil
 	    			end
 	    		end
 	    	else
-	    		sendAim(cannon, CFrame.lookAt(cannon.Position, target).LookVector)
+	    		sendAim(cannon, direction)
 	    		task.wait(0.3)
 	    		if on(Launch) then
+	    			pendingTarget, pendingCannon = target, cannon
 	    			bedwars.CannonHandController:launchSelf(cannon)
+	    			pendingTarget, pendingCannon = nil, nil
 	    		end
 	    	end
 	    end
 	
 	    DaveyAim = vain.Categories.Kit:CreateModule({
 	    	Name = 'DaveyAim',
-	    	Tooltip = 'Aims the nearest cannon and fires it',
+	    	Tooltip = 'Fires you from the nearest cannon to land exactly where you point',
 	    	Function = function(call)
-	    		if not call then return end
+	    		if not call then
+	    			removeLaunchHook()
+	    			return
+	    		end
+	    		installLaunchHook()
 	
-	    		--[[
-	    			Once behaves as a button rather than a switch: it takes the shot and then
-	    			un-latches itself, so the module reads as an action you press. Deferred
-	    			because toggling from inside the toggle's own handler is re-entrant, and
-	    			doing it directly leaves the state disagreeing with the button.
-	    		]]
+	    		-- Once behaves as a button: it takes the shot and then un-latches itself.
 	    		if Activation ~= nil and Activation.Value == 'Once' then
 	    			pcall(aimAndFire)
 	    			task.defer(function()
@@ -13709,28 +13849,38 @@ run(function()
 	    Activation = DaveyAim:CreateDropdown({
 	    	Name = 'Activation',
 	    	Tooltip = 'Whether it keeps firing or takes a single shot',
-	    	List = {'Continuous', 'Once'},
-	    	Default = 'Continuous',
+	    	List = {'Once', 'Continuous'},
+	    	Default = 'Once',
 	    	Function = function(value)
-	    		-- Nothing to wait between when there is only one shot.
 	    		if Delay and Delay.Object then
 	    			Delay.Object.Visible = value == 'Continuous'
 	    		end
 	    	end,
-	    	ItemTooltips = {
-	    		Continuous = 'Keeps aiming and firing for as long as it is switched on',
+	    	Tooltips = {
 	    		Once = 'Fires a single shot when you switch it on, then switches itself back off',
+	    		Continuous = 'Keeps aiming and firing for as long as it is switched on',
 	    	}
 	    })
 	    AimAt = DaveyAim:CreateDropdown({
 	    	Name = 'Aim At',
-	    	Tooltip = 'What the cannon is pointed at',
-	    	List = {'Nearest Enemy', 'Mouse', 'Camera'},
-	    	Default = 'Nearest Enemy',
-	    	ItemTooltips = {
-	    		['Nearest Enemy'] = 'Finds a player to fire at, which is what makes this automatic',
-	    		Mouse = 'Fires wherever your cursor is pointing',
-	    		Camera = 'Fires wherever the camera is looking',
+	    	Tooltip = 'Where to land',
+	    	List = {'Mouse', 'Camera', 'Nearest Enemy'},
+	    	Default = 'Mouse',
+	    	Tooltips = {
+	    		Mouse = 'Lands you on the spot under your cursor',
+	    		Camera = 'Lands you where the camera is looking',
+	    		['Nearest Enemy'] = 'Lands you on the nearest player',
+	    	}
+	    })
+	    Arc = DaveyAim:CreateDropdown({
+	    	Name = 'Arc',
+	    	Tooltip = 'Which of the two arcs onto the spot to fly',
+	    	List = {'Auto', 'Low', 'High'},
+	    	Default = 'Auto',
+	    	Tooltips = {
+	    		Auto = 'The low arc, or the high one when something is in the way',
+	    		Low = 'Flatter and quicker',
+	    		High = 'Over walls, but slower and more exposed',
 	    	}
 	    })
 	    AimMode = DaveyAim:CreateDropdown({
@@ -13738,14 +13888,14 @@ run(function()
 	    	Tooltip = 'How the cannon is aimed',
 	    	List = {'Fast', 'Legit'},
 	    	Default = 'Fast',
-	    	ItemTooltips = {
+	    	Tooltips = {
 	    		Fast = 'Sends the aim straight to the server and launches',
 	    		Legit = 'Holds the prompts and turns the camera the way a player would',
 	    	}
 	    })
 	    SearchRange = DaveyAim:CreateSlider({
 	    	Name = 'Search Range',
-	    	Tooltip = 'How far to look for one of your cannons (default 20)',
+	    	Tooltip = 'How far to look for one of your cannons',
 	    	Min = 1,
 	    	Max = 60,
 	    	Default = 20,
@@ -13755,13 +13905,14 @@ run(function()
 	    })
 	    Delay = DaveyAim:CreateSlider({
 	    	Name = 'Delay',
-	    	Tooltip = 'Wait between shots (default 1)',
+	    	Tooltip = 'Wait between shots in Continuous',
 	    	Min = 0.1,
 	    	Max = 5,
 	    	Default = 1,
 	    	Decimal = 10,
 	    	Suffix = 'sec',
-	    	Darker = true
+	    	Darker = true,
+	    	Visible = false
 	    })
 	    Launch = DaveyAim:CreateToggle({
 	    	Name = 'Launch',
@@ -13770,8 +13921,13 @@ run(function()
 	    })
 	    AvoidPowdered = DaveyAim:CreateToggle({
 	    	Name = 'Avoid Powdered',
-	    	Tooltip = 'Waits for the Powdered effect to lapse before launching again. Each launch stacks it for 20 damage up to 60, and it clears seven seconds after the last one',
+	    	Tooltip = 'Waits for Powdered to lapse before launching again',
 	    	Darker = true,
+	    	Default = true
+	    })
+	    OutOfRangeNotify = DaveyAim:CreateToggle({
+	    	Name = 'Range Warning',
+	    	Tooltip = 'Tells you when the spot is out of the cannon\'s reach',
 	    	Default = true
 	    })
 	end)
