@@ -8338,11 +8338,28 @@ run(function()
 	--[[
 		The kits someone played in their last matches, from their match history.
 	
-		It is the same history the player profile shows, asked for the same way -
-		RequestProfileData with the player - and each match in it lists every player with the
-		kit they played under bedwars.kit. Asked for once per player and kept for the session;
-		the draft screen asks for everyone at once, so the requests are spread out a little.
+		Asked for the way the Match History app does it - RequestMatchHistory with the user id
+		as text - which answers for any player, private profiles included. The profile's own
+		history (RequestProfileData) is only the fallback, as it comes back empty when the
+		profile is friends only or hidden. Each match lists every player with the kit they
+		played under bedwars.kit. Asked for once per player and kept for the session; the draft
+		screen asks for everyone at once, so the requests are spread out a little.
 	]]
+	local function requestMatches(player)
+		local ok, data = pcall(function()
+			return bedwars.Client:Get('RequestMatchHistory'):CallServer(tostring(player.UserId))
+		end)
+		if ok and type(data) == 'table' and type(data.matchHistory) == 'table' and #data.matchHistory > 0 then
+			return data.matchHistory
+		end
+		ok, data = pcall(function()
+			return bedwars.Client:Get('RequestProfileData'):CallServer(player)
+		end)
+		if ok and type(data) == 'table' and type(data.matchHistory) == 'table' then
+			return data.matchHistory
+		end
+	end
+	
 	local historyCache, historyWaiters = {}, {}
 	local historyQueue = 0
 	
@@ -8363,11 +8380,9 @@ run(function()
 		task.delay(delay, function()
 			historyQueue = math.max(historyQueue - 1, 0)
 			local kits = {}
-			local ok, data = pcall(function()
-				return bedwars.Client:Get('RequestProfileData'):CallServer(player)
-			end)
-			if ok and type(data) == 'table' and type(data.matchHistory) == 'table' then
-				local matches = table.clone(data.matchHistory)
+			local history = requestMatches(player)
+			if history then
+				local matches = table.clone(history)
 				table.sort(matches, function(a, b)
 					return (tonumber(a.matchStartTime) or 0) > (tonumber(b.matchStartTime) or 0)
 				end)
@@ -18767,9 +18782,6 @@ run(function()
 	    local PullAnimationToggle, MinigameAnimationToggle, LegitToggle
 	    local BlacklistOption, Blacklist
 	    local AutoCast, AutoCastDelay, CastAtShoals, ShoalRange
-	    -- Filled in by the fish group section further down, which keeps the tiers the shoal
-	    -- spawn event reports; the casting code above it is what asks.
-	    local shoalTier
 	    local SpyToggle, Teammates, GoldNotify, SharkNotify, LootWhitelist
 	    local FishGroupESP
 	
@@ -19257,9 +19269,8 @@ run(function()
 	
 	        The bobber falls fast for how slowly it flies, so pointing straight at a shoal lands
 	        short; the launch is solved as a ballistic shot onto the shoal instead, and taken
-	        only if that arc is clear too. Shark shoals come first, then the nearest.
+	        only if that arc is clear too. The nearest shoal is tried first.
 	    ]]
-	    local TIER_RANK = {[2] = 4, [3] = 3, [1] = 2, [0] = 1}
 	
 	    --[[
 	        The launch velocity that lands a bobber on a point, with a clear path.
@@ -19292,8 +19303,8 @@ run(function()
 	        return part and part.Position or nil
 	    end
 	
-	    -- The best shoal in range with a clear shot onto its centre: shark shoals first, then
-	    -- the nearest. Returns the centre to aim for, and the shoal.
+	    -- The nearest shoal in range with a clear shot onto its centre. Returns the centre to
+	    -- aim for, and the shoal.
 	    local function findShoal()
 	        if not (entitylib.isAlive and on(CastAtShoals)) then return end
 	
@@ -19306,16 +19317,12 @@ run(function()
 	                if centre then
 	                    local flat = (centre - origin) * Vector3.new(1, 0, 1)
 	                    if flat.Magnitude <= ShoalRange.Value then
-	                        local tier = shoalTier and shoalTier(centre)
-	                        local big = child.Name:lower():find('two', 1, true) ~= nil
-	                        local rank = (tier and TIER_RANK[tier]) or (big and 4 or 1)
-	                        candidates[#candidates + 1] = {model = child, point = centre, rank = rank, distance = flat.Magnitude}
+	                        candidates[#candidates + 1] = {model = child, point = centre, distance = flat.Magnitude}
 	                    end
 	                end
 	            end
 	        end
 	        table.sort(candidates, function(a, b)
-	            if a.rank ~= b.rank then return a.rank > b.rank end
 	            return a.distance < b.distance
 	        end)
 	
@@ -19603,8 +19610,6 @@ run(function()
 	        end
 	        return bestTier
 	    end
-	
-	    shoalTier = tierNear
 	
 	    local function clearFishGroups()
 	        for pond, marker in groupMarkers do
