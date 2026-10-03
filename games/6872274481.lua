@@ -651,6 +651,32 @@ do
 	end
 end
 
+--[[
+	The void height, shared: AntiFall's floor when it has one, otherwise 2 studs under the
+	lowest block with nothing on top of it. Walking every block is the costly part, so it
+	is worked out once for everything that needs it and kept for 10 seconds.
+]]
+local voidHeightCache, voidHeightAt = nil, 0
+local function getVoidHeight()
+	if AntiFallPart and AntiFallPart.Parent then
+		return AntiFallPart.Position.Y
+	end
+	if os.clock() - voidHeightAt < 10 then return voidHeightCache end
+	voidHeightAt = os.clock()
+	local ok, low = pcall(function()
+		local lowest = math.huge
+		for _, pos in bedwars.BlockController:getStore():getAllBlockPositions() do
+			pos *= 3
+			if pos.Y < lowest and not getPlacedBlock(pos + Vector3.new(0, 3, 0)) then
+				lowest = pos.Y
+			end
+		end
+		return lowest
+	end)
+	voidHeightCache = ok and low ~= math.huge and (low - 2) or voidHeightCache
+	return voidHeightCache
+end
+
 local matchHistory = {cache = {}, waiting = {}, queued = 0}
 do
 	local TIMEOUT = 6
@@ -7352,9 +7378,27 @@ run(function()
 		return setting ~= nil and setting.Enabled
 	end
 	
+	--[[
+		The game's labels, found once and remembered: a recursive search for each of them on
+		every generator every frame was the costly part of this module. A label that is not
+		there yet is looked for again every couple of seconds rather than every frame.
+	]]
+	local labelCache = setmetatable({}, {__mode = 'k'})
 	local function textOf(model, name)
-		local label = model:FindFirstChild(name, true)
-		return label and label:IsA('TextLabel') and label.Text or nil
+		local cache = labelCache[model]
+		if not cache then
+			cache = {}
+			labelCache[model] = cache
+		end
+		local label = cache[name]
+		if label and not label:IsDescendantOf(model) then label = nil end
+		if not label and os.clock() >= (cache[name .. '#retry'] or 0) then
+			label = model:FindFirstChild(name, true)
+			label = label and label:IsA('TextLabel') and label or nil
+			if not label then cache[name .. '#retry'] = os.clock() + 2 end
+		end
+		cache[name] = label
+		return label and label.Text or nil
 	end
 	
 	local function iconOf(itemType)
@@ -7708,7 +7752,11 @@ run(function()
 				for _, part in collectionService:GetTagged('Generator') do add(part) end
 				GeneratorESP:Clean(collectionService:GetInstanceAddedSignal('Generator'):Connect(add))
 				GeneratorESP:Clean(collectionService:GetInstanceRemovedSignal('Generator'):Connect(remove))
+				-- Ten times a second is plenty: the timers only change once a second.
+				local lastUpdate = 0
 				GeneratorESP:Clean(runService.RenderStepped:Connect(function()
+					if os.clock() - lastUpdate < 0.1 then return end
+					lastUpdate = os.clock()
 					pcall(update)
 				end))
 			else
@@ -10858,6 +10906,7 @@ run(function()
 	local PartyFinder
 	local Matches, Required, ShowPanel, Teammates, Corner, ShowLeaderboard, Source
 	local badges = setmetatable({}, {__mode = 'k'})
+	local cachedTabList
 	local panel, list, rows = nil, nil, {}
 	local mates = {}
 	-- What came back, for the panel to explain an empty result: histories answered, and
@@ -11111,8 +11160,13 @@ run(function()
 	
 	local function updateLeaderboard()
 		local gui = lplr:FindFirstChildOfClass('PlayerGui')
-		local tabList = gui and gui:FindFirstChild('TabListFrame', true)
-		if not tabList then return end
+		-- Found once and kept while it exists, rather than searching all of PlayerGui each time.
+		if not (cachedTabList and cachedTabList:IsDescendantOf(gui or game)) then
+			cachedTabList = gui and gui:FindFirstChild('TabListFrame', true)
+		end
+		local tabList = cachedTabList
+		-- Only while the tab list is actually up; nothing to number otherwise.
+		if not (tabList and tabList:IsA('GuiObject') and tabList.Visible and tabList.AbsoluteSize.X > 0) then return end
 	
 		local byName = {}
 		for _, player in playersService:GetPlayers() do
@@ -11446,31 +11500,7 @@ run(function()
 		return setting ~= nil and setting.Enabled
 	end
 	
-	--[[
-		The void height: AntiFall's floor when it has one, otherwise worked out the same way -
-		2 studs under the lowest block with nothing on top of it. Read from the local block
-		store, kept for 5 seconds as walking every block each frame would be wasteful.
-	]]
-	local voidHeight, voidCheckedAt = nil, 0
-	local function getVoidHeight()
-		if AntiFallPart and AntiFallPart.Parent then
-			return AntiFallPart.Position.Y
-		end
-		if os.clock() - voidCheckedAt < 5 then return voidHeight end
-		voidCheckedAt = os.clock()
-		local ok, low = pcall(function()
-			local lowest = math.huge
-			for _, pos in bedwars.BlockController:getStore():getAllBlockPositions() do
-				pos *= 3
-				if pos.Y < lowest and not getPlacedBlock(pos + Vector3.new(0, 3, 0)) then
-					lowest = pos.Y
-				end
-			end
-			return lowest
-		end)
-		voidHeight = ok and low ~= math.huge and (low - 2) or voidHeight
-		return voidHeight
-	end
+	-- The void height comes from the shared getVoidHeight in the game base.
 	
 	local function colorOf(setting, fallback)
 		if not setting then return fallback end
@@ -31978,31 +32008,7 @@ run(function()
 	groundParams.FilterType = Enum.RaycastFilterType.Exclude
 	groundParams.RespectCanCollide = true
 	
-	--[[
-		The void height, the same line AntiFall and Trajectories use: AntiFall's floor when it
-		has one, otherwise 2 studs under the lowest block with nothing on top of it. Read from
-		the local block store and kept for 5 seconds.
-	]]
-	local voidHeight, voidCheckedAt = nil, 0
-	local function getVoidHeight()
-		if AntiFallPart and AntiFallPart.Parent then
-			return AntiFallPart.Position.Y
-		end
-		if os.clock() - voidCheckedAt < 5 then return voidHeight end
-		voidCheckedAt = os.clock()
-		local ok, low = pcall(function()
-			local lowest = math.huge
-			for _, pos in bedwars.BlockController:getStore():getAllBlockPositions() do
-				pos *= 3
-				if pos.Y < lowest and not getPlacedBlock(pos + Vector3.new(0, 3, 0)) then
-					lowest = pos.Y
-				end
-			end
-			return lowest
-		end)
-		voidHeight = ok and low ~= math.huge and (low - 2) or voidHeight
-		return voidHeight
-	end
+	-- The void height comes from the shared getVoidHeight in the game base.
 	
 	-- Where each player last stood on something: a short ray down from their root finds a
 	-- block under their feet. A few rays every 0.3 seconds, not every frame.
