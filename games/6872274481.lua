@@ -3737,15 +3737,13 @@ end)
 run(function()
 	local StrafeCooldown
 	local Duration
+	local ItemCooldown
 	local BarColor
 	local old, hook
+	local cooldownController, oldCooldown, cooldownHook
 	local screen, bar, fill, label
 	local resetAt = 0
-	
-	-- The weapons whose shots start the timer, matched by a word in the tool name so every
-	-- skin and variant is covered - tactical and flower headhunters, crossbow reskins - without
-	-- a list to keep up to date. Anything else in hand is left alone.
-	local WEAPONS = {'crossbow', 'headhunter'}
+	local length = 1
 	
 	local function buildBar()
 		screen = Instance.new('Frame')
@@ -3802,7 +3800,6 @@ run(function()
 	local function step()
 		if not (screen and Duration) then return end
 	
-		local length = math.max(Duration.Value, 0.05)
 		local remaining = resetAt - tick()
 		if remaining <= 0 then
 			screen.Visible = false
@@ -3814,19 +3811,35 @@ run(function()
 		label.Text = string.format('%.1fs', remaining)
 	end
 	
-	local function heldWeapon()
+	-- Anything in hand that fires a projectile - bows, crossbows, headhunters, fireballs,
+	-- pearls, kit items - with the id the game puts its shot cooldown under
+	-- (ProjectileSourceController:getCooldownId).
+	local function heldSource()
 		local tool = store.hand and store.hand.tool
-		if not tool then return false end
-		local name = tool.Name:lower()
-		for _, word in WEAPONS do
-			if name:find(word, 1, true) then return true end
-		end
-		return false
+		local meta = tool and bedwars.ItemMeta[tool.Name]
+		local source = meta and meta.projectileSource
+		if not source then return nil end
+		return source, source.cooldownId or (tool.Name .. '-proj-source')
+	end
+	
+	local function start(seconds)
+		length = math.max(seconds, 0.05)
+		resetAt = tick() + length
+	end
+	
+	local function getCooldownController()
+		if cooldownController then return cooldownController end
+		local ok, controller = pcall(function()
+			local Flamework = require(replicatedStorage['rbxts_include']['node_modules']['@flamework'].core.out).Flamework
+			return Flamework.resolveDependency('@easy-games/game-core:client/controllers/cooldown/cooldown-controller@CooldownController')
+		end)
+		cooldownController = ok and controller or nil
+		return cooldownController
 	end
 	
 	StrafeCooldown = vain.Categories.Combat:CreateModule({
 		Name = 'Strafe Cooldown',
-		Tooltip = 'Shows a cooldown bar that resets each time you fire your crossbow or headhunter',
+		Tooltip = 'Shows a cooldown bar that resets each time you fire',
 		Function = function(callback)
 			if callback then
 				buildBar()
@@ -3838,21 +3851,44 @@ run(function()
 					launchProjectileWithValues is the fire path every projectile takes - separate
 					from the aim-value function ProjectileAimbot wraps, so the two do not tread on
 					each other - and it runs once per projectile that actually leaves. Gated to the
-					crossbow so nothing else in hand starts the timer, and guarded so a fault in
-					here can never take the game's own shooting down with it.
+					projectile items so nothing else in hand starts the timer, and guarded so a
+					fault in here can never take the game's own shooting down with it.
 				]]
-				old = bedwars.ProjectileController.launchProjectileWithValues
+				local original = bedwars.ProjectileController.launchProjectileWithValues
+				old = original
 				hook = function(...)
-					if StrafeCooldown.Enabled then
+					if StrafeCooldown.Enabled and not ItemCooldown.Enabled then
 						pcall(function()
-							if heldWeapon() then
-								resetAt = tick() + math.max(Duration.Value, 0.05)
-							end
+							if heldSource() then start(Duration.Value) end
 						end)
 					end
-					return old(...)
+					return original(...)
 				end
 				bedwars.ProjectileController.launchProjectileWithValues = hook
+	
+				--[[
+					Item Cooldown takes the time from the game itself: after every shot it puts the
+					weapon on cooldown with CooldownController:setOnCooldown(id, seconds), the
+					seconds already through the kit modifiers and overrides - so the bar runs
+					exactly as long as the weapon is really waiting.
+				]]
+				local controller = getCooldownController()
+				local originalCooldown = controller and controller.setOnCooldown
+				if type(originalCooldown) == 'function' then
+					oldCooldown = originalCooldown
+					cooldownHook = function(self, id, seconds, ...)
+						if StrafeCooldown.Enabled and ItemCooldown.Enabled then
+							pcall(function()
+								local source, cooldownId = heldSource()
+								if source and id == cooldownId and type(seconds) == 'number' and seconds > 0 then
+									start(seconds)
+								end
+							end)
+						end
+						return originalCooldown(self, id, seconds, ...)
+					end
+					controller.setOnCooldown = cooldownHook
+				end
 			else
 				-- Restored only when ours is still the installed one, so a wrapper that captured
 				-- ours keeps working rather than being cut out.
@@ -3860,9 +3896,20 @@ run(function()
 					bedwars.ProjectileController.launchProjectileWithValues = old
 				end
 				hook = nil
+				if cooldownHook and cooldownController and cooldownController.setOnCooldown == cooldownHook then
+					cooldownController.setOnCooldown = oldCooldown
+				end
+				cooldownHook = nil
 				resetAt = 0
 				clearBar()
 			end
+		end
+	})
+	ItemCooldown = StrafeCooldown:CreateToggle({
+		Name = 'Item Cooldown',
+		Tooltip = 'Uses each item\'s own cooldown',
+		Function = function(callback)
+			if Duration and Duration.Object then Duration.Object.Visible = not callback end
 		end
 	})
 	Duration = StrafeCooldown:CreateSlider({
