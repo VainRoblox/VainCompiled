@@ -6992,11 +6992,11 @@ run(function()
 	--[[
 		Generator ESP.
 	
-		Every diamond and emerald generator on the map is a GlobalOreGeneratorModel carrying the
-		game's own label - "Diamond Generator [10]", the seconds to the next spawn in brackets.
-		Base generators are parts tagged Generator, with an Id, a GeneratorLevel and the game's
-		TeamOreGeneratorApp label (Title and Countdown) under them. The game hides those labels a
-		short way off. This reads them and shows them over every generator, through walls and at any
+		Every generator on the map - diamond, emerald and the ones at each base - is a part tagged
+		Generator, with an Id attribute naming what it makes ("diamond_1"), a GeneratorLevel,
+		and the game's own label under it in RoactTree.TeamOreGeneratorApp: a Title and a
+		Countdown with the seconds to the next spawn. The game hides those labels a short way
+		off. This reads them and shows them over every generator, through walls and at any
 		distance, together with how many of its resource are piled up on it waiting to be taken.
 	]]
 	local GeneratorESP
@@ -7022,26 +7022,23 @@ run(function()
 		return label and label:IsA('TextLabel') and label.Text or nil
 	end
 	
-	-- Which kind of generator this is, from its own label.
-	local function kindOf(model)
-		local countdown = textOf(model, 'Countdown')
-		if countdown then
-			local lower = countdown:lower()
-			if lower:find('diamond', 1, true) then return 'diamond' end
-			if lower:find('emerald', 1, true) then return 'emerald' end
+	-- What a generator makes, from its Id, or its label if the Id says nothing. Nil until
+	-- either has loaded in.
+	local function kindOf(part)
+		local id = tostring(part:GetAttribute('Id') or ''):lower()
+		local title = (textOf(part, 'Title') or textOf(part, 'Countdown') or ''):lower()
+		for _, text in {id, title} do
+			if text:find('diamond', 1, true) then return 'diamond' end
+			if text:find('emerald', 1, true) then return 'emerald' end
 		end
-		if textOf(model, 'Timer') then return 'team' end
+		if id ~= '' or part:FindFirstChild('TeamGenMain', true) then return 'team' end
 		return nil
 	end
 	
 	-- Seconds to the next spawn, as the game's own label has it.
-	local function secondsOf(model, kind)
-		if kind == 'team' then
-			local text = textOf(model, 'Countdown') or textOf(model, 'Timer')
-			return text and tonumber(text:match('%[([%d%.]+)%]') or text:match('([%d%.]+)')) or nil
-		end
-		local text = textOf(model, 'Countdown')
-		return text and tonumber(text:match('%[(%d+)%]')) or nil
+	local function secondsOf(model)
+		local text = textOf(model, 'Countdown') or textOf(model, 'Timer')
+		return text and tonumber(text:match('%[([%d%.]+)%]') or text:match('([%d%.]+)')) or nil
 	end
 	
 	local function enabledKind(kind)
@@ -7059,20 +7056,12 @@ run(function()
 		end
 	end
 	
-	local function add(model)
-		if generators[model] then return end
-		if not (model:IsA('Model') and model.Name == 'GlobalOreGeneratorModel') and not collectionService:HasTag(model, 'Generator') then return end
-		local adornee
-		if model:IsA('BasePart') then
-			adornee = model
-		else
-			adornee = model:FindFirstChild('GeneratorAdornee') or model.PrimaryPart or model:FindFirstChildWhichIsA('BasePart', true)
-		end
-		if not adornee then return end
+	local function add(part)
+		if generators[part] or not part:IsA('BasePart') then return end
 	
 		local billboard = Instance.new('BillboardGui')
 		billboard.Name = 'GeneratorESP'
-		billboard.Adornee = adornee
+		billboard.Adornee = part
 		billboard.Size = UDim2.fromOffset(150, 24)
 		billboard.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
 		billboard.AlwaysOnTop = true
@@ -7088,19 +7077,7 @@ run(function()
 		label.TextColor3 = Color3.new(1, 1, 1)
 		label.Parent = billboard
 	
-		generators[model] = {billboard = billboard, adornee = adornee}
-	end
-	
-	-- Base generators: every Generator part that is not one of the diamond or emerald ones,
-	-- which come in through their GlobalOreGeneratorModel instead.
-	local function addTeam(part)
-		if generators[part] or not part:IsA('BasePart') then return end
-		local id = tostring(part:GetAttribute('Id') or ''):lower()
-		if id:find('diamond', 1, true) or id:find('emerald', 1, true) then return end
-		local app = part:FindFirstChild('TeamOreGeneratorApp', true)
-		if app and app:FindFirstChild('GlobalOreGenerator') then return end
-		add(part)
-		if generators[part] then generators[part].kind = 'team' end
+		generators[part] = {billboard = billboard, adornee = part}
 	end
 	
 	-- How many of each generator's resource are lying on it. Item drops carry the CollectionService
@@ -7130,6 +7107,42 @@ run(function()
 		end
 	end
 	
+	local function refresh(model, entry, here, size)
+		entry.kind = entry.kind or kindOf(model)
+		local kind = entry.kind
+		local billboard = entry.billboard
+		local inRange = not here or (entry.adornee.Position - here).Magnitude <= Range.Value
+	
+		if kind and enabledKind(kind) and inRange then
+			local parts = {}
+			local seconds = secondsOf(model)
+			local name = kind == 'diamond' and 'Diamond' or kind == 'emerald' and 'Emerald' or (textOf(model, 'Title') or 'Base Generator')
+			parts[1] = name
+			if seconds then
+				parts[#parts + 1] = (kind == 'team' and string.format('%.1fs', seconds) or (seconds .. 's'))
+			end
+			if on(ShowItems) and piles[model] and piles[model] > 0 then
+				parts[#parts + 1] = 'x' .. piles[model]
+			end
+			if on(ShowTier) then
+				local tier = textOf(model, 'GenTier') or textOf(model, 'Tier')
+				local level = model:GetAttribute('GeneratorLevel')
+				if tier then
+					parts[#parts + 1] = tier:upper()
+				elseif level then
+					parts[#parts + 1] = 'T' .. level
+				end
+			end
+			billboard.Label.Text = table.concat(parts, '  ')
+			billboard.Label.TextColor3 = KINDS[kind].color
+			billboard.Label.TextSize = size
+			billboard.Size = UDim2.fromOffset(math.max(150, size * 14), size + 10)
+			billboard.Enabled = true
+		else
+			billboard.Enabled = false
+		end
+	end
+	
 	local function update()
 		if on(ShowItems) then scanPiles() end
 		local here = entitylib.isAlive and entitylib.character.RootPart.Position
@@ -7140,39 +7153,9 @@ run(function()
 				remove(model)
 				continue
 			end
-			entry.kind = entry.kind or kindOf(model)
-			local kind = entry.kind
-			local billboard = entry.billboard
-			local inRange = not here or (entry.adornee.Position - here).Magnitude <= Range.Value
-	
-			if kind and enabledKind(kind) and inRange then
-				local parts = {}
-				local seconds = secondsOf(model, kind)
-				local name = kind == 'diamond' and 'Diamond' or kind == 'emerald' and 'Emerald' or (textOf(model, 'Title') or 'Base Generator')
-				parts[1] = name
-				if seconds then
-					parts[#parts + 1] = (kind == 'team' and string.format('%.1fs', seconds) or (seconds .. 's'))
-				end
-				if on(ShowItems) and piles[model] and piles[model] > 0 then
-					parts[#parts + 1] = 'x' .. piles[model]
-				end
-				if on(ShowTier) then
-					local tier = textOf(model, 'GenTier') or textOf(model, 'Tier')
-					local level = model:GetAttribute('GeneratorLevel')
-					if tier then
-						parts[#parts + 1] = tier:upper()
-					elseif level then
-						parts[#parts + 1] = 'T' .. level
-					end
-				end
-				billboard.Label.Text = table.concat(parts, '  ')
-				billboard.Label.TextColor3 = KINDS[kind].color
-				billboard.Label.TextSize = size
-				billboard.Size = UDim2.fromOffset(math.max(150, size * 14), size + 10)
-				billboard.Enabled = true
-			else
-				billboard.Enabled = false
-			end
+			-- Each on its own, so one generator going wrong does not blank all the others.
+			local ok = pcall(refresh, model, entry, here, size)
+			if not ok then entry.billboard.Enabled = false end
 		end
 	end
 	
@@ -7181,23 +7164,9 @@ run(function()
 		Tooltip = 'Shows generator timers and resource piles through walls',
 		Function = function(callback)
 			if callback then
-				-- Generators are part of the map, so they are found once and then watched for.
-				task.spawn(function()
-					for _, descendant in workspace:GetDescendants() do
-						if descendant.Name == 'GlobalOreGeneratorModel' then add(descendant) end
-					end
-				end)
-				GeneratorESP:Clean(workspace.DescendantAdded:Connect(function(descendant)
-					if descendant.Name == 'GlobalOreGeneratorModel' then
-						task.defer(add, descendant)
-					end
-				end))
-				for _, part in collectionService:GetTagged('Generator') do
-					task.spawn(addTeam, part)
-				end
-				GeneratorESP:Clean(collectionService:GetInstanceAddedSignal('Generator'):Connect(function(part)
-					task.defer(addTeam, part)
-				end))
+				for _, part in collectionService:GetTagged('Generator') do add(part) end
+				GeneratorESP:Clean(collectionService:GetInstanceAddedSignal('Generator'):Connect(add))
+				GeneratorESP:Clean(collectionService:GetInstanceRemovedSignal('Generator'):Connect(remove))
 				GeneratorESP:Clean(runService.RenderStepped:Connect(function()
 					pcall(update)
 				end))
