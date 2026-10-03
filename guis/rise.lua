@@ -2647,7 +2647,15 @@ function mainapi:SaveOptions(object, savedoptions)
 end
 
 function mainapi:Uninject()
-	mainapi:Save()
+	-- Overlays and their placeholders off first, and the save protected, so nothing that
+	-- fails below can leave a card or a placeholder frozen on screen with the old GUI.
+	pcall(setEditPlaceholders, false)
+	for _, v in (self.Legit and self.Legit.Modules or {}) do
+		pcall(function()
+			if v.Children then v.Children.Visible = false end
+		end)
+	end
+	pcall(function() mainapi:Save() end)
 	mainapi.Loaded = nil
 	for _, v in self.Modules do
 		if v.Enabled then
@@ -2675,8 +2683,8 @@ function mainapi:Uninject()
 		setthreadidentity(8)
 		clickgui.Visible = false
 	end
-	mainapi.gui:ClearAllChildren()
-	mainapi.gui:Destroy()
+	pcall(function() mainapi.gui:ClearAllChildren() end)
+	pcall(function() mainapi.gui:Destroy() end)
 	table.clear(mainapi.Connections)
 	table.clear(mainapi.Libraries)
 	loopClean(mainapi)
