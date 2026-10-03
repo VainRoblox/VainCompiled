@@ -10884,7 +10884,10 @@ run(function()
 		set it. A death with the team's bed already broken is a final kill: no respawn.
 	
 		The dead are listed on a small panel with the seconds until they are back, and
-		optionally marked where they fell. Nothing here asks the server for anything.
+		optionally marked where they fell. Someone who died in the void is marked at the last
+		solid ground they stood on - the edge they went off - instead of out in the void, or on
+		their team's bed if they were never seen on the ground. Nothing here asks the server
+		for anything.
 	]]
 	local RespawnTimers
 	local Teammates, ShowFinals, WorldMarkers, Corner, Background
@@ -10896,6 +10899,81 @@ run(function()
 	Folder.Parent = vain.gui
 	
 	local FINAL_HOLD = 6
+	local GROUND_CHECK = 0.3
+	local lastGround = {}
+	local lastGroundCheck = 0
+	
+	local groundParams = RaycastParams.new()
+	groundParams.FilterType = Enum.RaycastFilterType.Exclude
+	groundParams.RespectCanCollide = true
+	
+	--[[
+		The void height, the same line AntiFall and Trajectories use: AntiFall's floor when it
+		has one, otherwise 2 studs under the lowest block with nothing on top of it. Read from
+		the local block store and kept for 5 seconds.
+	]]
+	local voidHeight, voidCheckedAt = nil, 0
+	local function getVoidHeight()
+		if AntiFallPart and AntiFallPart.Parent then
+			return AntiFallPart.Position.Y
+		end
+		if os.clock() - voidCheckedAt < 5 then return voidHeight end
+		voidCheckedAt = os.clock()
+		local ok, low = pcall(function()
+			local lowest = math.huge
+			for _, pos in bedwars.BlockController:getStore():getAllBlockPositions() do
+				pos *= 3
+				if pos.Y < lowest and not getPlacedBlock(pos + Vector3.new(0, 3, 0)) then
+					lowest = pos.Y
+				end
+			end
+			return lowest
+		end)
+		voidHeight = ok and low ~= math.huge and (low - 2) or voidHeight
+		return voidHeight
+	end
+	
+	-- Where each player last stood on something: a short ray down from their root finds a
+	-- block under their feet. A few rays every 0.3 seconds, not every frame.
+	local function trackGround()
+		if os.clock() - lastGroundCheck < GROUND_CHECK then return end
+		lastGroundCheck = os.clock()
+		local ignore = {gameCamera, Folder}
+		for _, plr in playersService:GetPlayers() do
+			if plr.Character then ignore[#ignore + 1] = plr.Character end
+		end
+		groundParams.FilterDescendantsInstances = ignore
+		for _, entity in entitylib.List do
+			local player, root = entity.Player, entity.RootPart
+			if player and player ~= lplr and root and root.Parent and entity.Health > 0 then
+				local hit = workspace:Raycast(root.Position, Vector3.new(0, -6, 0), groundParams)
+				if hit then lastGround[player] = hit.Position end
+			end
+		end
+	end
+	
+	-- Their team's bed: the blanket is in the team colour.
+	local function bedOf(player)
+		if not player.Team then return nil end
+		local target = player.TeamColor.Color
+		for _, bed in collectionService:GetTagged('bed') do
+			local blanket = bed:FindFirstChild('Blanket') or bed:FindFirstChild('Covers')
+			if blanket and blanket:IsA('BasePart') then
+				local c = blanket.Color
+				if math.abs(c.R - target.R) + math.abs(c.G - target.G) + math.abs(c.B - target.B) < 0.1 then
+					return bed:GetPivot().Position
+				end
+			end
+		end
+		return nil
+	end
+	
+	-- Where to put the marker: where they died, unless that is out in the void.
+	local function markerPosition(player, died)
+		local void = getVoidHeight()
+		if not void or died.Y > void + 2 then return died end
+		return lastGround[player] or bedOf(player) or Vector3.new(died.X, void + 10, died.Z)
+	end
 	
 	local CORNERS = {
 		['Top Right'] = {Vector2.new(1, 0), UDim2.new(1, -12, 0, 60)},
@@ -10926,6 +11004,7 @@ run(function()
 		local player = playersService:GetPlayerFromCharacter(deathTable.entityInstance)
 		if not player or player == lplr then return end
 		forget(player)
+		trackGround()
 	
 		local team = player:GetAttribute('Team')
 		local final = team ~= nil and brokenbeds[team] ~= nil
@@ -10943,7 +11022,7 @@ run(function()
 			marker.AlwaysOnTop = true
 			marker.StudsOffsetWorldSpace = Vector3.new(0, 2, 0)
 			local anchor = Instance.new('Attachment')
-			anchor.WorldPosition = root.Position
+			anchor.WorldPosition = markerPosition(player, root.Position)
 			anchor.Parent = workspace.Terrain
 			marker.Adornee = anchor
 			marker.Destroying:Connect(function() anchor:Destroy() end)
@@ -11084,11 +11163,13 @@ run(function()
 					pcall(onDeath, deathTable)
 				end))
 				RespawnTimers:Clean(runService.RenderStepped:Connect(function()
+					pcall(trackGround)
 					pcall(update)
 				end))
 			else
 				for player in dead do forget(player) end
 				table.clear(rows)
+				table.clear(lastGround)
 				panel, list = nil, nil
 			end
 		end
