@@ -14069,47 +14069,49 @@ run(function()
 	--[[
 		Bed Alarm.
 	
-		Warns you when an enemy comes for your bed, in two stages: a Warning range further out
-		for someone heading your way, and a Danger range for someone who is actually there. It
-		says who (in their team's colour), how far, how soon they will arrive, and what they are
-		holding when it matters - a pearl, TNT, a fireball or something that breaks beds.
+		The game's own bed alarm team upgrade, without buying it - done locally, the way its
+		BedAlarmController does it:
 	
-		Better than the old one in the ways that decide whether you go back: people only passing
-		by are left out unless you ask for them, it keeps quiet while you are standing at your
-		bed yourself, it reads the threat in their hand, and it stops for good once your bed is
-		gone. Your bed is the one your own team is not allowed to break, the same attribute the
-		game and BedPlates use.
+		- an enemy within BedAlarmRadius (35 studs) of your bed sets it off;
+		- the game's alarm model (Assets.Effects.BedAlarm) spins 15 studs over the bed, its
+		  sides, bulb and glow flashing red and blue every half second, for
+		  BedAlarmTriggeredDuration (5 seconds);
+		- the alarm sound loops at the bed while you are near it, and the far version plays
+		  wherever you are when you are not;
+		- the intruder is highlighted red for PlayerHighlightDuration (10 seconds);
+		- and, if you want it, the game's own "[Bed Alarm]" message.
+	
+		Every one of those numbers is a setting here. Your bed is the one your own team is not
+		allowed to break (its Team<id>NoBreak attribute). It stops for good once the bed is gone.
 	]]
 	local BedAlarm
-	local WarnRange, DangerRange, OnlyApproaching, OnlyWhenAway, AwayDistance
-	local PearlCheck, PearlRange, ShowThreats, ShowKit, ShowDistance
-	local Repeat, RepeatDelay
-	local Highlight, HighlightColor
-	local Sound, SoundVolume, CustomSound, SoundId
+	local Radius, HeightLimit, MaxHeight, OnlyWhenAway, AwayDistance
+	local ShowModel, AlarmDuration, Repeat, RepeatDelay
+	local Sound, Volume, FarSound
+	local Highlight, HighlightDuration, HighlightColor
+	local GameMessage
 	local Folder = Instance.new('Folder')
+	Folder.Name = 'BedAlarm'
 	Folder.Parent = vain.gui
-	local state = {}
+	
+	local NEAR_SOUND_RANGE = 30
+	local alarm -- the active alarm: {model, sound, flash, endsAt}
 	local highlights = {}
+	local alerted = {} -- intruders already alarmed about, until they leave the radius
+	local lastTrigger = 0
 	local cachedBed, cachedAt = nil, 0
-	local lastSound = 0
-	local customSound
 	
 	local function on(setting)
 		return setting ~= nil and setting.Enabled
 	end
 	
-	local function myTeam()
-		local team = lplr:GetAttribute('Team')
-		return team ~= nil and tostring(team) or nil
-	end
-	
 	local function ownBed()
 		if cachedBed and cachedBed.Parent and os.clock() - cachedAt < 2 then return cachedBed end
 		cachedBed = nil
-		local team = myTeam()
-		if not team then return nil end
+		local team = lplr:GetAttribute('Team')
+		if team == nil then return nil end
 		for _, bed in collectionService:GetTagged('bed') do
-			if bed:GetAttribute('Team' .. team .. 'NoBreak') then
+			if bed:GetAttribute('Team' .. tostring(team) .. 'NoBreak') then
 				cachedBed, cachedAt = bed, os.clock()
 				return bed
 			end
@@ -14122,334 +14124,319 @@ run(function()
 		return ok and pivot.Position or nil
 	end
 	
-	local function displayName(itemType)
-		local meta = bedwars.ItemMeta[itemType]
-		return meta and meta.displayName or itemType
-	end
-	
-	-- What in their hand is a threat to a bed, or nil when nothing is.
-	local function threatOf(plr)
-		local inventory = store.inventories[plr]
-		local hand = inventory and inventory.hand
-		local itemType = type(hand) == 'table' and hand.itemType
-		if type(itemType) ~= 'string' then return nil end
-	
-		local lower = itemType:lower()
-		if lower:find('pearl', 1, true) or lower:find('fireball', 1, true) or lower:find('tnt', 1, true) then
-			return displayName(itemType), lower:find('pearl', 1, true) ~= nil
-		end
-		local meta = bedwars.ItemMeta[itemType]
-		if meta and meta.breakBlock then
-			return displayName(itemType), false
-		end
-	end
-	
-	local function kitOf(plr)
-		local kit = plr:GetAttribute('PlayingAsKit') or plr:GetAttribute('PlayingAsKits')
-		if type(kit) ~= 'string' or kit == '' or kit == 'none' then return nil end
-		local meta = bedwars.BedwarsKitMeta[kit]
-		return meta and meta.name or kit
-	end
-	
-	local function playAlarm()
-		if not on(Sound) or os.clock() - lastSound < 1.5 then return end
-		lastSound = os.clock()
-	
-		if on(CustomSound) and SoundId.Value ~= '' then
-			pcall(function()
-				customSound = customSound or Instance.new('Sound')
-				local id = SoundId.Value
-				customSound.SoundId = tonumber(id) and ('rbxassetid://' .. id) or id
-				customSound.Volume = SoundVolume.Value
-				game:GetService('SoundService'):PlayLocalSound(customSound)
-			end)
-			return
-		end
+	-- The game's colours for the two halves of the flash.
+	local function paint(model, red)
 		pcall(function()
-			bedwars.SoundManager:playSound(bedwars.SoundList.BED_ALARM, {volumeMultiplier = SoundVolume.Value})
+			local sides = model:FindFirstChild('Sides')
+			for _, child in (sides and sides:GetChildren() or {}) do
+				if child:IsA('BasePart') then
+					child.Color = red and Color3.fromRGB(226, 88, 88) or Color3.fromRGB(82, 124, 174)
+				end
+			end
+			local recolor = model:FindFirstChild('Recolor')
+			if not recolor then return end
+			recolor.Inner.Color = red and Color3.fromRGB(195, 70, 70) or Color3.fromRGB(33, 84, 185)
+			recolor.Outer.Color = red and Color3.fromRGB(188, 74, 74) or Color3.fromRGB(82, 124, 174)
+			recolor.Bulb.Color = red and Color3.fromRGB(195, 70, 70) or Color3.fromRGB(0, 16, 176)
+			recolor.Bulb.GlowAttachment.Glow.Color = ColorSequence.new(red and Color3.fromRGB(255, 0, 0) or Color3.fromRGB(0, 60, 255))
 		end)
 	end
 	
-	local function setHighlight(ent, level)
-		local highlight = highlights[ent]
-		if level > 0 and on(Highlight) and ent.Character then
-			if not (highlight and highlight.Parent) then
-				highlight = Instance.new('Highlight')
-				highlight.Name = 'BedAlarm'
-				highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-				highlight.Parent = Folder
-				highlights[ent] = highlight
-			end
-			local color = Color3.fromHSV(HighlightColor.Hue or 0, HighlightColor.Sat or 0.9, HighlightColor.Value or 1)
-			highlight.Adornee = ent.Character
-			highlight.FillColor = color
-			highlight.OutlineColor = color
-			-- Fainter while they are only heading your way, solid once they are at the bed.
-			highlight.FillTransparency = level == 2 and 0.45 or 0.75
-			highlight.OutlineTransparency = 0
-		elseif highlight then
-			highlight:Destroy()
-			highlights[ent] = nil
-		end
+	local function stopAlarm()
+		if not alarm then return end
+		if alarm.model then alarm.model:Destroy() end
+		if alarm.sound then pcall(function() alarm.sound:Stop() end) end
+		alarm = nil
 	end
 	
-	local function clearAll()
-		for ent in highlights do
-			setHighlight(ent, 0)
+	local function highlightIntruder(character)
+		local entry = highlights[character]
+		if not entry then
+			local highlight = Instance.new('Highlight')
+			highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			highlight.Adornee = character
+			highlight.Parent = Folder
+			entry = {highlight = highlight}
+			highlights[character] = entry
 		end
-		table.clear(state)
+		local color = Color3.fromHSV(HighlightColor.Hue, HighlightColor.Sat, HighlightColor.Value)
+		entry.highlight.FillColor = color
+		entry.highlight.OutlineColor = color
+		entry.highlight.FillTransparency = 1 - HighlightColor.Opacity
+		entry.highlight.OutlineTransparency = 0
+		entry.endsAt = os.clock() + HighlightDuration.Value
 	end
 	
-	local function announce(ent, level, distance, closing, threat)
-		local name = itemAlerts.playerName(ent.Player)
-		local text
-		if level == 2 then
-			text = name .. ' is at your bed'
-		else
-			text = name .. ' is heading for your bed'
-		end
+	local function gameMessage()
+		pcall(function()
+			local Flamework = require(replicatedStorage['rbxts_include']['node_modules']['@flamework'].core.out).Flamework
+			Flamework.resolveDependency('@easy-games/game-core:client/controllers/notification-controller@NotificationController'):sendInfoNotification({
+				message = '[Bed Alarm]: An intruder is near your bed!'
+			})
+		end)
+	end
 	
-		local details = {}
-		if on(ShowDistance) then
-			details[#details + 1] = math.floor(distance) .. ' studs'
-			if level == 1 and closing > 2 then
-				details[#details + 1] = '~' .. math.max(1, math.floor(distance / closing + 0.5)) .. 's'
+	local function trigger(position, intruders)
+		lastTrigger = os.clock()
+		local here = entitylib.isAlive and entitylib.character.RootPart.Position
+		local near = here and (here - position).Magnitude < NEAR_SOUND_RANGE
+	
+		stopAlarm()
+		alarm = {endsAt = os.clock() + AlarmDuration.Value, flashAt = 0, red = true}
+		if on(ShowModel) then
+			pcall(function()
+				local model = replicatedStorage.Assets.Effects.BedAlarm:Clone()
+				model:PivotTo(CFrame.new(position + Vector3.new(0, 15, 0)))
+				for _, part in model:GetDescendants() do
+					if part:IsA('BasePart') then
+						part.CanCollide = false
+						part.CanQuery = false
+						part.CanTouch = false
+						part.Anchored = true
+					end
+				end
+				model.Parent = workspace
+				alarm.model = model
+				alarm.pivot = model:GetPivot()
+			end)
+		end
+		if on(Sound) then
+			pcall(function()
+				local sound = (near or not on(FarSound)) and bedwars.SoundList.BED_ALARM or bedwars.SoundList.BED_ALARM_TRIGGERED_FAR
+				alarm.sound = bedwars.SoundManager:playSound(sound, {
+					looped = true,
+					volumeMultiplier = Volume.Value / 100,
+					position = (near or not on(FarSound)) and position or nil,
+					rollOffMaxDistance = 100
+				})
+			end)
+		end
+		if on(Highlight) then
+			for _, character in intruders do highlightIntruder(character) end
+		end
+		if on(GameMessage) then gameMessage() end
+	end
+	
+	-- The alarm model spins and flashes like the game's, and everything ends on time.
+	local function animate(dt)
+		if alarm then
+			if os.clock() >= alarm.endsAt then
+				stopAlarm()
+			else
+				if alarm.model and alarm.pivot then
+					alarm.spin = (alarm.spin or 0) + dt * math.rad(270)
+					alarm.model:PivotTo(alarm.pivot * CFrame.Angles(0, alarm.spin, 0))
+				end
+				if alarm.model and os.clock() >= alarm.flashAt then
+					alarm.flashAt = os.clock() + 0.5
+					alarm.red = not alarm.red
+					paint(alarm.model, alarm.red)
+				end
 			end
 		end
-		if #details > 0 then text = text .. ' (' .. table.concat(details, ', ') .. ')' end
-		if threat and on(ShowThreats) then text = text .. ' with ' .. threat end
-		if on(ShowKit) then
-			local kit = kitOf(ent.Player)
-			if kit then text = text .. ' - ' .. kit end
+		for character, entry in highlights do
+			if os.clock() >= entry.endsAt or not character.Parent then
+				entry.highlight:Destroy()
+				highlights[character] = nil
+			end
 		end
-	
-		notif('Bed Alarm', text, level == 2 and 5 or 4, level == 2 and 'alert' or 'warning')
-		playAlarm()
 	end
 	
 	local function check()
-		local team = myTeam()
-		-- No bed to guard any more, or none found yet.
-		if not team or brokenbeds[team] or brokenbeds[tonumber(team)] then
-			clearAll()
-			return
-		end
 		local bed = ownBed()
-		local center = bed and bedPosition(bed)
-		if not center then
-			clearAll()
+		if not bed then
+			stopAlarm()
 			return
 		end
+		local position = bedPosition(bed)
+		if not position then return end
 	
-		-- You are there yourself: nothing to be told.
-		if on(OnlyWhenAway) and entitylib.isAlive
-			and (entitylib.character.RootPart.Position - center).Magnitude <= AwayDistance.Value then
-			clearAll()
-			return
-		end
+		local here = entitylib.isAlive and entitylib.character.RootPart.Position
+		if on(OnlyWhenAway) and here and (here - position).Magnitude < AwayDistance.Value then return end
 	
-		local now = os.clock()
-		local seen = {}
-		for _, ent in entitylib.List do
-			local root = ent.RootPart
-			if ent.Player and ent.Targetable and root and root.Parent then
-				local offset = center - root.Position
-				local distance = offset.Magnitude
-				local closing = distance > 0 and root.AssemblyLinearVelocity:Dot(offset.Unit) or 0
-				local threat, pearl = threatOf(ent.Player)
-	
-				local level = 0
-				if distance <= DangerRange.Value then
-					level = 2
-				elseif distance <= WarnRange.Value and (closing > 2 or not on(OnlyApproaching)) then
-					level = 1
-				elseif pearl and on(PearlCheck) and distance <= PearlRange.Value then
-					-- A pearl closes any gap in one throw, so its holder counts from much further.
-					level = 1
+		local intruders = {}
+		for _, entity in entitylib.List do
+			if entity.Player and entity.Targetable and entity.RootPart and entity.Character then
+				local offset = entity.RootPart.Position - position
+				if offset.Magnitude <= Radius.Value and not (on(HeightLimit) and math.abs(offset.Y) > MaxHeight.Value) then
+					intruders[#intruders + 1] = entity.Character
 				end
-	
-				if level > 0 then
-					seen[ent] = true
-					local entry = state[ent] or {level = 0, at = 0}
-					if level > entry.level or (on(Repeat) and now - entry.at >= RepeatDelay.Value) then
-						announce(ent, level, distance, closing, threat)
-						entry.at = now
-					end
-					entry.level = level
-					state[ent] = entry
-				end
-				setHighlight(ent, level)
 			end
 		end
-	
-		-- Whoever has left the ranges starts over, so coming back is said again.
-		for ent in state do
-			if not seen[ent] then
-				state[ent] = nil
-				setHighlight(ent, 0)
-			end
+		-- Who is new since last time; anyone who left can set it off again later.
+		local present, fresh = {}, false
+		for _, character in intruders do
+			present[character] = true
+			if not alerted[character] then fresh = true end
 		end
-		for ent in highlights do
-			if not seen[ent] then setHighlight(ent, 0) end
+		for character in alerted do
+			if not present[character] then alerted[character] = nil end
+		end
+		if #intruders == 0 then return end
+	
+		-- Repeat keeps it going while they stay, after the delay; otherwise only someone new
+		-- sets it off.
+		local due = on(Repeat) and (fresh or os.clock() - lastTrigger >= RepeatDelay.Value) or fresh
+		for _, character in intruders do alerted[character] = true end
+		if due then
+			trigger(position, intruders)
+		elseif on(Highlight) then
+			for _, character in intruders do
+				if highlights[character] then highlightIntruder(character) end
+			end
 		end
 	end
 	
 	BedAlarm = vain.Categories.Utility:CreateModule({
 		Name = 'Bed Alarm',
-		Tooltip = 'Warns you when enemies come for your bed',
+		Tooltip = 'The game\'s bed alarm, without buying it',
 		Function = function(callback)
 			if callback then
-				cachedBed = nil
-				repeat
-					-- Guarded so one unreadable player cannot stop the alarm.
+				local last = 0
+				BedAlarm:Clean(runService.Heartbeat:Connect(function(dt)
+					pcall(animate, dt)
+					if os.clock() - last < 0.2 then return end
+					last = os.clock()
 					pcall(check)
-					task.wait(0.1)
-				until not BedAlarm.Enabled
-				clearAll()
+				end))
 			else
-				clearAll()
+				stopAlarm()
+				table.clear(alerted)
+				for character, entry in highlights do
+					entry.highlight:Destroy()
+					highlights[character] = nil
+				end
 			end
 		end
 	})
-	WarnRange = BedAlarm:CreateSlider({
-		Name = 'Warning Range',
-		Tooltip = 'How far out someone heading for your bed is noticed',
-		Min = 10,
-		Max = 120,
-		Default = 50,
-		Suffix = function(val) return val == 1 and 'stud' or 'studs' end
-	})
-	DangerRange = BedAlarm:CreateSlider({
-		Name = 'Danger Range',
-		Tooltip = 'How close counts as at your bed',
+	Radius = BedAlarm:CreateSlider({
+		Name = 'Radius',
+		Tooltip = 'How close an enemy has to get (game: 35)',
 		Min = 5,
-		Max = 60,
-		Default = 18,
+		Max = 120,
+		Default = 35,
 		Suffix = function(val) return val == 1 and 'stud' or 'studs' end
 	})
-	OnlyApproaching = BedAlarm:CreateToggle({
-		Name = 'Only Approaching',
-		Tooltip = 'Warning range only counts people moving toward your bed',
-		Default = true
+	HeightLimit = BedAlarm:CreateToggle({
+		Name = 'Height Limit',
+		Tooltip = 'Ignores enemies far above or below the bed',
+		Function = function(callback)
+			if MaxHeight and MaxHeight.Object then MaxHeight.Object.Visible = callback end
+		end
+	})
+	MaxHeight = BedAlarm:CreateSlider({
+		Name = 'Max Height',
+		Tooltip = 'How far above or below still counts',
+		Min = 3,
+		Max = 60,
+		Default = 15,
+		Darker = true,
+		Visible = false,
+		Suffix = function(val) return val == 1 and 'stud' or 'studs' end
 	})
 	OnlyWhenAway = BedAlarm:CreateToggle({
 		Name = 'Only When Away',
 		Tooltip = 'Stays quiet while you are at your bed',
-		Default = true,
 		Function = function(callback)
 			if AwayDistance and AwayDistance.Object then AwayDistance.Object.Visible = callback end
 		end
 	})
 	AwayDistance = BedAlarm:CreateSlider({
 		Name = 'Away Distance',
-		Tooltip = 'How far from your bed counts as away',
+		Tooltip = 'How far from the bed counts as away',
 		Min = 5,
-		Max = 80,
+		Max = 100,
 		Default = 25,
 		Darker = true,
+		Visible = false,
 		Suffix = function(val) return val == 1 and 'stud' or 'studs' end
 	})
-	PearlCheck = BedAlarm:CreateToggle({
-		Name = 'Pearl Check',
-		Tooltip = 'Warns about pearl holders from further away',
-		Default = true,
-		Function = function(callback)
-			if PearlRange and PearlRange.Object then PearlRange.Object.Visible = callback end
-		end
-	})
-	PearlRange = BedAlarm:CreateSlider({
-		Name = 'Pearl Range',
-		Tooltip = 'How far a pearl holder is noticed from',
-		Min = 20,
-		Max = 200,
-		Default = 90,
-		Darker = true,
-		Suffix = function(val) return val == 1 and 'stud' or 'studs' end
-	})
-	ShowThreats = BedAlarm:CreateToggle({
-		Name = 'Show Threats',
-		Tooltip = 'Says if they hold a pearl, TNT, fireball or a tool',
-		Default = true
-	})
-	ShowDistance = BedAlarm:CreateToggle({
-		Name = 'Show Distance',
-		Tooltip = 'Says how far away they are and how soon they arrive',
-		Default = true
-	})
-	ShowKit = BedAlarm:CreateToggle({
-		Name = 'Show Kit',
-		Tooltip = 'Says which kit they are playing'
+	AlarmDuration = BedAlarm:CreateSlider({
+		Name = 'Alarm Duration',
+		Tooltip = 'How long it goes off (game: 5s)',
+		Min = 1,
+		Max = 20,
+		Default = 5,
+		Suffix = function() return 's' end
 	})
 	Repeat = BedAlarm:CreateToggle({
-		Name = 'Repeat',
-		Tooltip = 'Keeps warning while they stay near',
+		Name = 'Repeat While Near',
+		Tooltip = 'Keeps going off while they stay',
+		Default = true,
 		Function = function(callback)
 			if RepeatDelay and RepeatDelay.Object then RepeatDelay.Object.Visible = callback end
 		end
 	})
 	RepeatDelay = BedAlarm:CreateSlider({
 		Name = 'Repeat Delay',
-		Tooltip = 'Seconds between repeated warnings',
+		Tooltip = 'Seconds between going off again',
 		Min = 1,
 		Max = 30,
 		Default = 5,
 		Darker = true,
-		Visible = false,
 		Suffix = function() return 's' end
 	})
-	Highlight = BedAlarm:CreateToggle({
-		Name = 'Highlight',
-		Tooltip = 'Outlines enemies near your bed',
+	ShowModel = BedAlarm:CreateToggle({
+		Name = 'Alarm Light',
+		Tooltip = 'The game\'s spinning alarm over your bed',
+		Default = true
+	})
+	Sound = BedAlarm:CreateToggle({
+		Name = 'Sound',
+		Tooltip = 'The game\'s alarm sound',
 		Default = true,
 		Function = function(callback)
-			if HighlightColor and HighlightColor.Object then HighlightColor.Object.Visible = callback end
-			if not callback then
-				for ent in highlights do setHighlight(ent, 0) end
+			for _, setting in {Volume, FarSound} do
+				if setting and setting.Object then setting.Object.Visible = callback end
 			end
 		end
+	})
+	Volume = BedAlarm:CreateSlider({
+		Name = 'Volume',
+		Tooltip = 'How loud it is',
+		Min = 10,
+		Max = 300,
+		Default = 75,
+		Darker = true,
+		Suffix = function() return '%' end
+	})
+	FarSound = BedAlarm:CreateToggle({
+		Name = 'Far Sound',
+		Tooltip = 'Plays the distant alarm when you are away',
+		Default = true,
+		Darker = true
+	})
+	Highlight = BedAlarm:CreateToggle({
+		Name = 'Highlight Intruder',
+		Tooltip = 'Outlines whoever set it off',
+		Default = true,
+		Function = function(callback)
+			for _, setting in {HighlightDuration, HighlightColor} do
+				if setting and setting.Object then setting.Object.Visible = callback end
+			end
+		end
+	})
+	HighlightDuration = BedAlarm:CreateSlider({
+		Name = 'Highlight Time',
+		Tooltip = 'How long they stay outlined (game: 10s)',
+		Min = 1,
+		Max = 30,
+		Default = 10,
+		Darker = true,
+		Suffix = function() return 's' end
 	})
 	HighlightColor = BedAlarm:CreateColorSlider({
 		Name = 'Highlight Color',
 		Tooltip = 'Colour of the outline',
 		DefaultHue = 0,
-		DefaultSat = 0.9,
-		DefaultValue = 1,
+		DefaultSat = 0.86,
+		DefaultValue = 0.8,
+		DefaultOpacity = 0.3,
 		Darker = true
 	})
-	Sound = BedAlarm:CreateToggle({
-		Name = 'Sound',
-		Tooltip = 'Plays the bed alarm sound with each warning',
-		Default = true,
-		Function = function(callback)
-			for _, setting in {SoundVolume, CustomSound} do
-				if setting and setting.Object then setting.Object.Visible = callback end
-			end
-			if SoundId and SoundId.Object then SoundId.Object.Visible = callback and on(CustomSound) end
-		end
-	})
-	SoundVolume = BedAlarm:CreateSlider({
-		Name = 'Volume',
-		Tooltip = 'How loud the alarm is',
-		Min = 0.1,
-		Max = 3,
-		Default = 1,
-		Decimal = 10,
-		Darker = true
-	})
-	CustomSound = BedAlarm:CreateToggle({
-		Name = 'Custom Sound',
-		Tooltip = 'Plays a Roblox sound of your choice instead',
-		Darker = true,
-		Function = function(callback)
-			if SoundId and SoundId.Object then SoundId.Object.Visible = callback and on(Sound) end
-		end
-	})
-	SoundId = BedAlarm:CreateTextBox({
-		Name = 'Sound ID',
-		Tooltip = 'Roblox sound id to play',
-		Default = '',
-		Darker = true,
-		Visible = false
+	GameMessage = BedAlarm:CreateToggle({
+		Name = 'Game Message',
+		Tooltip = 'Shows the game\'s own bed alarm message'
 	})
 	
 end)
