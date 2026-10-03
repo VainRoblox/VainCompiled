@@ -25729,6 +25729,219 @@ run(function()
 	    })
 	end)
 	
+	kitRun(function()
+	    --[[
+	        Milo.
+	
+	        How the kit works now (MimicController): using the MIMIC_BLOCK ability sends
+	        MimicBlock with the block you picked - a block type and the position of a real
+	        block of it, from the block under your aim or under your feet - and the server
+	        answers ValidatedMimicBlock and turns you into that block. Standing still snaps you
+	        to the grid; moving or being hit reveals you (MimicBlockRevealed). While disguised,
+	        MimicBlockPickPocketReady says when you can pickpocket a player within 25 studs
+	        (MimicBlockPickPocketPlayer).
+	
+	        To choose the block, the controller's getSelectedBlockFromPlayer is briefly swapped
+	        for one that returns the pick and the ability is used normally, so the game sends
+	        a request of its own with a real block behind it.
+	    ]]
+	    local Milo
+	    local BlockMode, BlockType, AutoDisguise, StillTime, AutoPickpocket, SearchRange
+	    local disguised, pickpocketReady = false, false
+	    local stillSince
+	
+	    local function on(setting)
+	        return setting ~= nil and setting.Enabled
+	    end
+	
+	    -- The block under your feet, the way the game finds it.
+	    local function blockBelow()
+	        if not entitylib.isAlive then return nil end
+	        local root = entitylib.character.RootPart
+	        local below = root.Position - Vector3.new(0, root.Size.Y / 2 + entitylib.character.HipHeight + 0.75, 0)
+	        local block, position = getPlacedBlock(below)
+	        if block and bedwars.ItemMeta[block.Name] then
+	            return {blockType = block.Name, blockPosition = position}
+	        end
+	    end
+	
+	    -- The nearest placed block of the chosen type within range.
+	    local function nearestOfType(itemType)
+	        if not (entitylib.isAlive and itemType and itemType ~= '') then return nil end
+	        local here = bedwars.BlockController:getBlockPosition(entitylib.character.RootPart.Position)
+	        local store = bedwars.BlockController:getStore()
+	        local best, bestDistance
+	        for _, position in store:getAllBlockPositions() do
+	            local distance = (position - here).Magnitude
+	            if distance <= SearchRange.Value and (not bestDistance or distance < bestDistance) then
+	                local block = store:getBlockAt(position)
+	                if block and block.Name == itemType then
+	                    best, bestDistance = position, distance
+	                end
+	            end
+	        end
+	        return best and {blockType = itemType, blockPosition = best} or nil
+	    end
+	
+	    local function choose()
+	        if BlockMode.Value == 'Below You' then return blockBelow() end
+	        if BlockMode.Value == 'Chosen Block' then return nearestOfType(BlockType.Value) end
+	        return nil
+	    end
+	
+	    -- Uses the ability through the game, with the pick swapped in for the moment it reads it.
+	    local function disguise()
+	        local controller = bedwars.MimicController
+	        if not (controller and bedwars.AbilityController:canUseAbility('MIMIC_BLOCK')) then return false end
+	        if BlockMode.Value == 'Aim' then
+	            bedwars.AbilityController:useAbility('MIMIC_BLOCK')
+	            return true
+	        end
+	        local pick = choose()
+	        if not pick then return false end
+	        local original = controller.getSelectedBlockFromPlayer
+	        local swapped = function() return pick end
+	        controller.getSelectedBlockFromPlayer = swapped
+	        bedwars.AbilityController:useAbility('MIMIC_BLOCK')
+	        task.delay(0.5, function()
+	            if controller.getSelectedBlockFromPlayer == swapped then
+	                controller.getSelectedBlockFromPlayer = original
+	            end
+	        end)
+	        return true
+	    end
+	
+	    -- Pickpockets the nearest enemy in reach once the game says it is ready.
+	    local function pickpocket()
+	        if not (entitylib.isAlive and pickpocketReady) then return end
+	        local here = entitylib.character.RootPart.Position
+	        local best, bestDistance
+	        for _, entity in entitylib.List do
+	            if entity.Player and entity.Targetable and entity.RootPart then
+	                local distance = (entity.RootPart.Position - here).Magnitude
+	                if distance <= 24 and (not bestDistance or distance < bestDistance) then
+	                    best, bestDistance = entity.Player, distance
+	                end
+	            end
+	        end
+	        if best then
+	            pickpocketReady = false
+	            task.spawn(function()
+	                pcall(function()
+	                    bedwars.Client:Get('MimicBlockPickPocketPlayer'):CallServer(best)
+	                end)
+	            end)
+	        end
+	    end
+	
+	    Milo = vain.Categories.Kit:CreateModule({
+	        Name = 'Milo',
+	        Tooltip = 'Disguises you as the block you choose',
+	        Function = function(callback)
+	            if callback then
+	                disguised, pickpocketReady, stillSince = false, false, nil
+	                Milo:Clean(bedwars.Client:Get('ValidatedMimicBlock'):Connect(function(data)
+	                    if type(data) == 'table' and data.player == lplr then
+	                        disguised = data.blockType ~= nil
+	                    end
+	                end))
+	                Milo:Clean(bedwars.Client:Get('MimicBlockRevealed'):Connect(function()
+	                    disguised, pickpocketReady = false, false
+	                end))
+	                Milo:Clean(bedwars.Client:Get('MimicBlockPickPocketReady'):Connect(function(data)
+	                    if type(data) == 'table' and data.player == lplr then
+	                        pickpocketReady = data.ready == true
+	                    end
+	                end))
+	
+	                local lastCheck = 0
+	                Milo:Clean(runService.Heartbeat:Connect(function()
+	                    if store.equippedKit ~= 'mimic' or not entitylib.isAlive then return end
+	                    if os.clock() - lastCheck < 0.2 then return end
+	                    lastCheck = os.clock()
+	
+	                    if on(AutoPickpocket) and disguised then pcall(pickpocket) end
+	
+	                    -- Standing still long enough, and not already a block: disguise.
+	                    local humanoid = entitylib.character.Humanoid
+	                    local still = humanoid and humanoid.MoveDirection.Magnitude == 0 and humanoid.FloorMaterial ~= Enum.Material.Air
+	                    if not still then
+	                        stillSince = nil
+	                    elseif not stillSince then
+	                        stillSince = os.clock()
+	                    end
+	                    if on(AutoDisguise) and not disguised and stillSince and os.clock() - stillSince >= StillTime.Value then
+	                        pcall(disguise)
+	                        stillSince = os.clock()
+	                    end
+	                end))
+	            else
+	                disguised, pickpocketReady = false, false
+	            end
+	        end
+	    })
+	    BlockMode = Milo:CreateDropdown({
+	        Name = 'Block',
+	        List = {'Below You', 'Chosen Block', 'Aim'},
+	        Tooltips = {
+	            ['Below You'] = 'The block you stand on, so you blend in',
+	            ['Chosen Block'] = 'The nearest block of the type below',
+	            Aim = 'Whatever you aim at, as the game does'
+	        },
+	        Function = function(val)
+	            for _, setting in {BlockType, SearchRange} do
+	                if setting and setting.Object then setting.Object.Visible = val == 'Chosen Block' end
+	            end
+	        end
+	    })
+	    BlockType = Milo:CreateTextBox({
+	        Name = 'Block Type',
+	        Placeholder = 'item name (wool_white)',
+	        Default = 'wool_white',
+	        Tooltip = 'Item name of the block to become',
+	        Visible = false
+	    })
+	    SearchRange = Milo:CreateSlider({
+	        Name = 'Search Range',
+	        Tooltip = 'How far to look for that block, in blocks',
+	        Min = 5,
+	        Max = 100,
+	        Default = 40,
+	        Darker = true,
+	        Visible = false
+	    })
+	    Milo:CreateButton({
+	        Name = 'Disguise Now',
+	        Tooltip = 'Becomes the block straight away',
+	        Function = function()
+	            pcall(disguise)
+	        end
+	    })
+	    AutoDisguise = Milo:CreateToggle({
+	        Name = 'Auto Disguise',
+	        Tooltip = 'Disguises whenever you stand still',
+	        Default = true,
+	        Function = function(callback)
+	            if StillTime and StillTime.Object then StillTime.Object.Visible = callback end
+	        end
+	    })
+	    StillTime = Milo:CreateSlider({
+	        Name = 'Still Time',
+	        Tooltip = 'How long to stand still first',
+	        Min = 0,
+	        Max = 3,
+	        Default = 0.6,
+	        Decimal = 10,
+	        Darker = true,
+	        Suffix = function() return 's' end
+	    })
+	    AutoPickpocket = Milo:CreateToggle({
+	        Name = 'Auto Pickpocket',
+	        Tooltip = 'Pickpockets the nearest enemy when ready',
+	        Default = true
+	    })
+	end)
+	
 end)
 
 run(function()
