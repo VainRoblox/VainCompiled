@@ -10048,19 +10048,17 @@ run(function()
 		held open in the text. The gap is measured in spaces at the tag's own font and size, so
 		it stays the right width at any Scale rather than being a fixed guess.
 	]]
-	local function rankGap(ent, textSize, font)
-		if not (Rank and Rank.Enabled) or not ent.Player or not divisionImage(ent.Player) then return '' end
-	
-		local space = getfontsize(' ', textSize, font, MEASURE).X
-		if space <= 0 then return ' ' end
-	
-		local height = getfontsize('X', textSize, font, MEASURE).Y + 7
-		return string.rep(' ', math.max(1, math.ceil((height + 2) / space)))
+	--[[
+		The ranked badge sits just outside the tag's left edge, centred on it, rather than in
+		a run of spaces cut into the text. Placing it inside meant measuring the text in front
+		of it, and the measurement and the rendered rich text never quite agreed - which put
+		the badge over the middle of the name.
+	]]
+	local function rankGap()
+		return ''
 	end
 	
-	-- The badge dropped into that gap. The text before it is measured as drawn, so the badge
-	-- lands between the distance and the name however wide the distance happens to be.
-	local function placeRankIcon(nametag, ent, prefix)
+	local function placeRankIcon(nametag, ent)
 		local icon = nametag:FindFirstChild('RankIcon')
 		if not icon then return end
 	
@@ -10070,12 +10068,11 @@ run(function()
 		if not image then return end
 	
 		local height = nametag.Size.Y.Offset
+		icon.AnchorPoint = Vector2.new(1, 0.5)
 		icon.Size = UDim2.fromOffset(height, height)
-		-- 4 is the tag's own left padding: it is sized to the text plus 8, centred.
-		icon.Position = UDim2.new(0, 4 + getfontsize(removeTags(prefix or ''), nametag.TextSize, nametag.FontFace, MEASURE).X, 0.5, 0)
+		icon.Position = UDim2.new(0, -2, 0.5, 0)
 	end
 	
-	-- Everyone not asked about yet, in one call rather than one call each.
 	local function fetchDivisions()
 		if DivisionFetching or not (Rank and Rank.Enabled) then return end
 	
@@ -10286,11 +10283,7 @@ run(function()
 			rankicon.Image = ''
 			rankicon.Visible = false
 			rankicon.Parent = nametag
-			-- With a distance showing, the loop places it instead, once the number is in the
-			-- text and there is something real to measure.
-			if not Distance.Enabled then
-				placeRankIcon(nametag, ent, '')
-			end
+			placeRankIcon(nametag, ent)
 	
 			nametag.TextColor3 = entitylib.getEntityColor(ent) or Color3.fromHSV(Color.Hue, Color.Sat, Color.Value)
 			nametag.RichText = true
@@ -10411,11 +10404,8 @@ run(function()
 				nametag.Size = UDim2.fromOffset(size.X + 8, size.Y + 7)
 				nametag.Text = Strings[ent]
 				drawEffects(nametag, ent)
-				-- Placed here only when there is no distance to measure around; otherwise the
-				-- loop does it, once the number is actually in the text.
-				if not Distance.Enabled then
-					placeRankIcon(nametag, ent, '')
-				end
+				-- Outside the tag, so nothing in the text has to be measured first.
+				placeRankIcon(nametag, ent)
 			end
 		end,
 		Drawing = function(ent)
@@ -10553,8 +10543,8 @@ run(function()
 							local ize = getfontsize(removeTags(nametag.Text), nametag.TextSize, nametag.FontFace, Vector2.new(100000, 100000))
 							nametag.Size = UDim2.fromOffset(ize.X + 8, ize.Y + 7)
 							Sizes[ent] = mag
-							-- Only when the number changed, so the badge is not re-measured every frame.
-							placeRankIcon(nametag, ent, string.format(Prefixes[ent] or '', mag))
+							-- The tag's height can change with the text; the badge follows it.
+							placeRankIcon(nametag, ent)
 						end
 					end
 					nametag.Position = UDim2.fromOffset(headPos.X, headPos.Y)
