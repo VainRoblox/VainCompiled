@@ -13092,6 +13092,10 @@ run(function()
 		if mine == nil or not block then return false end
 		mine = tostring(mine)
 	
+		-- The game's own answer first: the crate it opens as yours.
+		local ok, crate = pcall(function() return bedwars.ChestItemDisplayController:getTeamCrate() end)
+		if ok and crate ~= nil and crate == block then return true end
+	
 		local node = block
 		for _ = 1, 3 do
 			if not node then break end
@@ -13252,7 +13256,11 @@ run(function()
 			item that drops back below is forgotten, so reaching it again is said again.
 		]]
 		local block = v.Adornee
-		local found = Alerts and Alerts.enabled() and Alerts.matches(all, watches) or {}
+		-- Ignore Self keeps your own team's chest out of the alerts even while Show Own draws
+		-- it: it only ever decided whether the chest was drawn, so with Show Own on, your own
+		-- stash was flagged and announced like an enemy's.
+		local ignored = Alerts and not Alerts.includeSelf() and ownTeamChest(block)
+		local found = (Alerts and Alerts.enabled() and not ignored) and Alerts.matches(all, watches) or {}
 		if #found > 0 then v.Enabled = true end
 		paint(v, #found > 0)
 	
