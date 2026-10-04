@@ -5278,139 +5278,6 @@ run(function()
 	local Particles, Boxes = {}, {}
 	-- entity -> tick() at which it may be attacked again
 	local AttackTimes = {}
-	--[[
-		One clock for every target, the way the game keeps it.
-
-		The game's SwordController has a single lastAttack and sends one hit per swing - even
-		weapons that can catch several people only delay that one hit. Pacing each target on
-		its own clock sent a hit to everyone in range in the same instant: the server takes
-		one, drops the rest, and the target you were actually fighting lost the hits that
-		went elsewhere. So hits now go one at a time, to the best target, a weapon's attack
-		speed apart.
-	]]
-	local nextAttack = 0
-	-- Kept in server time, the clock the game's own swing cooldown is measured on, so a
-	-- hit sent on time is never taken for an early one by the game's SwordSwing check.
-	local function serverNow()
-		return workspace:GetServerTimeNow()
-	end
-
-	-- How long after switching to the sword before it is attacked with. The equip is sent
-	-- asynchronously, and a hit that reaches the server before it does is a hit with a
-	-- weapon you are not holding, which is dropped.
-	local function equipSettle()
-		local ok, ping = pcall(function() return lplr:GetNetworkPing() end)
-		ping = ok and type(ping) == 'number' and ping or 0.05
-		return math.clamp(ping * 2 + 0.03, 0.05, 0.35)
-	end
-
-	--[[
-		Every hit goes through the game's own swing events, the way its SwordController sends
-		one: BeforeSwordSwing, then SwordSwing.
-
-		Going round them cost three things. The weapon's real attack speed is set inside
-		SwordSwing - a Fury Potion shortens it, Cactus lengthens it, the Scissor Sword's combo
-		and the Frosty Hammer's upgrades change it - so pacing by the item's base speed was
-		either slower than allowed or faster than the server takes. A number of weapons do
-		their special in a SwordSwing listener - the Sky Scythe's spin, the Pillow, the Reaper
-		Scythe, the Rage Blade, gauntlets, daggers, the Great Hammer - which never fired. And
-		the game cancels a swing while you are stunned, emoting, mid-dodge or the like, where
-		a hit sent anyway was rejected and spent the cooldown for nothing.
-	]]
-	local syncEvents, entityUtil
-	local function gameModules()
-		if syncEvents == nil then
-			local ok, events = pcall(function()
-				return require(lplr.PlayerScripts.TS['client-sync-events']).ClientSyncEvents
-			end)
-			syncEvents = ok and events or false
-			local okUtil, util = pcall(function()
-				return require(replicatedStorage.TS.entity['entity-util']).EntityUtil
-			end)
-			entityUtil = okUtil and util or false
-		end
-		return syncEvents, entityUtil
-	end
-
-	-- The attack speed to pace by, or nil and how long to wait when the game would not swing.
-	local function gameSwing(sword, meta, target, ratio)
-		local events, util = gameModules()
-		local base = meta.sword.attackSpeed or 0.5
-		if not events then return base end
-		local name = sword.tool.Name
-		local clone = meta.sword
-
-		local ok, before = pcall(function() return events.BeforeSwordSwing:fire(name, meta) end)
-		if ok and before then
-			if before:isCancelled() then return nil, 0.1 end
-			local weapon = before.weaponMetaClone
-			clone = weapon and weapon.sword or clone
-		end
-
-		local entity
-		if util then
-			pcall(function()
-				entity = target.Player and util:getEntity(target.Player) or util:getEntityFromDescendant(target.Character)
-			end)
-		end
-		local skin = sword.tool:GetAttribute('ItemSkin')
-		local okSwing, swing = pcall(function()
-			return events.SwordSwing:fire(entity, name, clone.attackSpeed or base,
-				ratio > 0 and {chargeRatio = ratio} or nil, {itemSkin = skin ~= '' and skin or nil})
-		end)
-		if not (okSwing and swing) then return clone.attackSpeed or base end
-		if swing:isCancelled() then
-			-- Cancelled with a buffer: the game itself lands this hit when the time is up.
-			return nil, swing.bufferTime and (swing.bufferTime + 0.05) or 0.1
-		end
-		return swing.attackSpeed or clone.attackSpeed or base
-	end
-
-	--[[
-		Hit Stats: how many of the hits sent did damage, over the last 40. A hit counts as
-		landed when the game reports damage from you to that target within 1.5 seconds of it.
-	]]
-	local HitStats
-	local statsLabel
-	local pendingHits, outcomes = {}, {}
-
-	local function recordOutcome(landed)
-		table.insert(outcomes, landed)
-		if #outcomes > 40 then table.remove(outcomes, 1) end
-	end
-
-	local function updateStats()
-		local now = os.clock()
-		for i = #pendingHits, 1, -1 do
-			if now - pendingHits[i].at > 1.5 then
-				table.remove(pendingHits, i)
-				recordOutcome(false)
-			end
-		end
-		if not (HitStats and HitStats.Enabled) then
-			if statsLabel then statsLabel.Visible = false end
-			return
-		end
-		if not statsLabel then
-			statsLabel = Instance.new('TextLabel')
-			statsLabel.Name = 'KillauraHitStats'
-			statsLabel.AnchorPoint = Vector2.new(0.5, 0)
-			statsLabel.Position = UDim2.new(0.5, 0, 0.5, 46)
-			statsLabel.Size = UDim2.fromOffset(200, 18)
-			statsLabel.BackgroundTransparency = 1
-			statsLabel.Font = Enum.Font.GothamBold
-			statsLabel.TextSize = 13
-			statsLabel.TextColor3 = Color3.new(1, 1, 1)
-			statsLabel.TextStrokeTransparency = 0.5
-			statsLabel.Parent = vain.gui
-		end
-		local landed = 0
-		for _, hit in outcomes do
-			if hit then landed += 1 end
-		end
-		statsLabel.Text = #outcomes > 0 and string.format('Hit reg %d%%  ·  %d/%d', math.floor(landed / #outcomes * 100 + 0.5), landed, #outcomes) or 'Hit reg -'
-		statsLabel.Visible = true
-	end
 	local anims, AnimDelay, AnimTween, armC0, armWrist = vain.Libraries.auraanims, tick()
 	local AttackStub = {FireServer = function() end}
 	local AttackRemote = AttackStub
@@ -5522,19 +5389,6 @@ run(function()
 		Function = function(callback)
 			if callback then
 				task.spawn(resolveAttackRemote)
-
-				-- Damage the game reports from you to someone a hit was just sent at: landed.
-				Killaura:Clean(vainEvents.EntityDamageEvent.Event:Connect(function(damage)
-					if #pendingHits == 0 or type(damage) ~= 'table' then return end
-					if not lplr.Character or damage.fromEntity ~= lplr.Character then return end
-					for i, hit in pendingHits do
-						if hit.character == damage.entityInstance then
-							table.remove(pendingHits, i)
-							recordOutcome(true)
-							break
-						end
-					end
-				end))
 
 				if inputService.TouchEnabled then
 					pcall(function()
@@ -5659,9 +5513,7 @@ run(function()
 							})
 
 							if #plrs > 0 then
-								if switchItem(sword.tool, 0) then
-									nextAttack = math.max(nextAttack, serverNow() + equipSettle())
-								end
+								switchItem(sword.tool, 0)
 								local hits = 0
 								local selfpos = entitylib.character.RootPart.Position
 								local localfacing = entitylib.character.RootPart.CFrame.LookVector * Vector3.new(1, 0, 1)
@@ -5707,7 +5559,7 @@ run(function()
 									-- show up here because the query covers whichever range is larger.
 									if not (inrange or inswing) then continue end
 
-									if inswing and #attacked < MaxTargets.Value then
+									if inswing then
 										table.insert(attacked, {
 											Entity = v,
 											Check = inrange and BoxAttackColor or BoxSwingColor
@@ -5734,8 +5586,7 @@ run(function()
 									-- Out-of-reach targets still get a box and a swing, they just do
 									-- not consume one of the MaxTargets attack slots.
 									if not inrange then continue end
-									-- One hit per swing; the rest still get their box and swing.
-									if hits >= 1 or nextAttack > serverNow() then continue end
+									if hits >= MaxTargets.Value then continue end
 
 									-- AntiMelee hides the part the server tracks you by, and an
 									-- attack sent while it is hidden is rejected - the server checks
@@ -5761,24 +5612,8 @@ run(function()
 									-- and the target box played while nothing landed. Pace attacks
 									-- per target: the weapon's own attack speed by default, or the
 									-- Hit delay slider when it is set above zero.
-									--[[
-										A charged sword has to say it is charged.
-
-										chargeRatio was pinned at zero, which is an uncharged
-										swing - the server scales the hit by it, so every
-										attack with a chargeable sword landed at its weakest.
-										Anything whose charge is not disabled on the ground
-										claims a full one.
-									]]
-									local charged = meta.sword.chargedAttack
-									local ratio = (charged and not charged.disableOnGrounded) and 0.999 or 0
-
-									local speed, retry = gameSwing(sword, meta, v, ratio)
-									if not speed then
-										nextAttack = serverNow() + retry
-										continue
-									end
-									nextAttack = serverNow() + (HitDelay.Value > 0 and HitDelay.Value or speed + 0.005)
+									if (AttackTimes[v] or 0) > tick() then continue end
+									AttackTimes[v] = tick() + (HitDelay.Value > 0 and HitDelay.Value or (meta.sword.attackSpeed or 0.5))
 									-- The swing this asked for is going out, so release AntiMelee to
 									-- bury the root again rather than leaving it surfaced.
 									store.antiMeleeWantAttack = nil
@@ -5809,9 +5644,18 @@ run(function()
 										store.attackReach = (aimdist * 100) // 1 / 100
 										store.attackReachUpdate = tick() + 1
 
-										if HitStats and HitStats.Enabled then
-											table.insert(pendingHits, {character = v.Character, at = os.clock()})
-										end
+										--[[
+											A charged sword has to say it is charged.
+
+											chargeRatio was pinned at zero, which is an uncharged
+											swing - the server scales the hit by it, so every
+											attack with a chargeable sword landed at its weakest.
+											Anything whose charge is not disabled on the ground
+											claims a full one.
+										]]
+										local charged = meta.sword.chargedAttack
+										local ratio = (charged and not charged.disableOnGrounded) and 0.999 or 0
+
 										AttackRemote:FireServer({
 											weapon = sword.tool,
 											chargedAttack = {chargeRatio = ratio},
@@ -5877,22 +5721,11 @@ run(function()
 						Attacking = false
 						store.KillauraTarget = nil
 					end
-					-- Woken for the moment the next hit is allowed rather than up to a pass
-					-- late: waiting 0.02s per target held a ready hit back by as much as a
-					-- tenth of a second, which on a fast sword is a sizeable share of its hits.
-					local rest = 1 / UpdateRate.Value
-					if #attacked > 0 and nextAttack > serverNow() then
-						rest = math.min(rest, nextAttack - serverNow())
-					end
-					pcall(updateStats)
-					task.wait(math.max(rest, 0))
+					task.wait(#attacked > 0 and #attacked * 0.02 or 1 / UpdateRate.Value)
 				until not Killaura.Enabled
 			else
 				store.KillauraTarget = nil
 				table.clear(AttackTimes)
-				nextAttack = 0
-				table.clear(pendingHits)
-				if statsLabel then statsLabel.Visible = false end
 				for _, v in Boxes do
 					v.Adornee = nil
 				end
@@ -5985,7 +5818,7 @@ run(function()
 	})
 	MaxTargets = Killaura:CreateSlider({
 		Name = 'Max targets',
-		Tooltip = 'How many targets it tracks; hits go one per swing to the best',
+		Tooltip = 'How many targets to hit per swing',
 		Min = 1,
 		Max = 5,
 		Default = 5
@@ -6184,23 +6017,13 @@ run(function()
 	})
 	HitDelay = Killaura:CreateSlider({
 		Name = 'Hit delay',
-		Tooltip = 'Time between hits; 0 uses the weapon\'s real speed\nFaster than the weapon allows gets hits dropped',
+		Tooltip = 'How long to wait between attacks on the same target\nThe server drops hits that arrive faster than the weapon allows, so very low values can stop damage entirely\n0 uses the weapon\'s own attack speed',
 		Min = 0,
 		Max = 2,
 		Default = 0,
 		Decimal = 100,
 		Suffix = function(val)
 			return val == 0 and '(weapon speed)' or 'seconds'
-		end
-	})
-	HitStats = Killaura:CreateToggle({
-		Name = 'Hit Stats',
-		Tooltip = 'Shows how many of your hits actually deal damage',
-		Function = function(callback)
-			if not callback then
-				table.clear(outcomes)
-				if statsLabel then statsLabel.Visible = false end
-			end
 		end
 	})
 	LegitAura = Killaura:CreateToggle({
@@ -7192,27 +7015,38 @@ run(function()
 					end)
 				end)
 	
-				old = bedwars.ProjectileController.calculateImportantLaunchValues
 				--[[
-					Kept in a name, so putting it back can be conditional.
+					Each wrapper keeps the original it was built with.
 	
-					Fisherman's auto cast wraps this same method, so the two have to stack in
-					either order. Restoring blindly on the way out throws away whatever wrapped
-					after us, and clearing what our own wrapper calls leaves a nil call inside
-					the game's bow for anyone still holding it.
+					Fisherman's auto cast and Fast Charge wrap this same method, so the wrappers
+					have to stack in any order. This one used to call through a shared old, which
+					every switch-on pointed at whatever was installed then. With auto cast
+					wrapped on top of an earlier one of ours, switching back on pointed old at
+					auto cast's wrapper - and that earlier one, still inside auto cast, called
+					auto cast, which called it, round and round until the stack ran out ("error
+					in error handling"). Closed over per wrapper, each one calls exactly what it
+					was put on top of, and one that has been switched off only passes through.
 				]]
-				hook = function(...)
-					-- Guarded because the game calls this, not us. Anything that throws in
-					-- here used to surface inside the game's own bow logic and take the bow
-					-- with it; now a failure just hands the shot back untouched. old() stays
-					-- outside so its own errors still behave exactly as the game expects.
-					local ok, result = pcall(solve, ...)
-					if ok and result then
-						return result
+				local original = bedwars.ProjectileController.calculateImportantLaunchValues
+				if type(original) == 'function' then
+					old = original
+					local wrapper
+					wrapper = function(...)
+						-- Guarded because the game calls this, not us. Anything that throws in
+						-- here used to surface inside the game's own bow logic and take the bow
+						-- with it; now a failure just hands the shot back untouched. original()
+						-- stays outside so its own errors behave exactly as the game expects.
+						if hook == wrapper then
+							local ok, result = pcall(solve, ...)
+							if ok and result then
+								return result
+							end
+						end
+						return original(...)
 					end
-					return old(...)
+					hook = wrapper
+					bedwars.ProjectileController.calculateImportantLaunchValues = wrapper
 				end
-				bedwars.ProjectileController.calculateImportantLaunchValues = hook
 			else
 				-- Only when ours is still the installed one, and old is left alone so a
 				-- wrapper that captured ours keeps working.
@@ -13539,6 +13373,11 @@ run(function()
 	end
 	
 	function refreshAdornee(v)
+		-- Called from the chest's own ChildAdded and Amount signals, which run on game threads
+		-- without the identity to touch Vain's UI ("cannot access Instance").
+		if vain.ThreadFix then
+			setthreadidentity(8)
+		end
 		local chest = v.Adornee:FindFirstChild('ChestFolderValue')
 		chest = chest and chest.Value or nil
 		if not chest then
@@ -13670,8 +13509,15 @@ run(function()
 	end
 	
 	local function Added(v)
+		if vain.ThreadFix then
+			setthreadidentity(8)
+		end
 		local chest = v:WaitForChild('ChestFolderValue', 3)
 		if not (chest and StorageESP.Enabled) then return end
+		-- The wait can resume on a thread without it again.
+		if vain.ThreadFix then
+			setthreadidentity(8)
+		end
 		if hiddenAsOwn(v) then return end
 		chest = chest.Value
 		local billboard = Instance.new('BillboardGui')
