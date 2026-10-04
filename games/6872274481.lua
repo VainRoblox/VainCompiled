@@ -745,30 +745,29 @@ do
 		return result
 	end
 
-	-- The matches out of an answer, and whether there was an answer at all: a server that
-	-- replied with nothing is a player with no history, one that never replied is not.
+	-- The matches out of an answer, and whether it plainly said there are none: an answer
+	-- carrying an empty match list. Anything else that comes back without matches - an
+	-- error, a refusal, a private profile, nothing at all - says nothing either way.
 	local function listFrom(data)
-		if type(data) ~= 'table' then return nil, false end
-		if type(data.matchHistory) == 'table' and #data.matchHistory > 0 then
-			return data.matchHistory, true
-		end
+		if type(data) ~= 'table' or type(data.matchHistory) ~= 'table' then return nil, false end
+		if #data.matchHistory > 0 then return data.matchHistory, false end
 		return nil, true
 	end
 
 	local function request(player)
-		local answered = false
+		local none = false
 		for _, query in {player.Name, tostring(player.UserId)} do
-			local list, replied = listFrom(within(TIMEOUT, function()
+			local list, empty = listFrom(within(TIMEOUT, function()
 				local ok, value = bedwars.MatchHistoryController:requestMatchHistory(query):await()
 				return ok and value or nil
 			end))
-			if list then return list, true end
-			answered = answered or replied
+			if list then return list, false end
+			none = none or empty
 		end
-		local list, replied = listFrom(within(TIMEOUT, function()
+		local list, empty = listFrom(within(TIMEOUT, function()
 			return bedwars.Client:Get('RequestProfileData'):CallServer(player)
 		end))
-		return list, answered or replied
+		return list, none or empty
 	end
 
 	--[[
@@ -776,9 +775,10 @@ do
 
 		Every card at the start of a match asks at once, and any of those that timed out or
 		was turned away used to be stored as "no matches" for the rest of the session. Now a
-		failure is tried again RETRIES more times, RETRY_GAP apart (half a minute in all),
-		with whoever asked still waiting; only when the last of those fails is it given up
-		on, for good, and reported as unavailable rather than as empty.
+		lookup that brings back no matches - for whatever reason, since a refusal usually
+		still comes back as an answer - is tried again RETRIES more times, RETRY_GAP apart
+		(half a minute in all), with whoever asked still waiting; only when the last of those
+		fails is it given up on, for good.
 	]]
 	local RETRIES, RETRY_GAP = 3, 10
 
@@ -806,10 +806,12 @@ do
 			matchHistory.waiting[userId] = nil
 		end
 
+		-- Anything short of matches is tried again; after the last try it is "no history"
+		-- only if the server plainly said so, and unavailable otherwise.
 		local function attempt(try)
-			local found, answered = request(player)
-			if found or answered then
-				local list = table.clone(found or {})
+			local found, none = request(player)
+			if found then
+				local list = table.clone(found)
 				table.sort(list, function(a, b)
 					return (tonumber(a.matchStartTime) or 0) > (tonumber(b.matchStartTime) or 0)
 				end)
@@ -817,7 +819,7 @@ do
 			elseif try <= RETRIES and player.Parent then
 				task.delay(RETRY_GAP, attempt, try + 1)
 			else
-				finish({}, true)
+				finish({}, not none)
 			end
 		end
 
@@ -11272,16 +11274,36 @@ run(function()
 			newPiece(row, 'HealthLabel', 4)
 			newPiece(row, 'KitStat', 5)
 	
+			--[[
+				The equipment as one centred row, laid out by a UIListLayout. Each icon used to
+				sit at a fixed slot around the tag's middle, so an empty hand or missing armour
+				left a hole and pushed the rest off centre; empty slots are hidden now and the
+				row closes up around what is there.
+			]]
 			if Equipment.Enabled then
+				local gear = Instance.new('Frame')
+				gear.Name = 'Gear'
+				gear.AnchorPoint = Vector2.new(0.5, 1)
+				gear.Position = UDim2.new(0.5, 0, 0, -2)
+				gear.Size = UDim2.fromOffset(0, 30)
+				gear.AutomaticSize = Enum.AutomaticSize.X
+				gear.BackgroundTransparency = 1
+				gear.Parent = nametag
+				local gearLayout = Instance.new('UIListLayout')
+				gearLayout.FillDirection = Enum.FillDirection.Horizontal
+				gearLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+				gearLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+				gearLayout.SortOrder = Enum.SortOrder.LayoutOrder
+				gearLayout.Parent = gear
 				for i, v in {'Hand', 'Helmet', 'Chestplate', 'Boots', 'Kit'} do
 					local Icon = Instance.new('ImageLabel')
 					Icon.Name = v
 					Icon.Size = UDim2.fromOffset(30, 30)
-					Icon.AnchorPoint = Vector2.new(0.5, 1)
-					Icon.Position = UDim2.new(0.5, (i - 3) * 30, 0, -2)
 					Icon.BackgroundTransparency = 1
 					Icon.Image = ''
-					Icon.Parent = nametag
+					Icon.Visible = false
+					Icon.LayoutOrder = i
+					Icon.Parent = gear
 				end
 			end
 	
@@ -11411,14 +11433,21 @@ run(function()
 			row.RankIcon.Visible = image ~= nil
 			row.RankIcon.Size = UDim2.fromOffset(height, height)
 	
-			if Equipment.Enabled and store.inventories[ent.Player] and nametag:FindFirstChild('Hand') then
+			if Equipment.Enabled and store.inventories[ent.Player] and nametag:FindFirstChild('Gear') then
 				local kit = ent.Player:GetAttribute('PlayingAsKit')
 				local inventory = store.inventories[ent.Player]
-				nametag.Hand.Image = bedwars.getIcon(inventory.hand or {itemType = ''}, true)
-				nametag.Helmet.Image = bedwars.getIcon(inventory.armor[4] or {itemType = ''}, true)
-				nametag.Chestplate.Image = bedwars.getIcon(inventory.armor[5] or {itemType = ''}, true)
-				nametag.Boots.Image = bedwars.getIcon(inventory.armor[6] or {itemType = ''}, true)
-				nametag.Kit.Image = kit and kit ~= 'none' and bedwars.BedwarsKitMeta[kit] and bedwars.BedwarsKitMeta[kit].renderImage or ''
+				local gear = nametag.Gear
+				local function setSlot(name, image)
+					local icon = gear:FindFirstChild(name)
+					if not icon then return end
+					icon.Image = image or ''
+					icon.Visible = image ~= nil and image ~= ''
+				end
+				setSlot('Hand', inventory.hand and bedwars.getIcon(inventory.hand, true) or nil)
+				setSlot('Helmet', inventory.armor[4] and bedwars.getIcon(inventory.armor[4], true) or nil)
+				setSlot('Chestplate', inventory.armor[5] and bedwars.getIcon(inventory.armor[5], true) or nil)
+				setSlot('Boots', inventory.armor[6] and bedwars.getIcon(inventory.armor[6], true) or nil)
+				setSlot('Kit', kit and kit ~= 'none' and bedwars.BedwarsKitMeta[kit] and bedwars.BedwarsKitMeta[kit].renderImage or nil)
 			end
 	
 			drawEffects(nametag, ent)
@@ -11489,6 +11518,20 @@ run(function()
 		entity list has let go of: a respawn makes a new entity while the old body can linger
 		in the world, which left its tag frozen where the player died.
 	]]
+	--[[
+		Nobody to name: dead (at zero health, or the game's Dead mark on the character, while
+		the body waits to respawn) or a spectator. Both can keep a character in the world - a
+		spectator's flies round unseen - and their tags floated over empty ground, which is what
+		showed up after you died and started watching. Invisible players are not hidden: seeing
+		them is the point.
+	]]
+	local function nobodyThere(ent)
+		if (ent.Health or 0) <= 0 then return true end
+		local char = ent.Character
+		if char and char:GetAttribute('Dead') == true then return true end
+		return ent.Player ~= nil and ent.Player:GetAttribute('Spectator') == true
+	end
+	
 	local function stale(ent, listed)
 		if not ent or not listed[ent] then return true end
 		local char = ent.Character
@@ -11543,7 +11586,7 @@ run(function()
 					end
 	
 					local headPos, headVis = gameCamera:WorldToViewportPoint(ent.RootPart.Position + Vector3.new(0, ent.HipHeight + 1, 0))
-					nametag.Visible = headVis
+					nametag.Visible = headVis and not nobodyThere(ent)
 					if not headVis then
 						return
 					end
@@ -11603,6 +11646,7 @@ run(function()
 					end
 	
 					local headPos, headVis = gameCamera:WorldToViewportPoint(ent.RootPart.Position + Vector3.new(0, ent.HipHeight + 1, 0))
+					headVis = headVis and not nobodyThere(ent)
 					nametag.Text.Visible = headVis
 					nametag.BG.Visible = headVis
 					if not headVis then
