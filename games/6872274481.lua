@@ -2554,28 +2554,34 @@ run(function()
 	local swingtrack
 
 	--[[
-		The swing's rhythm: no more often than the game's own break cooldown, which is how
-		often it plays the swing when you mine by hand, and blended into the next.
+		The mining animation on your character, the way the game plays it.
 
-		Swings used to be stopped on a timer, and the timer had to guess: a track's Length
-		reads zero until its asset has loaded, which is almost always the case right after it
-		starts, so every swing was cut off at a fixed 0.3s wherever it had got to. Then
-		nothing played until the next block, and the arm snapped and paused, snapped and
-		paused. Now a swing is only cut short by the next one, with a fade, and the last of a
-		dig plays out and cleans itself up when it ends.
+		This used to ask the block engine for AnimationType.SWORD_SWING, which is 1 - and 1
+		in the block engine's own list (AnimationId) is BREAK_BLOCK, the looping mining
+		animation. The game starts that loop when you begin breaking and stops it by hand
+		when you finish; it never ends by itself. Waiting for it to end left it playing
+		long after the Nuker had stopped. So it is played on purpose now: started on the
+		first hit, kept running while hits keep coming, and faded out once none has come
+		for BREAK_IDLE seconds. The first person swing still comes once per SWING_GAP, the
+		game's own break cooldown.
 	]]
+	local BREAK_ANIMATION = 1
+	local BREAK_IDLE = 0.6
 	local SWING_GAP = 0.3
-	local SWING_FADE = 0.15
-	local lastSwing = 0
+	local lastSwing, lastHit = 0, 0
 
-	local function endSwing(track)
-		pcall(function()
-			track.Stopped:Once(function()
-				if swingtrack == track then
-					swingtrack = nil
-				end
-				pcall(track.Destroy, track)
-			end)
+	local function keepMining()
+		lastHit = os.clock()
+		if swingtrack and swingtrack.IsPlaying then return end
+		local ok, track = pcall(function()
+			return bedwars.AnimationUtil:playAnimation(lplr, bedwars.BlockController:getAnimationController():getAssetId(BREAK_ANIMATION))
+		end)
+		if not (ok and track) then return end
+		swingtrack = track
+		task.spawn(function()
+			repeat task.wait(0.1) until swingtrack ~= track or os.clock() - lastHit > BREAK_IDLE
+			if swingtrack == track then swingtrack = nil end
+			pcall(function() track:Stop(0.15) end)
 		end)
 	end
 
@@ -2701,24 +2707,17 @@ run(function()
 						Swings come at the game's own mining rhythm (SWING_GAP) however
 						quickly the blocks are going, each fading into the next.
 					]]
-					if anim and os.clock() - lastSwing >= SWING_GAP then
-						lastSwing = os.clock()
-						pcall(function()
-							local held = store.hand.tool and bedwars.ItemMeta[store.hand.tool.Name]
-							local swing = (held and held.breakBlockSwingAnimationOverride) or bedwars.AnimationType.FP_USE_ITEM
-							bedwars.ViewmodelController:playAnimation(swing)
-						end)
-
-						-- The character swing is the half other players can see.
-						pcall(function()
-							local previous = swingtrack
-							if previous and previous.IsPlaying then
-								previous:Stop(SWING_FADE)
-							end
-							local track = bedwars.AnimationUtil:playAnimation(lplr, bedwars.BlockController:getAnimationController():getAssetId(bedwars.AnimationType.SWORD_SWING))
-							swingtrack = track
-							endSwing(track)
-						end)
+					if anim then
+						if os.clock() - lastSwing >= SWING_GAP then
+							lastSwing = os.clock()
+							pcall(function()
+								local held = store.hand.tool and bedwars.ItemMeta[store.hand.tool.Name]
+								local swing = (held and held.breakBlockSwingAnimationOverride) or bedwars.AnimationType.FP_USE_ITEM
+								bedwars.ViewmodelController:playAnimation(swing)
+							end)
+						end
+						-- The character's half, which other players see.
+						keepMining()
 					end
 				end
 			end)
@@ -26464,25 +26463,30 @@ run(function()
 	        end
 	
 	        -- Held the way the prompt holds: given up if the statue goes or, when asked, if
-	        -- you walk out of reach before the time is up.
+	        -- you walk out of reach before the time is up. Guarded, because the dig
+	        -- animation loops: anything throwing in here used to skip the stop below and
+	        -- leave it playing for good.
 	        local finished = true
 	        local started = os.clock()
-	        while os.clock() - started < hold do
-	            task.wait()
-	            if not (AutoMiner.Enabled and statue.Parent and entitylib.isAlive) then
-	                finished = false
-	                break
-	            end
-	            if on(StayInRange) then
-	                local position = statuePosition(statue)
-	                if not position or (position - entitylib.character.RootPart.Position).Magnitude > Range.Value then
+	        local ok = pcall(function()
+	            while os.clock() - started < hold do
+	                task.wait()
+	                if not (AutoMiner.Enabled and statue.Parent and entitylib.isAlive) then
 	                    finished = false
 	                    break
 	                end
+	                if on(StayInRange) then
+	                    local position = statuePosition(statue)
+	                    if not position or (position - entitylib.character.RootPart.Position).Magnitude > Range.Value then
+	                        finished = false
+	                        break
+	                    end
+	                end
 	            end
-	        end
+	        end)
+	        if not ok then finished = false end
 	
-	        if track then pcall(function() track:Stop() end) end
+	        if track then pcall(function() track:Stop(0.15) end) end
 	        if not finished then
 	            attempted[statue] = nil
 	            return false
