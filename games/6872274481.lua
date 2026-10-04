@@ -14115,10 +14115,56 @@ run(function()
 	local ui, labels
 	local thinking = false
 	
+	--[[
+		What the policy decided last, applied every frame rather than every decision.
+	
+		Humanoid:Move is not a command, it is a value the engine reads each frame, and Roblox's
+		own control script writes it sixty times a second from your keyboard. A call at ten
+		hertz is overwritten before it is ever read, which is why Control appeared to do
+		nothing at all.
+	
+		So the decision is held here and re-applied on Heartbeat, and the control script is
+		switched off while Control is on - otherwise it would simply be writing zero over the
+		top of this for every frame your hands are still.
+	]]
 	local function say(text)
 		if Notify and Notify.Enabled then
 			notif('AIPlayer', text, 3)
 		end
+	end
+	
+	local desired = {direction = Vector3.zero, jump = false, yaw = 0, pitch = 0}
+	local controls, controlled = nil, false
+	
+	local function playerControls()
+		if controls then
+			return controls
+		end
+		local ok, module = pcall(function()
+			return require(lplr.PlayerScripts:WaitForChild('PlayerModule', 5))
+		end)
+		controls = ok and module and module:GetControls() or nil
+		return controls
+	end
+	
+	-- Taking the keyboard away is the whole difference between the policy driving and the
+	-- policy suggesting, so it is explicit and it is always given back.
+	local function takeControl(take)
+		if take == controlled then
+			return
+		end
+		local module = playerControls()
+		if not module then
+			return say('Cannot reach the control module, movement will fight your keys')
+		end
+		controlled = take
+		pcall(function()
+			if take then
+				module:Disable()
+			else
+				module:Enable()
+			end
+		end)
 	end
 	
 	--[[
@@ -14377,35 +14423,53 @@ run(function()
 		end
 	end
 	
-	local function apply(decision, dt, humanoid)
-		if DoMove.Enabled then
-			local frame = gameCamera.CFrame
-			local look = frame.LookVector * Vector3.new(1, 0, 1)
-			if look.Magnitude > 0 then
-				local direction = look.Unit * decision.forward + frame.RightVector * decision.right
-				if direction.Magnitude > 0.1 then
-					humanoid:Move(direction.Unit, false)
-				end
-			end
+	-- Records the decision for the per frame applier below. Nothing is written to the
+	-- character here: at ten hertz anything written is stale for five frames out of six.
+	local function apply(decision)
+		local frame = gameCamera.CFrame
+		local look = frame.LookVector * Vector3.new(1, 0, 1)
+		if look.Magnitude > 0 and (math.abs(decision.forward) > 0.1 or math.abs(decision.right) > 0.1) then
+			desired.direction = (look.Unit * decision.forward + frame.RightVector * decision.right)
+		else
+			desired.direction = Vector3.zero
 		end
 	
-		if DoAim.Enabled then
-			-- The head predicts a rate, so it is multiplied back out by the time since the last
-			-- decision rather than applied as an angle.
-			local yaw = decision.dYaw * dt * AimSpeed.Value
-			local pitch = decision.dPitch * dt * AimSpeed.Value
-			gameCamera.CFrame = gameCamera.CFrame * CFrame.Angles(0, 0, 0)
-			gameCamera.CFrame = CFrame.new(gameCamera.CFrame.Position) * CFrame.Angles(0, select(2, gameCamera.CFrame:ToOrientation()) + yaw, 0) * CFrame.Angles(math.clamp(select(1, gameCamera.CFrame:ToOrientation()) + pitch, -1.4, 1.4), 0, 0)
-		end
-	
-		if DoJump.Enabled and decision.jump > 0.5 then
-			humanoid.Jump = true
-		end
+		desired.jump = decision.jump > 0.5
+		-- Rates, kept as rates: the applier multiplies by its own frame time so a turn is the
+		-- same speed whatever the framerate.
+		desired.yaw = decision.dYaw
+		desired.pitch = decision.dPitch
 	
 		if DoAttack.Enabled and decision.attack > 0.5 then
 			pcall(function()
 				bedwars.SwordController:swingSwordAtMouse()
 			end)
+		end
+	end
+	
+	local function drive(dt)
+		if not entitylib.isAlive then
+			return
+		end
+		local humanoid = entitylib.character.Humanoid
+		if not humanoid then
+			return
+		end
+	
+		if DoMove.Enabled and desired.direction.Magnitude > 0.1 then
+			humanoid:Move(desired.direction.Unit, false)
+		end
+	
+		if DoJump.Enabled and desired.jump then
+			humanoid.Jump = true
+		end
+	
+		if DoAim.Enabled and (desired.yaw ~= 0 or desired.pitch ~= 0) then
+			local cf = gameCamera.CFrame
+			local pitch, yaw = cf:ToOrientation()
+			gameCamera.CFrame = CFrame.new(cf.Position)
+				* CFrame.Angles(0, yaw + desired.yaw * dt * AimSpeed.Value, 0)
+				* CFrame.Angles(math.clamp(pitch + desired.pitch * dt * AimSpeed.Value, -1.4, 1.4), 0, 0)
 		end
 	end
 	
@@ -14461,7 +14525,16 @@ run(function()
 				end
 	
 				history, actions = {}, {}
+				desired = {direction = Vector3.zero, jump = false, yaw = 0, pitch = 0}
 				buildUI()
+	
+				-- Every frame, because this is what the engine and the control script both
+				-- work at, and a mover that runs slower than them loses.
+				AIPlayer:Clean(runService.Heartbeat:Connect(function(dt)
+					if Mode.Value == 'Control' then
+						pcall(drive, dt)
+					end
+				end))
 				say('Model loaded, '..model.width..' wide')
 	
 				local last = tick()
@@ -14480,8 +14553,9 @@ run(function()
 							local decision = think(buildInput(state))
 	
 							local controlling = Mode.Value == 'Control'
+							takeControl(controlling and DoMove.Enabled)
 							if controlling then
-								apply(decision, dt, humanoid)
+								apply(decision)
 							end
 							remember(decision, controlling)
 							drawUI(decision, hasEnemy)
@@ -14503,6 +14577,9 @@ run(function()
 				until not AIPlayer.Enabled
 			else
 				thinking = false
+				-- Handed back whatever happened, including an error on the way out: leaving
+				-- somebody unable to walk is the worst thing this module could do.
+				takeControl(false)
 				ui, labels = nil, nil
 				history, actions = nil, nil
 			end
