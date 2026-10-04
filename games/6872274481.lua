@@ -29090,7 +29090,9 @@ run(function()
 	-- to somebody. A folder of forty timestamped files is not that.
 	local FOLDER = 'vain/training'
 	local FILE = FOLDER..'/data.txt'
-	local COLUMNS = 't,dt,actor,is_self,health,max_health,grounded,speed,vel_y,pitch,enemy,ex,ey,ez,edist,ehealth,evisible,eclosing,held,forward,right,dyaw,dpitch,jump,attack,sprint'
+	-- The t-prefixed columns are the enemy being FACED, added after the first recordings; the
+	-- e-prefixed ones are the nearest in space, kept so old files still load.
+	local COLUMNS = 't,dt,actor,is_self,health,max_health,grounded,speed,vel_y,pitch,enemy,ex,ey,ez,edist,ehealth,evisible,eclosing,held,forward,right,dyaw,dpitch,jump,attack,sprint,tenemy,tex,tey,tez,tedist,tehealth,tevisible'
 	
 	-- Executors vary on which of these exist, and a missing appendfile is survivable by
 	-- rewriting the whole file; a missing writefile is not.
@@ -29262,9 +29264,57 @@ run(function()
 		return head and head.CFrame or root.CFrame
 	end
 	
+	--[[
+		The enemy a player is actually dealing with, which is not the nearest one.
+	
+		Measured on the first recordings: the nearest enemy sits a median of 55 degrees off
+		where the player is looking, and lands within 15 degrees only a quarter of the time. So
+		three rows in four were telling the model to aim at somebody the player was not
+		fighting, and the aim it learned from that was worth nothing - turning correlated with
+		its own momentum and not at all with where this enemy was.
+	
+		Chosen by angle from the view direction, with distance only as a tie break between
+		targets at a similar bearing. Someone behind you is never the one you are aiming at, so
+		the search is limited to the front.
+	
+		Recorded alongside the nearest-in-space columns rather than replacing them: those are
+		what the current model was trained on, and a file that silently changed meaning would
+		be worse than one with two answers in it.
+	]]
+	local function facedEnemy(subject, root, frame)
+		local mine = teamOf(subject)
+		local best, bestScore, bestParts, bestDist = nil, math.huge, nil, nil
+	
+		for _, plr in playersService:GetPlayers() do
+			if plr ~= subject and (mine == nil or teamOf(plr) ~= mine) then
+				local char, theirRoot, humanoid = parts(plr)
+				if char then
+					local offset = theirRoot.Position - root.Position
+					local dist = offset.Magnitude
+					if dist > 0.5 and dist <= Range.Value then
+						local rel = frame:PointToObjectSpace(theirRoot.Position)
+						local ahead = -rel.Z
+						if ahead > 0 then
+							-- Radians off the crosshair, plus a small cost per stud so that two
+							-- targets on the same bearing resolve to the closer one.
+							local angle = math.atan2(math.abs(rel.X), ahead)
+							local score = angle + dist / 500
+							if score < bestScore then
+								best, bestScore, bestParts, bestDist = plr, score, {Root = theirRoot, Humanoid = humanoid, Character = char}, dist
+							end
+						end
+					end
+				end
+			end
+		end
+	
+		return best, bestParts, bestDist
+	end
+	
 	local function nearestEnemy(subject, root)
 		local mine = teamOf(subject)
 		local best, bestDist, bestParts = nil, Range.Value, nil
+		local found = false
 	
 		for _, plr in playersService:GetPlayers() do
 			if plr ~= subject and (mine == nil or teamOf(plr) ~= mine) then
@@ -29274,13 +29324,15 @@ run(function()
 				if char then
 					local dist = (theirRoot.Position - root.Position).Magnitude
 					if dist < bestDist and dist > 0.5 then
-						best, bestDist, bestParts = plr, dist, {Root = theirRoot, Humanoid = humanoid, Character = char}
+						best, bestDist, bestParts, found = plr, dist, {Root = theirRoot, Humanoid = humanoid, Character = char}, true
 					end
 				end
 			end
 		end
 	
-		return best, bestParts, bestDist
+		-- Without this, a row with no enemy carried the range slider as its distance, which
+		-- reads as a target sitting exactly at the edge of vision rather than as nobody there.
+		return best, bestParts, found and bestDist or nil
 	end
 	
 	local function heldOf(plr, char)
@@ -29372,6 +29424,20 @@ run(function()
 			jump = (not grounded) and last.grounded and velocity.Y > 1
 		end
 	
+		-- The faced target, written beside the nearest one.
+		local faced, facedParts, facedDist = facedEnemy(plr, root, frame)
+		local tex, tey, tez, tehealth, tevisible = nil, nil, nil, nil, nil
+		if faced and facedParts then
+			local rel = frame:PointToObjectSpace(facedParts.Root.Position)
+			tex, tey, tez = rel.X, rel.Y, -rel.Z
+			tehealth = facedParts.Humanoid.Health
+	
+			local params = RaycastParams.new()
+			params.FilterType = Enum.RaycastFilterType.Exclude
+			params.FilterDescendantsInstances = {char, facedParts.Character, gameCamera}
+			tevisible = workspace:Raycast(frame.Position, facedParts.Root.Position - root.Position, params) == nil
+		end
+	
 		table.insert(buffer, table.concat({
 			num(now), num(dt), actorId(plr.Name), flag(isSelf),
 			num(humanoid.Health), num(humanoid.MaxHealth), flag(grounded),
@@ -29379,7 +29445,8 @@ run(function()
 			flag(enemy ~= nil), num(ex), num(ey), num(ez), num(dist), num(ehealth), flag(evisible), num(eclosing),
 			heldOf(plr, char),
 			num(forward), num(right), num(wrap(yaw - last.yaw)), num(pitch - last.pitch),
-			flag(jump), flag(attack), flag(sprint)
+			flag(jump), flag(attack), flag(sprint),
+			flag(faced ~= nil), num(tex), num(tey), num(tez), num(facedDist), num(tehealth), flag(tevisible)
 		}, ','))
 		rows += 1
 	end
