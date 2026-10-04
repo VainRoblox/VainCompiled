@@ -13366,9 +13366,31 @@ run(function()
 		end
 	end
 	
+	--[[
+		Billboards waiting to be redrawn, and the thread that redraws them.
+	
+		Nothing is drawn from a chest's own signals any more. Those fire on threads the engine
+		owns, and on executors without setthreadidentity there is no way to raise one - which is
+		what "cannot access Instance (lacking capability Plugin)" was, hundreds of times a
+		match, from every chest anybody opened. The guards below still run where that function
+		exists; this is what covers the hosts where it does not.
+	
+		What the signals do now is mark a billboard dirty. The drawing happens on a connection
+		made in the module's own enable, from Vain's thread, so it inherits Vain's identity
+		rather than the engine's.
+	
+		It also stops the spam at the source: taking ten items out of a chest fired ten full
+		redraws a frame apart, and now coalesces into one.
+	]]
+	local dirty = {}
+	
+	local function queue(v)
+		dirty[v] = true
+	end
+	
 	local function refreshAll()
 		for _, v in Reference do
-			task.spawn(refreshAdornee, v)
+			queue(v)
 		end
 	end
 	
@@ -13554,7 +13576,7 @@ run(function()
 		-- when the chest was first looked at.
 		local function watchAmount(item)
 			StorageESP:Clean(item:GetAttributeChangedSignal('Amount'):Connect(function()
-				refreshAdornee(billboard)
+				queue(billboard)
 			end))
 		end
 		for _, item in chest:GetChildren() do
@@ -13563,18 +13585,36 @@ run(function()
 	
 		StorageESP:Clean(chest.ChildAdded:Connect(function(item)
 			watchAmount(item)
-			refreshAdornee(billboard)
+			queue(billboard)
 		end))
 		StorageESP:Clean(chest.ChildRemoved:Connect(function()
-			refreshAdornee(billboard)
+			queue(billboard)
 		end))
-		task.spawn(refreshAdornee, billboard)
+		queue(billboard)
 	end
 	
 	StorageESP = vain.Categories.Render:CreateModule({
 		Name = 'StorageESP',
 		Function = function(callback)
 			if callback then
+				table.clear(dirty)
+				-- Connected here rather than anywhere nested inside a game signal: a callback
+				-- inherits the identity of the thread that made the connection, and this one is
+				-- made on Vain's.
+				StorageESP:Clean(runService.Heartbeat:Connect(function()
+					if not next(dirty) then return end
+	
+					local todo = dirty
+					dirty = {}
+					for v in todo do
+						-- A billboard destroyed between being marked and being drawn is not an
+						-- error worth a stack trace in the console every time a chest breaks.
+						if v.Parent then
+							pcall(refreshAdornee, v)
+						end
+					end
+				end))
+	
 				StorageESP:Clean(collectionService:GetInstanceAddedSignal('chest'):Connect(Added))
 				for _, v in collectionService:GetTagged('chest') do
 					task.spawn(Added, v)
@@ -13582,6 +13622,7 @@ run(function()
 			else
 				table.clear(Reference)
 				table.clear(alerted)
+				table.clear(dirty)
 				Folder:ClearAllChildren()
 			end
 		end,
@@ -13591,9 +13632,7 @@ run(function()
 		Name = 'Item',
 		Tooltip = 'Which items this applies to',
 		Function = function()
-			for _, v in Reference do
-				task.spawn(refreshAdornee, v)
-			end
+			refreshAll()
 		end
 	})
 	Background = StorageESP:CreateToggle({
@@ -13628,18 +13667,14 @@ run(function()
 		Name = 'Show Amount',
 		Tooltip = 'Displays the quantity of each item in the corner',
 		Function = function()
-			for _, v in Reference do
-				task.spawn(refreshAdornee, v)
-			end
+			refreshAll()
 		end
 	})
 	ShowAll = StorageESP:CreateToggle({
 		Name = 'Show All',
 		Tooltip = 'Shows all items instead of only those in the list',
 		Function = function()
-			for _, v in Reference do
-				task.spawn(refreshAdornee, v)
-			end
+			refreshAll()
 		end
 	})
 	ShowOwn = StorageESP:CreateToggle({
