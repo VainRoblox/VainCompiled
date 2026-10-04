@@ -14099,6 +14099,7 @@ run(function()
 	local DoAttack
 	local AimSpeed
 	local Rate
+	local Debug
 	local Notify
 	
 	-- Where the exported weights come from, and where they are kept once fetched. Not bundled
@@ -14127,6 +14128,52 @@ run(function()
 		switched off while Control is on - otherwise it would simply be writing zero over the
 		top of this for every frame your hands are still.
 	]]
+	--[[
+		Telemetry, for when the module is not doing what it looks like it should.
+	
+		Everything inside the decision loop is wrapped in a pcall, so a mistake in there does
+		not stop the game - it just makes the module quietly do nothing, which is exactly what
+		it did do, and "it does nothing" is not enough to find it from. This posts what was
+		decided and what was swallowed to the same receiver the recordings go to.
+	
+		Once a second rather than every decision: the point is to be readable, and ten lines a
+		second of a policy doing the same thing is not.
+	]]
+	local DEBUG_URL = 'http://127.0.0.1:8750/debug'
+	local post = (syn and syn.request) or (http and http.request) or http_request or request
+	local lastDebug, lastError = 0, nil
+	
+	local function report(payload)
+		if not Debug or not Debug.Enabled or not post then
+			return
+		end
+		if tick() - lastDebug < 1 then
+			return
+		end
+		lastDebug = tick()
+	
+		payload.error = lastError
+		payload.mode = Mode and Mode.Value
+		payload.controlled = controlled
+		payload.outputs = {
+			move = DoMove and DoMove.Enabled,
+			aim = DoAim and DoAim.Enabled,
+			jump = DoJump and DoJump.Enabled,
+			attack = DoAttack and DoAttack.Enabled
+		}
+	
+		task.spawn(function()
+			pcall(function()
+				return post({
+					Url = DEBUG_URL,
+					Method = 'POST',
+					Headers = {['Content-Type'] = 'application/json'},
+					Body = httpService:JSONEncode(payload)
+				})
+			end)
+		end)
+	end
+	
 	local function say(text)
 		if Notify and Notify.Enabled then
 			notif('AIPlayer', text, 3)
@@ -14544,7 +14591,7 @@ run(function()
 	
 					if entitylib.isAlive and not thinking then
 						thinking = true
-						local ok = pcall(function()
+						local ok, err = pcall(function()
 							local root = entitylib.character.RootPart
 							local humanoid = entitylib.character.Humanoid
 							if not humanoid then return end
@@ -14559,16 +14606,27 @@ run(function()
 							end
 							remember(decision, controlling)
 							drawUI(decision, hasEnemy)
+							report({
+								decision = decision,
+								enemy = hasEnemy,
+								alive = true,
+								speed = root.AssemblyLinearVelocity.Magnitude,
+								moving = desired.direction.Magnitude > 0.1
+							})
 						end)
 						if not ok then
 							-- A character replaced mid decision is the usual cause, and the
 							-- history it was reading belongs to a body that no longer exists.
+							-- Kept rather than discarded: a swallowed error is how this module
+							-- comes to do nothing for a reason nobody can see.
+							lastError = tostring(err)
 							history, actions = {}, {}
 						end
 						thinking = false
 					else
 						if not entitylib.isAlive then
 							history, actions = {}, {}
+							report({alive = false})
 						end
 					end
 	
@@ -14628,6 +14686,10 @@ run(function()
 		Max = 20,
 		Default = TRAINED_RATE,
 		Suffix = 'hz'
+	})
+	Debug = AIPlayer:CreateToggle({
+		Name = 'Debug',
+		Tooltip = 'Posts what it decided to a local receiver'
 	})
 	Notify = AIPlayer:CreateToggle({
 		Name = 'Notify',
