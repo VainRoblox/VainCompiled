@@ -14414,6 +14414,32 @@ run(function()
 		return input
 	end
 	
+	--[[
+		The limits of what anybody actually did.
+	
+		Taken from the recordings: turning past about ten radians a second is the top one per
+		cent of real play and thirty is the hardest flick in the whole dataset. Anything beyond
+		that is not a decision, it is the network extrapolating.
+	
+		This matters because the policy reads its own last four actions. An output that leaves
+		the range it was trained on comes back as an input it has never seen, which produces a
+		wilder output, and the whole thing runs away inside a second - a turn rate of ten to the
+		fiftieth, in practice. Clamping the output is what closes that loop, and it is clamped
+		before being remembered as well: feeding back the number the policy wanted rather than
+		the one that was used would leave the same runaway in the history.
+	]]
+	local MAX_YAW = 12
+	local MAX_PITCH = 6
+	
+	local function sane(value, limit)
+		-- Non finite first: a NaN compares false against everything, so clamp alone lets it
+		-- through and one of them poisons every frame after it.
+		if value ~= value or value == math.huge or value == -math.huge then
+			return 0
+		end
+		return math.clamp(value, -limit, limit)
+	end
+	
 	local function think(input)
 		local mean, std = model.mean, model.std
 		local normalised = table.create(#input)
@@ -14431,12 +14457,12 @@ run(function()
 	
 		return {
 			-- The move head was trained through a tanh, so it is applied here too.
-			forward = math.tanh(move[1]),
-			right = math.tanh(move[2]),
+			forward = sane(math.tanh(move[1]), 1),
+			right = sane(math.tanh(move[2]), 1),
 			-- Look was learned standardised and in radians a second, so it is put back into
 			-- both before it means anything.
-			dYaw = look[1] * model.lookStd[1] + model.lookMean[1],
-			dPitch = look[2] * model.lookStd[2] + model.lookMean[2],
+			dYaw = sane(look[1] * model.lookStd[1] + model.lookMean[1], MAX_YAW),
+			dPitch = sane(look[2] * model.lookStd[2] + model.lookMean[2], MAX_PITCH),
 			jump = sigmoid(jump[1]),
 			attack = sigmoid(attack[1])
 		}
