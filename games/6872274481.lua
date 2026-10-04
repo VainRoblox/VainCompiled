@@ -14111,6 +14111,7 @@ run(function()
 	local DoJump
 	local DoAttack
 	local AimSpeed
+	local OnlyCombat
 	local TakeKeys
 	local Rate
 	local Debug
@@ -14658,13 +14659,31 @@ run(function()
 							local state, hasEnemy = stateVector(root, humanoid)
 							local decision = think(buildInput(state))
 	
+							--[[
+								Driving only when there is something to drive at.
+	
+								The policy sits around 0.04 whenever nothing is happening, which
+								is not a fault - most of what it learned from was people walking
+								about - but it does mean handing it the character full time buys
+								a twitch instead of a player. Holding it to fights is where its
+								numbers are actually good: move is two thirds better than the
+								average there, against a fifth of that out of combat.
+							]]
 							local controlling = Mode.Value == 'Control'
+								and (not OnlyCombat.Enabled or hasEnemy)
 							-- Only when explicitly asked for. The policy sits near zero when
 							-- nothing is happening, so taking the keyboard by default leaves
 							-- you unable to move while it declines to move you.
 							takeControl(controlling and DoMove.Enabled and TakeKeys.Enabled)
 							if controlling then
 								apply(decision)
+							else
+								-- Cleared rather than left standing, so the last thing it wanted
+								-- is not still being applied every frame after it stopped
+								-- deciding.
+								desired.direction = Vector3.zero
+								desired.jump = false
+								desired.yaw, desired.pitch = 0, 0
 							end
 							remember(decision, controlling)
 							pcall(drawUI, decision, hasEnemy)
@@ -14736,6 +14755,11 @@ run(function()
 	DoAttack = AIPlayer:CreateToggle({
 		Name = 'Attack',
 		Tooltip = 'Lets it swing\nWeakest of the four outputs'
+	})
+	OnlyCombat = AIPlayer:CreateToggle({
+		Name = 'Only In Combat',
+		Tooltip = 'Only drives while an enemy is visible',
+		Default = true
 	})
 	TakeKeys = AIPlayer:CreateToggle({
 		Name = 'Take Keyboard',
@@ -29040,6 +29064,7 @@ run(function()
 	local Others
 	local Range
 	local SaveEvery
+	local Stream
 	local Notify
 	local writing = false
 	local flushing = false
@@ -29149,6 +29174,34 @@ run(function()
 		buffer is taken first so that sampling can carry on filling a fresh one while this
 		works through the old.
 	]]
+	--[[
+		Optionally sends the same rows to a receiver on this machine.
+	
+		The file this writes lives in the executor's own folder, which nothing else can read -
+		every recording so far has been carried across by hand. Streaming puts the rows
+		somewhere a training script can pick them up as they arrive, which is the difference
+		between training on what you played last week and training on what you played a minute
+		ago. Off by default: it is only useful if you are running the receiver.
+	]]
+	local STREAM_URL = 'http://127.0.0.1:8750/rows'
+	local post = (syn and syn.request) or (http and http.request) or http_request or request
+	
+	local function send(block)
+		if not Stream or not Stream.Enabled or not post then
+			return
+		end
+		task.spawn(function()
+			pcall(function()
+				return post({
+					Url = STREAM_URL,
+					Method = 'POST',
+					Headers = {['Content-Type'] = 'text/csv'},
+					Body = table.concat(block, '\n')..'\n'
+				})
+			end)
+		end)
+	end
+	
 	local function flush()
 		if flushing or #buffer == 0 then
 			return
@@ -29157,6 +29210,7 @@ run(function()
 		local block = buffer
 		buffer = {}
 		flushing = true
+		send(block)
 	
 		task.spawn(function()
 			for start = 1, #block, CHUNK do
@@ -29468,6 +29522,10 @@ run(function()
 		Suffix = function(val)
 			return val == 1 and 'minute' or 'minutes'
 		end
+	})
+	Stream = TrainingData:CreateToggle({
+		Name = 'Stream',
+		Tooltip = 'Also sends rows to a receiver on this machine'
 	})
 	Notify = TrainingData:CreateToggle({
 		Name = 'Notify',
