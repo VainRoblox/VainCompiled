@@ -11507,8 +11507,25 @@ run(function()
 		Function = function(callback)
 			if callback then
 				methodused = DrawingToggle.Enabled and 'Drawing' or 'Normal'
+	
+				--[[
+					Entity events arrive on threads the engine owns, which may not touch
+					instances. EntityAdded has raised the identity since it was written;
+					Removed and Updated were connected raw and threw "cannot access Instance"
+					on every entity that left or changed - hundreds a match in a full lobby,
+					and every one of them a destroy that did not happen.
+				]]
+				local function onEntityThread(handler)
+					return function(...)
+						if vain.ThreadFix then
+							setthreadidentity(8)
+						end
+						return handler(...)
+					end
+				end
+	
 				if Removed[methodused] then
-					NameTags:Clean(entitylib.Events.EntityRemoved:Connect(Removed[methodused]))
+					NameTags:Clean(entitylib.Events.EntityRemoved:Connect(onEntityThread(Removed[methodused])))
 				end
 				if Added[methodused] then
 					for _, v in entitylib.List do
@@ -11517,19 +11534,15 @@ run(function()
 						end
 						Added[methodused](v)
 					end
-					NameTags:Clean(entitylib.Events.EntityAdded:Connect(function(ent)
-						-- Entity events can run on a game thread that may not create instances.
-						if vain.ThreadFix then
-							setthreadidentity(8)
-						end
+					NameTags:Clean(entitylib.Events.EntityAdded:Connect(onEntityThread(function(ent)
 						if Reference[ent] then
 							Removed[methodused](ent)
 						end
 						Added[methodused](ent)
-					end))
+					end)))
 				end
 				if Updated[methodused] then
-					NameTags:Clean(entitylib.Events.EntityUpdated:Connect(Updated[methodused]))
+					NameTags:Clean(entitylib.Events.EntityUpdated:Connect(onEntityThread(Updated[methodused])))
 					for _, v in entitylib.List do
 						Updated[methodused](v)
 					end
