@@ -319,11 +319,31 @@ local function velocityOf(track, sample)
 	return track.spoofed and sample.measured or sample.vel
 end
 
+--[[
+	Sideways speed is averaged over the last few frames (SMOOTH seconds) rather than read
+	from the newest sample alone. Replicated movement arrives in uneven bunches, so one
+	frame can carry a velocity a few studs a second off, and at the far end of a long shot
+	that is a miss. The window is short enough that a reversal still shows within a frame
+	or two; vertical speed is never averaged, since a jump has to be seen the moment it
+	starts.
+]]
+local SMOOTH = 0.05
+
 local function currentVelocity(track, fallback)
 	local latest = track.samples[#track.samples]
 	if not latest then return fallback end
 
 	local reported, measured = velocityOf(track, latest), latest.measured
+	local sum, count = Vector3.zero, 0
+	for i = #track.samples, 1, -1 do
+		local sample = track.samples[i]
+		if latest.at - sample.at > SMOOTH then break end
+		sum += velocityOf(track, sample) * horizontal
+		count += 1
+	end
+	if count > 1 then
+		reported = sum / count + Vector3.new(0, reported.Y, 0)
+	end
 	-- Moving with no velocity at all: an anchored rig, a tweened NPC, CFrame movement.
 	if measured and (reported * horizontal).Magnitude < 1 and (measured * horizontal).Magnitude > 3 then
 		return Vector3.new(measured.X, reported.Y, measured.Z)
@@ -742,7 +762,9 @@ end
 	                                        rootPosition,
 	                                        lifetime    - the longest the shot can fly,
 	                                        floorParams - what can be stood on, when that is
-	                                                      not the same as params
+	                                                      not the same as params,
+	                                        leadScale   - learnt multiplier on sideways lead,
+	                                        aimLift     - learnt height offset of the aim
 	                                    }
 ]]
 function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, targetVelocity, playerGravity, playerHeight, playerJump, params, extra)
@@ -788,6 +810,21 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 		end
 	else
 		aimAt = buildMotion(origin, rootPos, targetPos - rootPos, velocity, fall, playerHeight, playerJump, floorParams, track, now)
+	end
+
+	--[[
+		A correction learnt from earlier misses on this target, when the caller has one:
+		leadScale stretches or shrinks how far they are led sideways, aimLift raises or
+		lowers the point aimed at.
+	]]
+	local leadScale, aimLift = extra.leadScale or 1, extra.aimLift or 0
+	if leadScale ~= 1 or aimLift ~= 0 then
+		local predicted = aimAt
+		local start = predicted(0)
+		aimAt = function(t)
+			local moved = predicted(t) - start
+			return start + Vector3.new(moved.X * leadScale, moved.Y + aimLift, moved.Z * leadScale)
+		end
 	end
 
 	local distance = (targetPos - origin).Magnitude

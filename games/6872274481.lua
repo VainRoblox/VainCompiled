@@ -6658,6 +6658,78 @@ run(function()
 	local CircleFilled
 	local CircleObject
 	local CircleHeldOnly
+	local LearnMisses
+	
+	--[[
+		Learning Prediction.
+	
+		Every shot the aimbot aims is followed to where it ends. If it hit, nothing changes. If
+		it missed close by, the gap at its nearest pass says how: ahead of the target along the
+		way they were moving means they were led too far, behind means not far enough, above or
+		below means the aim height was off. Each player keeps a lead multiplier and a height
+		offset nudged a step towards closing that gap, kept within bounds, so someone who keeps
+		stopping short or keeps hopping gets aimed at the way they actually move. Shots Hit
+		Chance threw wide on purpose are not learnt from.
+	]]
+	local learnt = {}
+	local pendingShot
+	local LEARN_RATE, LEAD_MIN, LEAD_MAX, LIFT_LIMIT = 0.35, 0.5, 1.5, 3
+	
+	local function learning(plr)
+		if not (LearnMisses and LearnMisses.Enabled and plr.Player) then return nil end
+		local entry = learnt[plr.Player.UserId]
+		if not entry then
+			entry = {scale = 1, lift = 0}
+			learnt[plr.Player.UserId] = entry
+		end
+		return entry
+	end
+	
+	local function followShot(model, shot)
+		local part = model.PrimaryPart or model:FindFirstChildWhichIsA('BasePart', true)
+		if not part then return end
+		local closest, gap = math.huge, nil
+		local hit = false
+		local started = os.clock()
+		local connection
+		local impact
+		pcall(function()
+			local events = require(lplr.PlayerScripts.TS['client-sync-events']).ClientSyncEvents
+			impact = events.LocalProjectileImpact:connect(function(event)
+				if type(event) == 'table' and event.projectile == model then
+					local entity = event.hitEntity
+					local character = entity and entity.getInstance and entity:getInstance()
+					hit = character ~= nil and character == shot.character
+				end
+			end)
+		end)
+		local function finish()
+			connection:Disconnect()
+			if impact then pcall(function() impact:Disconnect() end) end
+			local entry = learnt[shot.userId]
+			if hit or not entry or not gap or closest > 12 then return end
+			local flat = shot.velocity * Vector3.new(1, 0, 1)
+			local lead = flat.Magnitude * shot.flight
+			if flat.Magnitude > 4 and lead > 1 then
+				local along = (gap * Vector3.new(1, 0, 1)):Dot(flat.Unit)
+				entry.scale = math.clamp(entry.scale - LEARN_RATE * along / lead, LEAD_MIN, LEAD_MAX)
+			end
+			if math.abs(gap.Y) > 1.2 then
+				entry.lift = math.clamp(entry.lift - LEARN_RATE * gap.Y, -LIFT_LIMIT, LIFT_LIMIT)
+			end
+		end
+		connection = runService.Heartbeat:Connect(function()
+			local root = shot.character and shot.character.PrimaryPart
+			if not (model.Parent and part.Parent and root) or os.clock() - started > shot.flight + 1 then
+				finish()
+				return
+			end
+			local offset = part.Position - root.Position
+			if offset.Magnitude < closest then
+				closest, gap = offset.Magnitude, offset
+			end
+		end)
+	end
 	
 	-- Whether what is in hand fires or throws anything - bows, crossbows, fireballs, pearls,
 	-- kit items.
@@ -6912,8 +6984,10 @@ run(function()
 			the shot that "could easily have been hit".
 		]]
 	
+		local spread = false
 		if HitChance.Value < 100 and math.random(1, 100) > HitChance.Value then
 			aimpos = applySpread(aimpos, offsetpos)
+			spread = true
 		end
 	
 		-- Solved from where the projectile actually leaves, not from positionFrom.
@@ -6979,18 +7053,21 @@ run(function()
 			jumpSpeed = jumpSpeed or 42.6
 		end
 	
+		local correction = not pearl and learning(plr) or nil
 		local hints = {
 			root = not pearl and plr.RootPart or nil,
 			rootPosition = plr.RootPart and plr.RootPart.Position or nil,
 			lifetime = lifetime,
 			floorParams = floorCheck,
+			leadScale = correction and correction.scale or nil,
+			aimLift = correction and correction.lift or nil,
 		}
 	
 		local aimDirection = (aimpos - offsetpos)
 		if aimDirection.Magnitude <= 0 then return nil end
 	
 		local launchFrom = muzzleAlong(aimDirection.Unit)
-		local calc, launchDir = prediction.SolveTrajectory(launchFrom, projSpeed, gravity, aimpos, motion, playerGravity, plr.HipHeight, jumpSpeed, rayCheck, hints)
+		local calc, launchDir, flight = prediction.SolveTrajectory(launchFrom, projSpeed, gravity, aimpos, motion, playerGravity, plr.HipHeight, jumpSpeed, rayCheck, hints)
 		if not calc then return nil end
 	
 		--[[
@@ -7005,14 +7082,24 @@ run(function()
 		if launchDir then
 			local corrected = muzzleAlong(launchDir)
 			if (corrected - launchFrom).Magnitude > 0.05 then
-				local refined = prediction.SolveTrajectory(corrected, projSpeed, gravity, aimpos, motion, playerGravity, plr.HipHeight, jumpSpeed, rayCheck, hints)
+				local refined, _, refinedFlight = prediction.SolveTrajectory(corrected, projSpeed, gravity, aimpos, motion, playerGravity, plr.HipHeight, jumpSpeed, rayCheck, hints)
 				if refined then
-					calc, launchFrom = refined, corrected
+					calc, launchFrom, flight = refined, corrected, refinedFlight or flight
 				end
 			end
 		end
 	
 		targetinfo.Targets[plr] = tick() + 1
+		-- The shot about to leave, for Learning Prediction to follow once it is launched.
+		if correction and not worldmeta and not spread and flight then
+			pendingShot = {
+				userId = plr.Player.UserId,
+				character = character,
+				velocity = plr.RootPart and plr.RootPart.AssemblyLinearVelocity or Vector3.zero,
+				flight = flight,
+				at = os.clock()
+			}
+		end
 		--[[
 			The draw the shot is fired at, not a full one.
 	
@@ -7087,6 +7174,21 @@ run(function()
 						end
 					end
 				end))
+	
+				-- Our own shot leaving: handed to Learning Prediction with what it was aimed at.
+				pcall(function()
+					local events = require(lplr.PlayerScripts.TS['client-sync-events']).ClientSyncEvents
+					local launched = events.ProjectileLaunched:connect(function(event)
+						local shot = pendingShot
+						if not (shot and type(event) == 'table' and event.projectile) then return end
+						if event.shooter ~= lplr.Character or os.clock() - shot.at > 0.5 then return end
+						pendingShot = nil
+						followShot(event.projectile, shot)
+					end)
+					ProjectileAimbot:Clean(function()
+						pcall(function() launched:Disconnect() end)
+					end)
+				end)
 	
 				old = bedwars.ProjectileController.calculateImportantLaunchValues
 				--[[
@@ -7203,6 +7305,14 @@ run(function()
 		Name = 'Other Projectiles',
 		Tooltip = 'Also handles projectiles other than arrows',
 		Default = true
+	})
+	LearnMisses = ProjectileAimbot:CreateToggle({
+		Name = 'Learning Prediction',
+		Tooltip = 'Adjusts lead and height per player from shots that missed',
+		Default = true,
+		Function = function(callback)
+			if not callback then table.clear(learnt) end
+		end
 	})
 	InstantCharge = ProjectileAimbot:CreateToggle({
 		Name = 'Instant Charge',
