@@ -3056,7 +3056,7 @@ function mainapi:CreateGUI()
 		button.BackgroundColor3 = uipallet.Main
 		button.BorderSizePixel = 0
 		button.AutoButtonColor = false
-		button.Text = (categorysettings.Icon and '                        ' or '             ')..categorysettings.Name
+		button.Text = (categorysettings.Icon and '                   ' or '             ')..categorysettings.Name
 		button.TextXAlignment = Enum.TextXAlignment.Left
 		button.TextColor3 = color.Dark(uipallet.Text, 0.16)
 		button.TextSize = 14
@@ -3071,7 +3071,7 @@ function mainapi:CreateGUI()
 			local isize = categorysettings.Size
 			-- Only the small ones. Overlays is authored at 24 and does not need it; scaling
 			-- everything made that one overbearing.
-			local f = isize.X.Offset < 20 and 1.45 or 1
+			local f = isize.X.Offset < 20 and 1.25 or 1
 			icon.Size = UDim2.fromOffset(math.round(isize.X.Offset * f), math.round(isize.Y.Offset * f))
 			icon.Position = UDim2.fromOffset(12, 11)
 			icon.BackgroundTransparency = 1
