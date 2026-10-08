@@ -643,6 +643,9 @@ end
 
 do
 	function tween:Tween(obj, tweeninfo, goal, tab)
+		if mainapi.ThreadFix then
+			pcall(setthreadidentity, 8)
+		end
 		tab = tab or self.tweens
 		if tab[obj] then
 			tab[obj]:Cancel()
@@ -3093,8 +3096,8 @@ function mainapi:CreateGUI()
 		end
 		local arrow = Instance.new('ImageLabel')
 		arrow.Name = 'Arrow'
-		arrow.Size = UDim2.fromOffset(10, 20)
-		arrow.Position = UDim2.new(1, -23, 0, 10)
+		arrow.Size = UDim2.fromOffset(8, 16)
+		arrow.Position = UDim2.new(1, -22, 0, 13)
 		arrow.BackgroundTransparency = 1
 		arrow.Image = getcustomasset('vain/assets/new/expandright.png')
 		arrow.ImageColor3 = color.Light(uipallet.Main, 0.37)
@@ -3154,8 +3157,8 @@ function mainapi:CreateGUI()
 		bar.Parent = children
 		components.Divider(bar)
 		local button = Instance.new('ImageButton')
-		button.Size = UDim2.fromOffset(24, 24)
-		button.Position = UDim2.new(1, -29, 0, 7)
+		button.Size = UDim2.fromOffset(19, 19)
+		button.Position = UDim2.new(1, -27, 0, 10)
 		button.BackgroundTransparency = 1
 		button.AutoButtonColor = false
 		button.Image = getcustomasset('vain/assets/new/overlaysicon.png')
@@ -3374,8 +3377,8 @@ function mainapi:CreateGUI()
 		button.Parent = settingschildren
 		local arrow = Instance.new('ImageLabel')
 		arrow.Name = 'Arrow'
-		arrow.Size = UDim2.fromOffset(9, 18)
-		arrow.Position = UDim2.new(1, -22, 0, 11)
+		arrow.Size = UDim2.fromOffset(7, 14)
+		arrow.Position = UDim2.new(1, -21, 0, 14)
 		arrow.BackgroundTransparency = 1
 		arrow.Image = getcustomasset('vain/assets/new/expandright.png')
 		arrow.ImageColor3 = color.Light(uipallet.Main, 0.37)
@@ -3680,8 +3683,8 @@ function mainapi:CreateGUI()
 		expandbutton.Parent = slider
 		local expandicon = Instance.new('ImageLabel')
 		expandicon.Name = 'Expand'
-		expandicon.Size = UDim2.fromOffset(16, 10)
-		expandicon.Position = UDim2.fromOffset(1, 2)
+		expandicon.Size = UDim2.fromOffset(12, 7)
+		expandicon.Position = UDim2.fromOffset(3, 4)
 		expandicon.BackgroundTransparency = 1
 		expandicon.Image = getcustomasset('vain/assets/new/expandicon.png')
 		expandicon.ImageColor3 = color.Dark(uipallet.Text, 0.43)
