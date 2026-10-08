@@ -9,7 +9,23 @@ local delfile = delfile or function(file)
 end
 
 local function downloadFile(path, func)
-	if not isfile(path) then
+	--[[
+		An emptied file counts as missing.
+
+		delfile's fallback writes an empty file rather than deleting, and a host with a
+		real isfile then reports that as present - so the file would never be fetched
+		again and the client would sit on nothing. Only assets are checked this way; a
+		.lua is already handled by the watermark.
+	]]
+	local cached = isfile(path)
+	if cached and not path:find('%.lua') then
+		local ok, data = pcall(readfile, path)
+		if not ok or data == '' then
+			cached = false
+		end
+	end
+
+	if not cached then
 		local suc, res = pcall(function()
 			return game:HttpGet('https://raw.githubusercontent.com/VainRoblox/VainCompiled/'..readfile('vain/profiles/commit.txt')..'/'..select(1, path:gsub('vain/', '')), true)
 		end)
@@ -22,6 +38,32 @@ local function downloadFile(path, func)
 		writefile(path, res)
 	end
 	return (func or readfile)(path)
+end
+
+--[[
+	Drops cached assets whether or not they carry a watermark.
+
+	wipeFolder can only remove files holding the download watermark, and that watermark is
+	a Lua comment - so it is never written into a png, and a png is therefore never
+	removed. downloadFile only fetches a file that is missing, so once an image has been
+	cached it is cached for good and no update can replace it.
+
+	That is not theoretical: clients that loaded during a build with different artwork are
+	still showing it, and nothing short of deleting the files by hand would fix them.
+	Keyed on the commit rather than run every time, since re-downloading eighty images on
+	every injection would be worse than the problem.
+]]
+local function wipeAssets()
+	if not isfolder('vain/assets') then return end
+	for _, entry in listfiles('vain/assets') do
+		if isfolder(entry) then
+			for _, file in listfiles(entry) do
+				pcall(delfile, file)
+			end
+		else
+			pcall(delfile, entry)
+		end
+	end
 end
 
 local function wipeFolder(path)
@@ -73,6 +115,14 @@ if not shared.VainDeveloper then
 	-- carrying the download watermark, so saved profiles and downloaded assets stay.
 	for _, folder in {'vain', 'vain/games', 'vain/guis', 'vain/libraries'} do
 		wipeFolder(folder)
+	end
+
+	-- Assets are tracked separately because they cannot carry the watermark. The commit
+	-- they were fetched at is recorded beside them and they are dropped when it moves.
+	local assetsAt = isfile('vain/profiles/assets.txt') and readfile('vain/profiles/assets.txt') or ''
+	if assetsAt ~= commit then
+		wipeAssets()
+		writefile('vain/profiles/assets.txt', commit)
 	end
 end
 
