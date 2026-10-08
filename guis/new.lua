@@ -5411,6 +5411,22 @@ function mainapi:CreateLegit()
 	table.insert(mainapi.Windows, window)
 
 	function legitapi:CreateModule(modulesettings)
+		--[[
+			Built as a normal module in the Legit category rather than as a card in this
+			window. The window remains for editing overlay placeholders; the modules
+			belong in the sidebar with the rest.
+
+			Registered in legitapi.Modules as well, since overlay dragging and the
+			rainbow sweep both iterate that table and neither knows about categories.
+		]]
+		local category = mainapi.Categories.Legit
+		if category then
+			local api = category:CreateModule(modulesettings)
+			api.Legit = true
+			legitapi.Modules[modulesettings.Name] = api
+			return api
+		end
+
 		mainapi:Remove(modulesettings.Name)
 		local moduleapi = {
 			Enabled = false,
@@ -5903,7 +5919,9 @@ function mainapi:Load(skipgui, profile)
 		end
 
 		for i, v in savedata.Legit do
-			local object = self.Legit.Modules[i]
+			-- Profiles written before these became ordinary modules keep a Legit section,
+			-- so it is still read - from Modules first, since that is where they are now.
+			local object = self.Modules[i] or self.Legit.Modules[i]
 			if not object then continue end
 			if object.Options and v.Options then
 				self:LoadOptions(object, v.Options)
@@ -6029,6 +6047,9 @@ function mainapi:Save(newprofile)
 	end
 
 	for i, v in self.Legit.Modules do
+		-- Already written under Modules; a second copy here would be applied again on
+		-- load and flip the module back.
+		if self.Modules[i] then continue end
 		savedata.Legit[i] = {
 			Enabled = v.Enabled,
 			Position = v.Children and {X = v.Children.Position.X.Offset, Y = v.Children.Position.Y.Offset} or nil,
@@ -6282,19 +6303,7 @@ mainapi:CreateCategory({
 mainapi:CreateCategory({
 	Name = 'Legit',
 	Icon = getcustomasset('vain/assets/new/legittab.png'),
-	Size = UDim2.fromOffset(16, 16),
-	-- Opens the Legit window rather than expanding a panel. Those modules are screen
-	-- overlays positioned by dragging, and that window is the editor for them, so it
-	-- stays - this just gives it a place in the sidebar instead of a button wedged
-	-- next to the search box.
-	Function = function(open)
-		if not open then return end
-		if mainapi.Legit and mainapi.Legit.Window then
-			clickgui.Visible = false
-			mainapi.Legit.Window.Visible = true
-			mainapi.Legit.Window.Position = UDim2.new(0.5, -350, 0.5, -194)
-		end
-	end
+	Size = UDim2.fromOffset(16, 16)
 })
 -- Kit modules only exist for bedwars, so the category is gated on the place rather
 -- than shown everywhere. It has to be created here rather than from the game file:
