@@ -903,7 +903,7 @@ components = {
 		expandbutton.Parent = slider
 		local expand = Instance.new('ImageLabel')
 		expand.Name = 'Expand'
-		expand.Size = UDim2.fromOffset(14, 8)
+		expand.Size = UDim2.fromOffset(16, 10)
 		expand.Position = UDim2.fromOffset(2, 3)
 		expand.BackgroundTransparency = 1
 		expand.Image = getcustomasset('vain/assets/new/expandicon.png')
@@ -1222,7 +1222,7 @@ components = {
 		addCorner(button, UDim.new(0, 6))
 		local arrow = Instance.new('ImageLabel')
 		arrow.Name = 'Arrow'
-		arrow.Size = UDim2.fromOffset(7, 14)
+		arrow.Size = UDim2.fromOffset(10, 20)
 		arrow.Position = UDim2.new(1, -17, 0, 11)
 		arrow.BackgroundTransparency = 1
 		arrow.Image = getcustomasset('vain/assets/new/expandright.png')
@@ -3093,8 +3093,8 @@ function mainapi:CreateGUI()
 		end
 		local arrow = Instance.new('ImageLabel')
 		arrow.Name = 'Arrow'
-		arrow.Size = UDim2.fromOffset(8, 16)
-		arrow.Position = UDim2.new(1, -22, 0, 12)
+		arrow.Size = UDim2.fromOffset(10, 20)
+		arrow.Position = UDim2.new(1, -23, 0, 10)
 		arrow.BackgroundTransparency = 1
 		arrow.Image = getcustomasset('vain/assets/new/expandright.png')
 		arrow.ImageColor3 = color.Light(uipallet.Main, 0.37)
@@ -3374,8 +3374,8 @@ function mainapi:CreateGUI()
 		button.Parent = settingschildren
 		local arrow = Instance.new('ImageLabel')
 		arrow.Name = 'Arrow'
-		arrow.Size = UDim2.fromOffset(7, 14)
-		arrow.Position = UDim2.new(1, -21, 0, 13)
+		arrow.Size = UDim2.fromOffset(9, 18)
+		arrow.Position = UDim2.new(1, -22, 0, 11)
 		arrow.BackgroundTransparency = 1
 		arrow.Image = getcustomasset('vain/assets/new/expandright.png')
 		arrow.ImageColor3 = color.Light(uipallet.Main, 0.37)
@@ -3680,8 +3680,8 @@ function mainapi:CreateGUI()
 		expandbutton.Parent = slider
 		local expandicon = Instance.new('ImageLabel')
 		expandicon.Name = 'Expand'
-		expandicon.Size = UDim2.fromOffset(14, 8)
-		expandicon.Position = UDim2.fromOffset(2, 3)
+		expandicon.Size = UDim2.fromOffset(16, 10)
+		expandicon.Position = UDim2.fromOffset(1, 2)
 		expandicon.BackgroundTransparency = 1
 		expandicon.Image = getcustomasset('vain/assets/new/expandicon.png')
 		expandicon.ImageColor3 = color.Dark(uipallet.Text, 0.43)
@@ -5262,25 +5262,11 @@ function mainapi:CreateSearch()
 	searchicon.Image = getcustomasset('vain/assets/new/search.png')
 	searchicon.ImageColor3 = color.Light(uipallet.Main, 0.37)
 	searchicon.Parent = searchbkg
-	local legiticon = Instance.new('ImageButton')
-	legiticon.Name = 'Legit'
-	legiticon.Size = UDim2.fromOffset(29, 16)
-	legiticon.Position = UDim2.fromOffset(8, 11)
-	legiticon.BackgroundTransparency = 1
-	legiticon.Image = getcustomasset('vain/assets/new/legit.png')
-	legiticon.Parent = searchbkg
-	local legitdivider = Instance.new('Frame')
-	legitdivider.Name = 'LegitDivider'
-	legitdivider.Size = UDim2.fromOffset(2, 12)
-	legitdivider.Position = UDim2.fromOffset(43, 13)
-	legitdivider.BackgroundColor3 = color.Light(uipallet.Main, 0.14)
-	legitdivider.BorderSizePixel = 0
-	legitdivider.Parent = searchbkg
 	addBlur(searchbkg)
 	addCorner(searchbkg)
 	local search = Instance.new('TextBox')
-	search.Size = UDim2.new(1, -50, 0, 37)
-	search.Position = UDim2.fromOffset(50, 0)
+	search.Size = UDim2.new(1, -34, 0, 37)
+	search.Position = UDim2.fromOffset(12, 0)
 	search.BackgroundTransparency = 1
 	search.Text = ''
 	search.PlaceholderText = ''
@@ -5316,11 +5302,6 @@ function mainapi:CreateSearch()
 
 	children:GetPropertyChangedSignal('CanvasPosition'):Connect(function()
 		divider.Visible = children.CanvasPosition.Y > 10 and children.Visible
-	end)
-	legiticon.MouseButton1Click:Connect(function()
-		clickgui.Visible = false
-		self.Legit.Window.Visible = true
-		self.Legit.Window.Position = UDim2.new(0.5, -350, 0.5, -194)
 	end)
 	search:GetPropertyChangedSignal('Text'):Connect(function()
 		for _, v in children:GetChildren() do
@@ -5378,7 +5359,6 @@ function mainapi:CreateSearch()
 		searchbkg.Size = UDim2.fromOffset(220, math.min(37 + windowlist.AbsoluteContentSize.Y / scale.Scale, 437))
 	end)
 
-	self.Legit.Icon = legiticon
 end
 
 function mainapi:CreateLegit()
@@ -6269,7 +6249,7 @@ mainapi.Categories.Main:CreateDivider()
 mainapi:CreateCategory({
 	Name = 'Combat',
 	Icon = getcustomasset('vain/assets/new/combaticon.png'),
-	Size = UDim2.fromOffset(17, 17)
+	Size = UDim2.fromOffset(13, 14)
 })
 mainapi:CreateCategory({
 	Name = 'Blatant',
@@ -6297,9 +6277,21 @@ mainapi:CreateCategory({
 	Size = UDim2.fromOffset(15, 14)
 })
 mainapi:CreateCategory({
-	Name = 'Minigames',
-	Icon = getcustomasset('vain/assets/new/miniicon.png'),
-	Size = UDim2.fromOffset(19, 12)
+	Name = 'Legit',
+	Icon = getcustomasset('vain/assets/new/legittab.png'),
+	Size = UDim2.fromOffset(16, 16),
+	-- Opens the Legit window rather than expanding a panel. Those modules are screen
+	-- overlays positioned by dragging, and that window is the editor for them, so it
+	-- stays - this just gives it a place in the sidebar instead of a button wedged
+	-- next to the search box.
+	Function = function(open)
+		if not open then return end
+		if mainapi.Legit and mainapi.Legit.Window then
+			clickgui.Visible = false
+			mainapi.Legit.Window.Visible = true
+			mainapi.Legit.Window.Position = UDim2.new(0.5, -350, 0.5, -194)
+		end
+	end
 })
 -- Kit modules only exist for bedwars, so the category is gated on the place rather
 -- than shown everywhere. It has to be created here rather than from the game file:
@@ -6310,7 +6302,7 @@ if table.find({6872274481, 8444591321, 8560631822}, game.PlaceId) then
 	mainapi:CreateCategory({
 		Name = 'Kit',
 		Icon = getcustomasset('vain/assets/new/combaticon.png'),
-		Size = UDim2.fromOffset(17, 17)
+		Size = UDim2.fromOffset(13, 14)
 	})
 end
 mainapi.Categories.Main:CreateDivider('misc')
@@ -6627,7 +6619,7 @@ guipane:CreateButton({
 			UtilityCategory = 5,
 			WorldCategory = 6,
 			InventoryCategory = 7,
-			MinigamesCategory = 8,
+			LegitCategory = 8,
 			FriendsCategory = 9,
 			ProfilesCategory = 10
 		}

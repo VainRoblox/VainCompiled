@@ -562,7 +562,7 @@ end)
 run(function()
 	local AutoCamel
 	
-	AutoCamel = vain.Categories.Minigames:CreateModule({
+	AutoCamel = vain.Categories.Utility:CreateModule({
 		Name = 'AutoCamel',
 		Function = function(callback)
 			if callback then
@@ -590,7 +590,7 @@ end)
 run(function()
 	local AutoCloudGrind
 	
-	AutoCloudGrind = vain.Categories.Minigames:CreateModule({
+	AutoCloudGrind = vain.Categories.Utility:CreateModule({
 		Name = 'AutoCloudGrind',
 		Function = function(callback)
 			if callback then
@@ -627,7 +627,7 @@ run(function()
 	local KeepList
 	local old
 	
-	AutoFish = vain.Categories.Minigames:CreateModule({
+	AutoFish = vain.Categories.Utility:CreateModule({
 		Name = 'AutoFish',
 		Function = function(callback)
 			if callback then
@@ -671,7 +671,7 @@ end)
 run(function()
 	local AutoPaint
 	
-	AutoPaint = vain.Categories.Minigames:CreateModule({
+	AutoPaint = vain.Categories.Utility:CreateModule({
 		Name = 'AutoPaint',
 		Function = function(callback)
 			if callback then

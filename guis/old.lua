@@ -3752,7 +3752,7 @@ mainapi:CreateCategory({
 	Icon = getcustomasset('vain/assets/old/worldicon.png')
 })
 mainapi:CreateCategory({
-	Name = 'Minigames',
+	Name = 'Legit',
 	Icon = getcustomasset('vain/assets/old/worldicon.png')
 })
 mainapi.Legit = mainapi:CreateLegit({
@@ -4050,7 +4050,7 @@ topbar:CreateButton({
 			UtilityCategory = 5,
 			WorldCategory = 6,
 			InventoryCategory = 7,
-			MinigamesCategory = 8,
+			LegitCategory = 8,
 			LegitCategory = 9,
 			FriendsCategory = 10,
 			ProfilesCategory = 11

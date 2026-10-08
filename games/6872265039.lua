@@ -55,7 +55,9 @@ run(function()
 end)
 
 for name, v in vain.Modules do
-	if v.Category == 'Combat' or v.Category == 'Minigames' then
+	-- MurderMystery moved from Minigames to Utility when that category was retired, so
+	-- it is named directly rather than caught by its category.
+	if v.Category == 'Combat' or name == 'MurderMystery' then
 		vain:Remove(name)
 	end
 end
@@ -90,7 +92,7 @@ end)
 run(function()
 	local AutoGamble
 	
-	AutoGamble = vain.Categories.Minigames:CreateModule({
+	AutoGamble = vain.Categories.Utility:CreateModule({
 		Name = 'AutoGamble',
 		Function = function(callback)
 			if callback then

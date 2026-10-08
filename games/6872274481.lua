@@ -7874,6 +7874,443 @@ run(function()
 end)
 
 run(function()
+	local BedPlates
+	local Background
+	local Color = {}
+	local ShowOwn
+	local Quantity
+	local FullLayers
+	local FullColor = {}
+	local UpdateRate
+	local Warn
+	local Warned = {}
+	local Reference = {}
+	local Signature = {}
+	local Folder = Instance.new('Folder')
+	Folder.Parent = vain.gui
+	
+	-- How deep a wrap is worth reporting on, and a ceiling on how much can be walked in
+	-- one go so a huge base cannot stall a refresh.
+	local MAX_LAYERS = 6
+	local SCAN_LIMIT = 1200
+	
+	-- Ore is part of the map that happens to be sitting against somebody's wrap, not
+	-- something they built to defend it. It is walked past rather than counted, so a bed
+	-- that touches a generator does not pick up a stray icon reading 1.
+	-- Terrain the map is made of rather than anything anybody placed. Snow is not on sale
+	-- in the shop at all - it is what a winter map's ground is covered in - so a bed sitting
+	-- on it picked up a plate counting the field it stands in, and the walk spread out
+	-- across that field instead of following the wrap round. Stepped over exactly the way
+	-- the island underneath is: not counted, not walked through, and not a hole in the layer
+	-- either, since it is solid.
+	local TERRAIN = {
+		snow = true
+	}
+	
+	local IGNORED = {
+		iron_ore = true,
+		iron_ore_mesh_block = true,
+		diamond_ore = true,
+		emerald_ore = true,
+		crystal_ore = true
+	}
+	
+	--[[
+		Walks outwards from the bed one layer at a time and reports what is around it: how
+		many of each block, and what each layer is made of.
+	
+		Following the six faces out from the bed the way the old scan did can only ever meet
+		one block per direction per step, so every layer came back as about eight however
+		many blocks were really in it. This walks the whole shell instead.
+	
+		Unbreakable blocks are stepped over rather than counted, which is what keeps the walk
+		out of the island the bed is standing on - it is solid, so it is not a hole in the
+		layer either, it just is not part of anybody's defence.
+	]]
+	local function scanBed(bed)
+		local names, counts, layers, open, mixed = {}, {}, {}, {}, {}
+		local seen, frontier, visited = {}, {}, 0
+	
+		-- Straight off the block handler rather than assuming which way the bed lies, so a
+		-- rotated one is walked from both of its halves like any other.
+		for _, v in bedwars.getContainedPositions(bed) do
+			local pos = v * 3
+			seen[pos] = true
+			table.insert(frontier, pos)
+		end
+	
+		for depth = 1, MAX_LAYERS do
+			local nextfrontier, types = {}, {}
+			layers[depth] = types
+	
+			for _, pos in frontier do
+				for _, side in sides do
+					local at = pos + side
+					local block = getPlacedBlock(at)
+					if not block then
+						-- Nothing here, so this layer has a way through it. Checked before the
+						-- already-visited test on purpose: a gap next to two different layers
+						-- was being claimed by the nearer one and never counted against the
+						-- other, so a layer with a hole beside it still came out complete.
+						open[depth] = true
+						seen[at] = true
+						continue
+					end
+	
+					if seen[at] then continue end
+					seen[at] = true
+					if block == bed or block:GetAttribute('NoBreak') or TERRAIN[block.Name] then continue end
+	
+					-- Still stepped through, so a wrap with ore embedded in it is followed all
+					-- the way round, and still solid, so it does not read as a hole either.
+					if IGNORED[block.Name] then
+						-- It does stop the layer being a full layer of anything though. A spot
+						-- taken by a generator is a spot nobody wrapped, whatever is around it.
+						mixed[depth] = true
+					else
+						if not table.find(names, block.Name) then
+							table.insert(names, block.Name)
+						end
+						counts[block.Name] = (counts[block.Name] or 0) + 1
+						types[block.Name] = (types[block.Name] or 0) + 1
+					end
+	
+					visited += 1
+					table.insert(nextfrontier, at)
+				end
+			end
+	
+			frontier = nextfrontier
+			if #frontier == 0 or visited >= SCAN_LIMIT then break end
+		end
+	
+		-- A hole anywhere further in means the wrap has already been breached, so nothing
+		-- outside it is a complete layer either. Breaking blocks reshuffles which layer the
+		-- survivors land in, and a layer left holding two blocks of one kind would otherwise
+		-- report itself complete.
+		local breached = false
+		local full = {}
+		for depth = 1, MAX_LAYERS do
+			local types = layers[depth]
+			if not types then break end
+			if open[depth] then breached = true end
+			if breached or mixed[depth] then continue end
+	
+			local only, kinds = nil, 0
+			for name in types do
+				only = name
+				kinds += 1
+			end
+			if kinds == 1 then
+				full[only] = true
+			end
+		end
+	
+		return names, counts, full, layers
+	end
+	
+	-- What the plate would look like, as a string. Re-checking is cheap but tearing down
+	-- and rebuilding every icon is not, so with a refresh running on a timer the drawing
+	-- only happens when this comes out different from last time.
+	local function signature(order, counts, full)
+		local parts = {}
+		for _, name in order do
+			table.insert(parts, name .. 'x' .. counts[name] .. (full[name] and '!' or ''))
+		end
+		table.insert(parts, tostring(Quantity and Quantity.Enabled) .. tostring(FullLayers and FullLayers.Enabled))
+		table.insert(parts, string.format('%.3f %.3f %.3f %.3f', FullColor.Hue or 0, FullColor.Sat or 0, FullColor.Value or 0, FullColor.Opacity or 0))
+		return table.concat(parts, '|')
+	end
+	
+	-- A bed carries a NoBreak attribute for the team it belongs to, which is how the game
+	-- stops you breaking your own. Asked live rather than cached, since your team is not
+	-- settled the moment the plates are first drawn. No team at all - spectating - matches
+	-- nothing, so every plate stays up.
+	local function isOwnBed(bed)
+		return bed:GetAttribute('Team' .. (lplr:GetAttribute('Team') or -1) .. 'NoBreak') ~= nil
+	end
+	
+	-- Which team a bed belongs to, read off the same no-break attribute isOwnBed matches
+	-- on: the team barred from breaking a bed is the team that owns it. Lowest id wins so
+	-- a bed carrying more than one stays on one answer instead of flipping between them,
+	-- since GetAttributes is not ordered. Falls back to the raw number when the queue has
+	-- no display name, and to nothing when the bed carries no such attribute at all.
+	local function bedTeamName(bed)
+		local id
+		for name in bed:GetAttributes() do
+			local found = tonumber(name:match('^Team(%d+)NoBreak$'))
+			if found and (not id or found < id) then
+				id = found
+			end
+		end
+		if not id then return end
+	
+		local queue = bedwars.QueueMeta[store.queueType]
+		local team = queue and queue.teams and queue.teams[id]
+		return (team and team.displayName) or ('Team ' .. id)
+	end
+	
+	local function refreshAdornee(v)
+		if not v.Adornee then return end
+	
+		local order, counts, full, layers = scanBed(v.Adornee)
+		-- Toughest first. A block the metadata has never heard of sorts last rather than
+		-- throwing, which would take every plate down with it.
+		local function health(name)
+			local meta = bedwars.ItemMeta[name]
+			return (meta and meta.block and meta.block.health) or 0
+		end
+		table.sort(order, function(a, b)
+			return health(a) > health(b)
+		end)
+		-- Set before the signature check below, so flicking the setting takes effect even
+		-- when nothing about the wrap itself has changed.
+		--[[
+			Obsidian going onto the ring touching the bed, said once as it happens.
+	
+			Edge triggered on purpose: the plates are re-scanned several times a second, so
+			reporting the state rather than the change would repeat the same warning forever.
+			The flag clears when the obsidian is gone, so a bed being re-plated later warns
+			again rather than staying silent because it once had some.
+		]]
+		if Warn and Warn.Enabled then
+			local bed = v.Adornee
+			local plated = (layers[1] and layers[1].obsidian) ~= nil
+	
+			if plated and not Warned[bed] then
+				if isOwnBed(bed) then
+					notif('BedPlates', 'Obsidian is going on your bed!', 8, 'alert')
+				else
+					local team = bedTeamName(bed)
+					notif('BedPlates', team and ('Obsidian is going on the ' .. team .. ' bed!') or 'Someone is putting obsidian on a bed!', 8, 'alert')
+				end
+			end
+			Warned[bed] = plated or nil
+		end
+	
+		v.Enabled = #order > 0 and (not ShowOwn or ShowOwn.Enabled or not isOwnBed(v.Adornee))
+	
+		local sig = signature(order, counts, full)
+		if Signature[v] == sig then return end
+		Signature[v] = sig
+	
+		for _, obj in v.Frame:GetChildren() do
+			if obj.Name == 'Block' then
+				obj:Destroy()
+			end
+		end
+	
+		local showfull = FullLayers and FullLayers.Enabled
+		local showcount = Quantity and Quantity.Enabled
+	
+		for _, block in order do
+			local complete = showfull and full[block]
+	
+			local holder = Instance.new('Frame')
+			holder.Name = 'Block'
+			holder.Size = UDim2.fromOffset(32, 32)
+			holder.BackgroundColor3 = Color3.fromHSV(FullColor.Hue or 0, FullColor.Sat or 0, FullColor.Value or 1)
+			holder.BackgroundTransparency = complete and (1 - (FullColor.Opacity or 1)) or 1
+			holder.Parent = v.Frame
+			local holdercorner = Instance.new('UICorner')
+			holdercorner.CornerRadius = UDim.new(0, 4)
+			holdercorner.Parent = holder
+	
+			local blockimage = Instance.new('ImageLabel')
+			blockimage.Size = UDim2.fromScale(1, 1)
+			blockimage.BackgroundTransparency = 1
+			blockimage.Image = bedwars.getIcon({itemType = block}, true)
+			blockimage.Parent = holder
+	
+			if showcount then
+				-- Across the whole icon rather than tucked into a corner: at the size these
+				-- plates are drawn on screen, anything smaller cannot be read at a glance.
+				-- White on a dark outline so it stands off whatever block is behind it.
+				local amount = Instance.new('TextLabel')
+				amount.Size = UDim2.fromScale(1, 1)
+				amount.BackgroundTransparency = 1
+				amount.Text = tostring(counts[block])
+				amount.TextColor3 = Color3.new(1, 1, 1)
+				amount.TextScaled = true
+				amount.FontFace = uipallet.FontSemiBold
+				amount.ZIndex = 2
+				amount.Parent = holder
+				local outline = Instance.new('UIStroke')
+				outline.Color = Color3.new()
+				outline.Thickness = 2
+				outline.Parent = amount
+				-- Keeps a two digit count off the edges of the icon.
+				local padding = Instance.new('UIPadding')
+				padding.PaddingTop = UDim.new(0, 3)
+				padding.PaddingBottom = UDim.new(0, 3)
+				padding.Parent = amount
+			end
+		end
+	end
+	
+	local function refreshAll()
+		for _, v in Reference do
+			refreshAdornee(v)
+		end
+	end
+	
+	local function Added(v)
+		local billboard = Instance.new('BillboardGui')
+		billboard.Parent = Folder
+		billboard.Name = 'bed'
+		billboard.StudsOffsetWorldSpace = Vector3.new(0, 3, 0)
+		billboard.Size = UDim2.fromOffset(36, 36)
+		billboard.AlwaysOnTop = true
+		billboard.ClipsDescendants = false
+		billboard.Adornee = v
+		local blur = addBlur(billboard)
+		blur.Visible = Background.Enabled
+		local frame = Instance.new('Frame')
+		frame.Size = UDim2.fromScale(1, 1)
+		frame.BackgroundColor3 = Color3.fromHSV(Color.Hue, Color.Sat, Color.Value)
+		frame.BackgroundTransparency = 1 - (Background.Enabled and Color.Opacity or 0)
+		frame.Parent = billboard
+		local layout = Instance.new('UIListLayout')
+		layout.FillDirection = Enum.FillDirection.Horizontal
+		layout.Padding = UDim.new(0, 4)
+		layout.VerticalAlignment = Enum.VerticalAlignment.Center
+		layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		layout:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(function()
+			billboard.Size = UDim2.fromOffset(math.max(layout.AbsoluteContentSize.X + 4, 36), 36)
+		end)
+		layout.Parent = frame
+		local corner = Instance.new('UICorner')
+		corner.CornerRadius = UDim.new(0, 4)
+		corner.Parent = frame
+		Reference[v] = billboard
+		refreshAdornee(billboard)
+	end
+	
+	local function refreshNear(data)
+		data = data.blockRef.blockPosition * 3
+		for i, v in Reference do
+			if (data - i.Position).Magnitude <= 30 then
+				refreshAdornee(v)
+			end
+		end
+	end
+	
+	BedPlates = vain.Categories.Render:CreateModule({
+		Name = 'BedPlates',
+		Function = function(callback)
+			if callback then
+				for _, v in collectionService:GetTagged('bed') do
+					task.spawn(Added, v)
+				end
+				BedPlates:Clean(vainEvents.PlaceBlockEvent.Event:Connect(refreshNear))
+				BedPlates:Clean(vainEvents.BreakBlockEvent.Event:Connect(refreshNear))
+				BedPlates:Clean(collectionService:GetInstanceAddedSignal('bed'):Connect(Added))
+				BedPlates:Clean(collectionService:GetInstanceRemovedSignal('bed'):Connect(function(v)
+					if Reference[v] then
+						Signature[Reference[v]] = nil
+						Reference[v]:Destroy()
+						Reference[v]:ClearAllChildren()
+						Reference[v] = nil
+					end
+				end))
+	
+				-- The block events only report what the server tells us about, and a layer
+				-- that quietly stopped being complete is exactly the thing you want to notice.
+				-- Guarded so one bad pass cannot kill the loop, with the wait outside so a
+				-- repeating error cannot spin the CPU.
+				task.spawn(function()
+					repeat
+						local ok = pcall(refreshAll)
+						-- The slider may not exist yet if a saved config switched this on while the
+						-- file was still running, and an error out here would end the loop for good.
+						task.wait(ok and UpdateRate and (1 / UpdateRate.Value) or 0.5)
+					until not BedPlates.Enabled
+				end)
+			else
+				table.clear(Warned)
+				table.clear(Reference)
+				table.clear(Signature)
+				Folder:ClearAllChildren()
+			end
+		end,
+		Tooltip = 'Displays blocks over the bed'
+	})
+	Warn = BedPlates:CreateToggle({
+		Name = 'Obsidian Warning',
+		Tooltip = 'Warns when obsidian reaches a bed'
+	})
+	UpdateRate = BedPlates:CreateSlider({
+		Name = 'Update Rate',
+		Tooltip = 'How often the plates are re-checked\nLower costs less performance',
+		Min = 1,
+		Max = 60,
+		Default = 10,
+		Suffix = 'hz'
+	})
+	ShowOwn = BedPlates:CreateToggle({
+		Name = 'Show Own',
+		Tooltip = 'Also plates your own bed',
+		Function = refreshAll,
+		Default = true
+	})
+	Quantity = BedPlates:CreateToggle({
+		Name = 'Show Amount',
+		Tooltip = 'Shows how many of each block there are',
+		Function = refreshAll,
+		Default = true
+	})
+	FullLayers = BedPlates:CreateToggle({
+		Name = 'Highlight Full Layers',
+		Tooltip = 'Marks blocks that cover a whole layer on their own',
+		Function = function(callback)
+			if FullColor.Object then
+				FullColor.Object.Visible = callback
+			end
+			refreshAll()
+		end,
+		Default = true
+	})
+	FullColor = BedPlates:CreateColorSlider({
+		Name = 'Full Layer Color',
+		Tooltip = 'Color of the full layer highlight',
+		DefaultHue = 0.33,
+		DefaultSat = 0.75,
+		DefaultValue = 1,
+		DefaultOpacity = 0.6,
+		Function = refreshAll,
+		Darker = true
+	})
+	Background = BedPlates:CreateToggle({
+		Name = 'Background',
+		Tooltip = 'Draws a background behind the text',
+		Function = function(callback)
+			if Color.Object then
+				Color.Object.Visible = callback
+			end
+			for _, v in Reference do
+				v.Frame.BackgroundTransparency = 1 - (callback and Color.Opacity or 0)
+				v.Blur.Visible = callback
+			end
+		end,
+		Default = true
+	})
+	Color = BedPlates:CreateColorSlider({
+		Name = 'Background Color',
+		Tooltip = 'Color of the background',
+		DefaultValue = 0,
+		DefaultOpacity = 0.5,
+		Function = function(hue, sat, val, opacity)
+			for _, v in Reference do
+				v.Frame.BackgroundColor3 = Color3.fromHSV(hue, sat, val)
+				v.Frame.BackgroundTransparency = 1 - opacity
+			end
+		end,
+		Darker = true
+	})
+	
+end)
+
+run(function()
 	--[[
 		Generator ESP.
 	
@@ -15767,6 +16204,46 @@ run(function()
 end)
 
 run(function()
+	-- Kit modules dropped their 'Auto ' prefix. Saved profiles are keyed by name, and
+	-- mainapi:Load falls back through this table when a saved name matches nothing, so
+	-- without these every kit setting anyone had saved would silently reset.
+	for old, new in {
+		['Auto Builder'] = 'Builder',
+		['Auto Drill'] = 'Drill',
+		['Auto Elder'] = 'Elder',
+		['Auto Ember'] = 'Ember',
+		['Auto Farmer'] = 'Farmer',
+		['Auto Ginger'] = 'Ginger',
+		['Auto Gingerbread Man'] = 'Gingerbread Man',
+		['Auto Grove'] = 'Grove',
+		['Auto Jack'] = 'Jack',
+		['Auto Jellyfish'] = 'Jellyfish',
+		['Auto Kaida'] = 'Kaida',
+		['Auto Kaliyah'] = 'Kaliyah',
+		['Auto Lani'] = 'Lani',
+		['Auto Lasso'] = 'Lasso',
+		['Auto Lucia'] = 'Lucia',
+		['Auto Marina'] = 'Marina',
+		['Auto Melody'] = 'Melody',
+		['Auto Metal'] = 'Metal',
+		['Auto Miner'] = 'Miner',
+		['Auto Noelle'] = 'Noelle',
+		['Auto Nyx'] = 'Nyx',
+		['Auto Potion'] = 'Potion',
+		['Auto Pyro'] = 'Pyro',
+		['Auto Ramil'] = 'Ramil',
+		['Auto Raven'] = 'Raven',
+		['Auto Sheep Herder'] = 'Sheep Herder',
+		['Auto Star'] = 'Star',
+		['Auto Star Collector'] = 'Star Collector',
+		['Auto Taliyah'] = 'Taliyah',
+		['Auto Uma'] = 'Uma',
+		['Auto Vanessa'] = 'Vanessa',
+		['Auto Zeno'] = 'Zeno',
+	} do
+		vain.Renames.Modules[old] = new
+	end
+	
 	--[[
 		Kit modules, ported from the older VainV6 client.
 	
@@ -16035,7 +16512,7 @@ run(function()
 		end
 	
 		KaidaKillaura = vain.Categories.Kit:CreateModule({
-			Name = 'Auto Kaida',
+			Name = 'Kaida',
 			Tooltip = 'Automates the Kaida kit flame breath ability',
 			Function = function(callback)
 				if callback then
@@ -16452,7 +16929,7 @@ run(function()
 	    end
 	
 	    AutoLasso = vain.Categories.Kit:CreateModule({
-	        Name = 'Auto Lasso',
+	        Name = 'Lasso',
 	        Tooltip = 'Automatically uses the lasso on nearby enemies',
 	        Function = function(callback)
 	            if callback then
@@ -17124,7 +17601,7 @@ run(function()
 	    end
 	
 	    AutoBuilder = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Builder',
+	    	Name = 'Builder',
 	    	Tooltip = 'Automatically builds a preset structure',
 	    	Function = function(callback)
 	    		if callback then
@@ -18564,7 +19041,7 @@ run(function()
 	    end
 	
 	    AutoDrill = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Drill',
+	    	Name = 'Drill',
 	    	Tooltip = 'Automates the Drill kit — drills and collects automatically',
 	    	Function = function(callback)
 	    		if callback then
@@ -18711,7 +19188,7 @@ run(function()
 	    local Delay
 	
 	    AutoElder = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Elder',
+	    	Name = 'Elder',
 	    	Tooltip = 'Automates the Elder kit ability',
 	    	Function = function(call)
 	    		if call then
@@ -18800,7 +19277,7 @@ run(function()
 		local isCharging = false
 		local chargeAnim, FpChargeAnim = nil,nil
 		AutoEmber = vain.Categories.Kit:CreateModule({
-			Name = 'Auto Ember',
+			Name = 'Ember',
 			Tooltip = 'automatically uses the ember ability',
 			Function = function(call)
 				if call then
@@ -18970,7 +19447,7 @@ run(function()
 	    end
 	
 	    AutoGingerbread = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Gingerbread Man',
+	    	Name = 'Gingerbread Man',
 	    	Tooltip = 'Automates Gingerbread Man kit launch pads',
 	    	Function = function(callback)
 	    		if callback then
@@ -19299,7 +19776,7 @@ run(function()
 	    end
 	
 	    Kaliyah = vain.Categories.Kit:CreateModule({
-	        Name = 'Auto Kaliyah',
+	        Name = 'Kaliyah',
 	        Function = function(callback)
 	            if callback then
 	                if AutoPunch.Enabled then
@@ -19548,7 +20025,7 @@ run(function()
 	    end
 	
 	    AutoLani = vain.Categories.Kit:CreateModule({
-	        Name = 'Auto Lani',
+	        Name = 'Lani',
 	        Tooltip = 'Lands your Lani scepter on the right teammate',
 	        Function = function(callback)
 	            if callback then
@@ -19694,7 +20171,7 @@ run(function()
 	    local Range
 	
 	    AutoMarina = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Marina',
+	    	Name = 'Marina',
 	    	Tooltip = 'Automates the Marina kit ability',
 	    	Function = function(call)
 	    		if call then
@@ -19749,7 +20226,7 @@ run(function()
 	    local TeammateHeal
 	
 	    AutoMelody = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Melody',
+	    	Name = 'Melody',
 	    	Tooltip = 'Automates the Melody kit heal',
 	    	Function = function(call)
 	    		if call then
@@ -20044,7 +20521,7 @@ run(function()
 	    end
 	
 	    MetalDetector = vain.Categories.Kit:CreateModule({
-	        Name = 'Auto Metal',
+	        Name = 'Metal',
 	        Function = function(callback)
 	            if callback then
 	                if ESPToggle.Enabled then 
@@ -20290,7 +20767,7 @@ run(function()
 	    end
 	
 	    AutoNoelle = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Noelle',
+	    	Name = 'Noelle',
 	    	Tooltip = 'Automates the Noelle kit ability',
 	    	Function = function(call)
 	    		if call then
@@ -20389,7 +20866,7 @@ run(function()
 	    local Range
 	
 	    AutoNyx = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Nyx',
+	    	Name = 'Nyx',
 	    	Tooltip = 'Automates the Nyx kit stealth ability',
 	    	Function = function(call)
 	    		if call then
@@ -20432,7 +20909,7 @@ run(function()
 	    local Targets
 	
 	    AutoRaven = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Raven',
+	    	Name = 'Raven',
 	    	Tooltip = 'Automates the Raven kit: spawns the raven and detonates it on a nearby target',
 	    	Function = function(call)
 	    		if call then
@@ -20496,7 +20973,7 @@ run(function()
 	    local Range
 	
 	    AutoJellyfish = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Jellyfish',
+	    	Name = 'Jellyfish',
 	    	Tooltip = 'Automatically picks up your placed jellyfish when enemies get close to them',
 	    	Function = function(call)
 	    		if call then
@@ -20555,7 +21032,7 @@ run(function()
 	    local list = {'Range', 'Heat', 'Power'}
 	
 	    AutoPyro = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Pyro',
+	    	Name = 'Pyro',
 	    	Tooltip = 'Automates the Pyro kit fire ability',
 	    	Function = function(call)
 	    		if call then
@@ -20609,7 +21086,7 @@ run(function()
 	    local TonradoRange
 	
 	    AutoRamil = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Ramil',
+	    	Name = 'Ramil',
 	    	Tooltip = 'Automates the Ramil tornado placement',
 	    	Function = function(callback)
 	    		if callback then
@@ -20707,7 +21184,7 @@ run(function()
 	    local Range
 	
 	    AutoSheep = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Sheep Herder',
+	    	Name = 'Sheep Herder',
 	    	Tooltip = 'Automates the Sheep Herder kit',
 	    	Function = function(callback)
 	    		if callback then
@@ -20760,7 +21237,7 @@ run(function()
 	    local Delay
 	
 	    AutoStar = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Star Collector',
+	    	Name = 'Star Collector',
 	    	Tooltip = 'Automates the Star Collector kit — collects stars automatically',
 	    	Function = function(callback)
 	    		if callback then
@@ -21050,7 +21527,7 @@ run(function()
 	    end
 	
 	    AutoTaliyah = vain.Categories.Kit:CreateModule({
-	        Name = 'Auto Taliyah',
+	        Name = 'Taliyah',
 	        Tooltip = 'Sells chickens at good prices, buys cheap eggs and nests',
 	        Function = function(callback)
 	            if callback then
@@ -21247,7 +21724,7 @@ run(function()
 	    end
 	
 	    AutoUma = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Uma',
+	    	Name = 'Uma',
 	    	Tooltip = 'Automates the Uma kit spirit abilities',
 	    	Function = function(call)
 	    		if call then
@@ -21814,7 +22291,7 @@ run(function()
 	    end
 	
 	    AutoZeno = vain.Categories.Kit:CreateModule({
-	    	Name = 'Auto Zeno',
+	    	Name = 'Zeno',
 	    	Tooltip = 'Automates the Zeno kit lightning and shockwave',
 	    	Function = function(call)
 	    		if call then
@@ -22008,7 +22485,7 @@ run(function()
 	    local lastChargeTime = 0
 	    
 	    AutoVanessa = vain.Categories.Kit:CreateModule({
-	        Name = 'Auto Vanessa',
+	        Name = 'Vanessa',
 	        Tooltip = 'Automates the Vanessa kit ability',
 	        Function = function(callback)
 	            if callback then
@@ -22294,7 +22771,7 @@ run(function()
 		end
 	
 		AutoJack = vain.Categories.Kit:CreateModule({
-			Name = 'Auto Jack',
+			Name = 'Jack',
 			Tooltip = 'Charge assist for the Jack (Oil Spitter) kit: instantly full-charge every oil blob, or just build the charge faster.',
 			Function = function(callback)
 				if not callback then
@@ -24020,7 +24497,7 @@ run(function()
 		end
 	
 	    StarCollector = vain.Categories.Kit:CreateModule({
-	        Name = 'Auto Star',
+	        Name = 'Star',
 	        Tooltip = 'Automatically collects falling stars',
 	        Function = function(callback)
 	            if callback then
@@ -24255,7 +24732,7 @@ run(function()
 	    end
 	    
 	    Gingerbread = vain.Categories.Kit:CreateModule({
-	        Name = 'Auto Ginger',
+	        Name = 'Ginger',
 	        Tooltip = 'Automates Gingerbread Man kit launch pad usage',
 	        Function = function(callback)
 	            if callback then
@@ -24784,7 +25261,7 @@ run(function()
 	    end
 	
 	    Grove = vain.Categories.Kit:CreateModule({
-	        Name = 'Auto Grove',
+	        Name = 'Grove',
 	        Tooltip = 'Automates the Grove kit ability',
 	        Function = function(callback)
 	            if callback then
@@ -25446,7 +25923,7 @@ run(function()
 	    end
 	
 	    Lucia = vain.Categories.Kit:CreateModule({
-	        Name = 'Auto Lucia',
+	        Name = 'Lucia',
 	        Tooltip = 'Automates the Lucia kit ability',
 	        Function = function(callback)
 	            if callback then
@@ -26185,7 +26662,7 @@ run(function()
 		end
 	
 		AutoPotion = vain.Categories.Kit:CreateModule({
-			Name = 'Auto Potion',
+			Name = 'Potion',
 			Tooltip = 'Automatically brews the selected alchemist potion when you have the materials',
 			Function = function(callback)
 				if callback then
@@ -26360,7 +26837,7 @@ run(function()
 	    end
 	
 	    FarmerCletus = vain.Categories.Kit:CreateModule({
-	        Name = 'Auto Farmer',
+	        Name = 'Farmer',
 	        Tooltip = 'Automatically farms resources from generators',
 	        Function = function(callback)
 	            if callback then
@@ -27090,7 +27567,7 @@ run(function()
 	    end
 	
 	    AutoMiner = vain.Categories.Kit:CreateModule({
-	        Name = 'Auto Miner',
+	        Name = 'Miner',
 	        Tooltip = 'Digs up petrified statues for you as Miner',
 	        Function = function(callback)
 	            if callback then
@@ -29114,6 +29591,682 @@ run(function()
 	Placing = MineThrough:CreateToggle({
 		Name = 'Placing Too',
 		Tooltip = 'Also lets you place blocks past players'
+	})
+	
+end)
+
+run(function()
+	local Nuker
+	local Range
+	local BreakSpeed
+	local UpdateRate
+	local Angle
+	local HitChance
+	local Chance = {}
+	local TargetMode
+	local ViewMode
+	local Custom
+	local Bed
+	local LuckyBlock
+	local IronOre
+	local Tesla
+	local Effect
+	local CustomHealth = {}
+	local Animation
+	local SelfBreak
+	local InstantBreak
+	local LimitItem
+	local AutoTool
+	local customlist, parts, candidates = {}, {}, {}
+	
+	-- The route into each thing being dug towards, nearest end first, so a started hole is
+	-- carried on down rather than abandoned for whatever the mode ranks best on the outer
+	-- face. One table per target, handed straight to breakBlock and refilled by it.
+	local tunnel = {}
+	local breakOptions = {}
+	
+	-- Ranks used by the Priority target mode, in the order the categories were tried
+	-- before target modes existed.
+	local RANK_BED = 1
+	local RANK_CUSTOM = 2
+	local RANK_ORE = 3
+	local RANK_LUCKY = 4
+	local RANK_TESLA = 5
+	
+	-- Random has to stay put once it has chosen, or every pass reshuffles and the nuker
+	-- hops between blocks without ever finishing one. Hashing the position gives an order
+	-- that is arbitrary but stable, and the salt makes it a different one each time the
+	-- module is switched on.
+	local randomSalt = 0
+	
+	local function randomKey(pos)
+		local n = math.sin((pos.X * 12.9898) + (pos.Y * 78.233) + (pos.Z * 37.719) + randomSalt) * 43758.5453
+		return n - math.floor(n)
+	end
+	
+	local function blockMeta(name)
+		local meta = bedwars.ItemMeta[name]
+		return meta and meta.block
+	end
+	
+	-- Only 4 of the 14 lucky block types carry the 'LuckyBlock' collection tag - purple,
+	-- halloween, flying, glitched and the rest never get it - so collecting by that tag
+	-- found nothing in most modes and the toggle looked dead. Every one of them does have
+	-- a luckyBlock table on its block meta, which is what the game itself tests.
+	local function isLuckyBlock(name)
+		local meta = blockMeta(name)
+		return (meta and meta.luckyBlock) ~= nil
+	end
+	
+	-- iron_ore is the item you collect; the thing standing in the world is
+	-- iron_ore_mesh_block. Both are accepted in case a mode places either.
+	local function isIronOre(name)
+		return name == 'iron_ore' or name == 'iron_ore_mesh_block'
+	end
+	
+	-- Every setting here is created after CreateModule returns, so all of them can still be
+	-- nil while this file is executing, and the module can be switched on inside that
+	-- window when the GUI restores a saved config.
+	local function wantedBlock(name)
+		if Custom and Custom.ListEnabled and table.find(Custom.ListEnabled, name) then return true end
+		if IronOre and IronOre.Enabled and isIronOre(name) then return true end
+		if LuckyBlock and LuckyBlock.Enabled and isLuckyBlock(name) then return true end
+		return false
+	end
+	
+	-- The collection is filtered as it is built, so anything that changes what counts has
+	-- to rebuild it from the block store rather than just flipping a flag.
+	local function rebuildList()
+		if not customlist then return end
+		table.clear(customlist)
+		for _, obj in store.blocks do
+			if wantedBlock(obj.Name) then
+				table.insert(customlist, obj)
+			end
+		end
+	end
+	
+	local function customRank(name)
+		if Custom and Custom.ListEnabled and table.find(Custom.ListEnabled, name) then return RANK_CUSTOM end
+		if isLuckyBlock(name) then return RANK_LUCKY end
+		return RANK_ORE
+	end
+	
+	-- First person puts the camera inside your own head, so the gap between the camera and
+	-- the head is what separates the two views. Shiftlock still counts as third person here,
+	-- which matches what you see on screen.
+	local function viewAllowed()
+		if not ViewMode or ViewMode.Value == 'Both' then return true end
+		return bedwars.isFirstPerson() == (ViewMode.Value == 'First Person')
+	end
+	
+	--[[
+		The healthbar owns everything it draws. It used to borrow BlockBreaker's
+		healthbarMaid and healthbarProgressRef, which current builds moved onto a separate
+		BlockHealthbar object - so the nil check at the top returned early every single
+		time and the custom bar never appeared at all.
+	]]
+	local healthbar = {token = 0}
+	
+	local function clearHealthbar()
+		healthbar.token += 1
+		if healthbar.mounted then
+			pcall(bedwars.Roact.unmount, healthbar.mounted)
+		end
+		if healthbar.part then
+			pcall(function()
+				healthbar.part:Destroy()
+			end)
+		end
+		healthbar.mounted, healthbar.part, healthbar.progress, healthbar.position = nil, nil, nil, nil
+	end
+	
+	local function mountHealthbar(blockRef, health, maxHealth, block)
+		local create = bedwars.Roact.createElement
+		local percent = math.clamp(health / maxHealth, 0, 1)
+		local meta = bedwars.ItemMeta[block.Name]
+		local name = (meta and meta.displayName) or block.Name
+	
+		local part = Instance.new('Part')
+		part.Size = Vector3.one
+		part.CFrame = CFrame.new(bedwars.BlockController:getWorldPosition(blockRef.blockPosition))
+		part.Transparency = 1
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanQuery = false
+		part.Parent = workspace
+		pcall(function()
+			bedwars.QueryUtil:setQueryIgnored(part, true)
+		end)
+	
+		healthbar.part = part
+		healthbar.position = blockRef.blockPosition
+		healthbar.progress = bedwars.Roact.createRef()
+	
+		healthbar.mounted = bedwars.Roact.mount(create('BillboardGui', {
+			Size = UDim2.fromOffset(249, 102),
+			StudsOffset = Vector3.new(0, 2.5, 0),
+			Adornee = part,
+			MaxDistance = 40,
+			AlwaysOnTop = true
+		}, {
+			create('Frame', {
+				Size = UDim2.fromOffset(160, 50),
+				Position = UDim2.fromOffset(44, 32),
+				BackgroundColor3 = Color3.new(),
+				BackgroundTransparency = 0.5
+			}, {
+				create('UICorner', {CornerRadius = UDim.new(0, 5)}),
+				create('ImageLabel', {
+					Size = UDim2.new(1, 89, 1, 52),
+					Position = UDim2.fromOffset(-48, -31),
+					BackgroundTransparency = 1,
+					Image = getcustomasset('vain/assets/new/blur.png'),
+					ScaleType = Enum.ScaleType.Slice,
+					SliceCenter = Rect.new(52, 31, 261, 502)
+				}),
+				create('TextLabel', {
+					Size = UDim2.fromOffset(145, 14),
+					Position = UDim2.fromOffset(13, 12),
+					BackgroundTransparency = 1,
+					Text = name,
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextYAlignment = Enum.TextYAlignment.Top,
+					TextColor3 = Color3.new(),
+					TextScaled = true,
+					Font = Enum.Font.Arial
+				}),
+				create('TextLabel', {
+					Size = UDim2.fromOffset(145, 14),
+					Position = UDim2.fromOffset(12, 11),
+					BackgroundTransparency = 1,
+					Text = name,
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextYAlignment = Enum.TextYAlignment.Top,
+					TextColor3 = color.Dark(uipallet.Text, 0.16),
+					TextScaled = true,
+					Font = Enum.Font.Arial
+				}),
+				create('Frame', {
+					Size = UDim2.fromOffset(138, 4),
+					Position = UDim2.fromOffset(12, 32),
+					BackgroundColor3 = uipallet.Main
+				}, {
+					create('UICorner', {CornerRadius = UDim.new(1, 0)}),
+					create('Frame', {
+						[bedwars.Roact.Ref] = healthbar.progress,
+						Size = UDim2.fromScale(percent, 1),
+						BackgroundColor3 = Color3.fromHSV(math.clamp(percent / 2.5, 0, 1), 0.89, 0.75)
+					}, {create('UICorner', {CornerRadius = UDim.new(1, 0)})})
+				})
+			})
+		}), part)
+	end
+	
+	local function customHealthbar(_, blockRef, health, maxHealth, changeHealth, block)
+		if block:GetAttribute('NoHealthbar') or not maxHealth or maxHealth <= 0 then return end
+	
+		if not healthbar.part or healthbar.position ~= blockRef.blockPosition then
+			clearHealthbar()
+			mountHealthbar(blockRef, health, maxHealth, block)
+		end
+	
+		local progress = healthbar.progress and healthbar.progress:getValue()
+		if not progress then return end
+	
+		local newpercent = math.clamp((health - changeHealth) / maxHealth, 0, 1)
+		tweenService:Create(progress, TweenInfo.new(0.3), {
+			Size = UDim2.fromScale(newpercent, 1), BackgroundColor3 = Color3.fromHSV(math.clamp(newpercent / 2.5, 0, 1), 0.89, 0.75)
+		}):Play()
+	
+		-- The token makes the delayed cleanup drop itself when a newer hit has already
+		-- claimed the bar, so it can never take down the bar for the block you moved on to.
+		healthbar.token += 1
+		local token = healthbar.token
+		task.delay(5, function()
+			if healthbar.token == token then
+				clearHealthbar()
+			end
+		end)
+	end
+	
+	local function gather(list, rank, localPosition)
+		if not list then return end
+		for _, v in list do
+			if not v or not v.Parent then continue end
+			-- A block that is a model rather than a part has no Position at all, and one
+			-- bad entry used to abort the whole pass before anything got broken.
+			local ok, pos = pcall(function()
+				return v.Position
+			end)
+			if not ok or not pos then continue end
+	
+			local dist = (pos - localPosition).Magnitude
+			if dist >= Range.Value then continue end
+	
+			table.insert(candidates, {
+				Block = v,
+				Position = pos,
+				Distance = dist,
+				Rank = rank or customRank(v.Name)
+			})
+		end
+	end
+	
+	-- Health scores every opening of a structure, which is a store lookup each, so the
+	-- answers are held for the length of one pass and dropped with the candidates.
+	local hitsCache = {}
+	
+	--[[
+		Cursor and Recently Hit are steered by hand rather than run on their own. Both name
+		a single block to dig from and nothing else is allowed, so pointing at nothing that
+		leads anywhere means nothing gets broken.
+	
+		Which block you are on comes from the game's own selector, so it agrees exactly with
+		what the game thinks you are pointing at, range and obstructions included.
+	]]
+	local BLOCK_SELECT = 1
+	local cursorTarget = nil
+	local manualHit = nil
+	
+	local function cursorBlock()
+		local ok, info = pcall(function()
+			return bedwars.BlockEngine:getBlockSelector():getMouseInfo(BLOCK_SELECT)
+		end)
+		local ref = ok and info and info.target and info.target.blockRef
+		local pos = ref and ref.blockPosition
+		return pos and (pos * 3) or nil
+	end
+	
+	local function blockHitsAt(node)
+		local cached = hitsCache[node]
+		if cached then return cached end
+	
+		local ok, hits = pcall(function()
+			local block = bedwars.getPlacedBlock(node)
+			return block and bedwars.getBlockHits(block, node) or nil
+		end)
+		hits = (ok and hits) or math.huge
+		hitsCache[node] = hits
+		return hits
+	end
+	
+	--[[
+		A target mode picks the block that actually gets broken, measured from your
+		character - the defences in front of a bed, not the bed sitting behind them. These
+		score the openings breakBlock can start at; ranking only the beds and ore left the
+		choice of which wall to mine to whichever the pathfinder happened to reach first,
+		so standing at one side of a build was no reason for it to break that side.
+		node is a world position, cost is the hits to tunnel from there to the target, and
+		reach is the distance from your character.
+	]]
+	local entryScorers = {
+		Nearest = function(_, _, reach)
+			return reach
+		end,
+		Farthest = function(_, _, reach)
+			return -reach
+		end,
+		Health = function(node)
+			return blockHitsAt(node)
+		end,
+		Shortest = function(_, cost)
+			return cost
+		end,
+		Lowest = function(node)
+			return node.Y
+		end,
+		Highest = function(node)
+			return -node.Y
+		end,
+		Random = function(node)
+			return randomKey(node)
+		end,
+		-- Both of these answer for exactly one block and refuse the rest. Nothing under the
+		-- cursor, or nothing hit yet, means no way in is offered and so nothing is mined.
+		Cursor = function(node)
+			return (cursorTarget and node == cursorTarget) and 0 or nil
+		end,
+		['Recently Hit'] = function(node)
+			return (manualHit and node == manualHit) and 0 or nil
+		end
+	}
+	
+	-- Cursor is re-aimed every pass, so moving off a block drops it straight away and it
+	-- keeps no route at all. Every other mode, Recently Hit included, keeps the route it
+	-- had: Recently Hit sees the tunnel through to the bed until you strike a different
+	-- block, and the rest are untouched.
+	local NO_ROUTE = {Cursor = true}
+	
+	-- What to go for is fixed: beds first, then whatever else is switched on, nearest of
+	-- each. Which block gets broken on the way in is the target mode's job, and that is
+	-- decided per opening in entryScorers rather than here.
+	local function rankCandidates()
+		if #candidates < 2 then return end
+	
+		table.sort(candidates, function(a, b)
+			if a.Rank == b.Rank then return a.Distance < b.Distance end
+			return a.Rank < b.Rank
+		end)
+	end
+	
+	local function attemptBreak()
+		for _, entry in candidates do
+			local v = entry.Block
+			if not v or not v.Parent then continue end
+	
+			local ok, isBreakable = pcall(function()
+				return bedwars.BlockController:isBlockBreakable({blockPosition = entry.Position / 3}, lplr)
+			end)
+			if not ok or not isBreakable then continue end
+	
+			if not SelfBreak.Enabled and v:GetAttribute('PlacedByUserId') == lplr.UserId then continue end
+			if (v:GetAttribute('BedShieldEndTime') or 0) > workspace:GetServerTimeNow() then continue end
+			if LimitItem.Enabled then
+				local held = store.hand.tool and bedwars.ItemMeta[store.hand.tool.Name]
+				if not (held and held.breakBlock) then continue end
+			end
+	
+			-- pcall succeeding only means nothing threw. breakBlock returns quietly when the
+			-- target is out of reach, has no route left, or is one of your own - all of which
+			-- used to read as a successful hit, so the pass stopped here and the same
+			-- unreachable block was picked again every time. Only a returned block counts.
+			local broke = false
+			-- A miss is a swing that went out and did not land, so it costs the same time as a
+			-- hit would rather than being retried on the next block straight away.
+			if HitChance.Enabled and math.random(100) > Chance.Value then
+				task.wait(BreakSpeed.Value)
+				return true
+			end
+	
+			local ok2 = pcall(function()
+				-- Self Break has to reach the dig route, not just the target: breakBlock
+				-- tunnels towards a block rather than hitting it directly, so with the check
+				-- on the target alone every block on the way there got broken regardless.
+				local route = tunnel[v]
+				if not route then
+					route = {}
+					tunnel[v] = route
+				end
+	
+				breakOptions.Range = Range.Value
+				breakOptions.Angle = Angle.Value
+				breakOptions.Score = entryScorers[TargetMode.Value]
+				-- Read on the way in and refilled on the way out, so the route carries from
+				-- one hit to the next. A break that never went out leaves it untouched.
+				-- Cursor keeps no route at all: you are aiming it, so the block you are on
+				-- wins over anything it was part way through.
+				breakOptions.Prefer = not NO_ROUTE[TargetMode.Value] and route or nil
+				breakOptions.Route = route
+	
+				local target, _, endpos = bedwars.breakBlock(v, Effect.Enabled, Animation.Enabled, CustomHealth.Enabled and customHealthbar or nil, not SelfBreak.Enabled, AutoTool.Enabled, breakOptions)
+				if not target then return end
+				broke = true
+	
+				-- Drawn from the route being followed rather than from a freshly worked out
+				-- one. Those are the same length but tie constantly, so the recomputed one
+				-- drifts between equally short alternatives on every hit - it was drawing a
+				-- detour while the blocks actually coming down ran perfectly straight.
+				if Effect.Enabled then
+					local from = table.find(route, target) or 1
+					for i, part in parts do
+						local pos = route[from + i - 1]
+						part.Position = pos or Vector3.zero
+						if pos then
+							part.BoxHandleAdornment.Color3 = pos == endpos and Color3.new(1, 0.2, 0.2) or pos == target and Color3.new(0.2, 0.2, 1) or Color3.new(0.2, 1, 0.2)
+						end
+					end
+				end
+			end)
+			if ok2 and broke then
+				task.wait(InstantBreak.Enabled and (store.damageBlockFail > tick() and 4.5 or 0) or BreakSpeed.Value)
+				return true
+			end
+		end
+	
+		return false
+	end
+	
+	Nuker = vain.Categories.World:CreateModule({
+		Name = 'Nuker',
+		Function = function(callback)
+			if callback then
+				randomSalt = math.random() * 1000
+	
+				for _ = 1, 30 do
+					local part = Instance.new('Part')
+					part.Anchored = true
+					part.CanQuery = false
+					part.CanCollide = false
+					part.Transparency = 1
+					part.Parent = gameCamera
+					local highlight = Instance.new('BoxHandleAdornment')
+					highlight.Size = Vector3.one
+					highlight.AlwaysOnTop = true
+					highlight.ZIndex = 1
+					highlight.Transparency = 0.5
+					highlight.Adornee = part
+					highlight.Parent = part
+					table.insert(parts, part)
+				end
+	
+				-- onBreak is the game's own swing at a block. Nuker never goes through it - it
+				-- calls the damage remote straight out - so its own hits cannot move the block
+				-- you picked, which is the whole point of steering it by hand.
+				pcall(function()
+					Nuker:Clean(bedwars.BlockBreaker.onBreak:Connect(function()
+						local hit = cursorBlock()
+						if hit and hit ~= manualHit then
+							manualHit = hit
+							-- Struck somewhere new, so nothing part way through is carried over.
+							table.clear(tunnel)
+						end
+					end))
+				end)
+	
+				local beds = collection('bed', Nuker)
+				-- Teslas carry a real tag, so they are collected rather than name matched.
+				-- 'tesla' and 'tesla_trap' are ItemType values, not tags.
+				local teslas = collection('tesla-trap', Nuker)
+				-- Ore, lucky blocks and anything you list are ordinary blocks named by their
+				-- item type, so they come out of the one 'block' collection.
+				customlist = collection('block', Nuker, function(tab, obj)
+					if wantedBlock(obj.Name) then
+						table.insert(tab, obj)
+					end
+				end)
+	
+				repeat
+					local ok = pcall(function()
+						if not entitylib.isAlive then return end
+	
+						if not viewAllowed() then
+							for _, v in parts do
+								v.Position = Vector3.zero
+							end
+							return
+						end
+	
+						local localPosition = entitylib.character.RootPart.Position
+						cursorTarget = TargetMode.Value == 'Cursor' and cursorBlock() or nil
+						table.clear(candidates)
+						table.clear(hitsCache)
+						gather(Bed.Enabled and beds, RANK_BED, localPosition)
+						gather(customlist, nil, localPosition)
+						gather(Tesla.Enabled and teslas, RANK_TESLA, localPosition)
+						rankCandidates()
+	
+						if attemptBreak() then return end
+	
+						for _, v in parts do
+							v.Position = Vector3.zero
+						end
+					end)
+					if not ok then
+						task.wait(0.5)
+					else
+						task.wait(1 / UpdateRate.Value)
+					end
+				until not Nuker.Enabled
+			else
+				cursorTarget, manualHit = nil, nil
+				clearHealthbar()
+				table.clear(candidates)
+				table.clear(hitsCache)
+				table.clear(tunnel)
+				for _, v in parts do
+					v:ClearAllChildren()
+					v:Destroy()
+				end
+				table.clear(parts)
+			end
+		end,
+		Tooltip = 'Breaks blocks around you automatically'
+	})
+	TargetMode = Nuker:CreateDropdown({
+		Name = 'Target Mode',
+		Tooltip = 'Where the way in starts, measured from you',
+		Function = function()
+			table.clear(tunnel)
+		end,
+		List = {'Smart', 'Nearest', 'Cursor', 'Recently Hit', 'Farthest', 'Health', 'Shortest', 'Lowest', 'Highest', 'Random'},
+		Tooltips = {
+			Smart = 'Nearest side in, unless it is much thicker',
+			Nearest = 'Closest block to you',
+			Cursor = 'Only what is under your cursor',
+			['Recently Hit'] = 'Digs on from the last block you hit',
+			Farthest = 'Furthest block still in range',
+			Health = 'Weakest block, your tool counted',
+			Shortest = 'Fewest blocks through to the bed',
+			Lowest = 'Lowest block first, cuts supports',
+			Highest = 'Highest block first',
+			Random = 'No fixed order'
+		}
+	})
+	ViewMode = Nuker:CreateDropdown({
+		Name = 'View Mode',
+		Tooltip = 'Which camera view this breaks in',
+		List = {'Both', 'First Person', 'Third Person'},
+		Tooltips = {
+			Both = 'Breaks in either view',
+			['First Person'] = 'Only while the camera is in your head',
+			['Third Person'] = 'Only while the camera is behind you'
+		}
+	})
+	Range = Nuker:CreateSlider({
+		Name = 'Break Range',
+		Tooltip = 'How far you can break blocks from\nGame default is 18',
+		Min = 1,
+		Max = 30,
+		Default = 30,
+		Suffix = function(val)
+			return val == 1 and 'stud' or 'studs'
+		end
+	})
+	BreakSpeed = Nuker:CreateSlider({
+		Name = 'Break Speed',
+		Tooltip = 'Delay between blocks, lower is faster\nGame default is 0.3',
+		Min = 0,
+		Max = 0.3,
+		Default = 0.25,
+		Decimal = 100,
+		Suffix = 'seconds'
+	})
+	Angle = Nuker:CreateSlider({
+		Name = 'Angle',
+		Tooltip = 'How wide a cone in front of you blocks break in\n360 breaks behind you too',
+		Min = 1,
+		Max = 360,
+		Default = 90,
+		Suffix = 'degrees'
+	})
+	UpdateRate = Nuker:CreateSlider({
+		Name = 'Update Rate',
+		Tooltip = 'How often blocks are re-checked\nLower costs less performance',
+		Min = 1,
+		Max = 120,
+		Default = 60,
+		Suffix = 'hz'
+	})
+	Custom = Nuker:CreateTextList({
+		Name = 'Custom',
+		Tooltip = 'Extra block names to break',
+		Function = rebuildList
+	})
+	Bed = Nuker:CreateToggle({
+		Name = 'Break Bed',
+		Tooltip = 'Breaks beds',
+		Default = true
+	})
+	LuckyBlock = Nuker:CreateToggle({
+		Name = 'Break Lucky Block',
+		Tooltip = 'Breaks every lucky block type',
+		Default = true,
+		Function = rebuildList
+	})
+	IronOre = Nuker:CreateToggle({
+		Name = 'Break Iron Ore',
+		Tooltip = 'Breaks iron ore',
+		Default = true,
+		Function = rebuildList
+	})
+	Tesla = Nuker:CreateToggle({
+		Name = 'Break Tesla',
+		Tooltip = 'Breaks tesla traps',
+		Default = true
+	})
+	Effect = Nuker:CreateToggle({
+		Name = 'Show Healthbar & Effects',
+		Tooltip = 'Shows break progress and particles',
+		Function = function(callback)
+			if CustomHealth.Object then
+				CustomHealth.Object.Visible = callback
+			end
+			if not callback then
+				clearHealthbar()
+			end
+		end,
+		Default = true
+	})
+	CustomHealth = Nuker:CreateToggle({
+		Name = 'Custom Healthbar',
+		Tooltip = 'Uses the Vain healthbar instead of the game one',
+		Function = function()
+			clearHealthbar()
+		end,
+		Default = true,
+		Darker = true
+	})
+	Animation = Nuker:CreateToggle({Name = 'Animation', Tooltip = 'Plays the break animation'})
+	SelfBreak = Nuker:CreateToggle({Name = 'Self Break', Tooltip = 'Also breaks blocks you placed yourself'})
+	InstantBreak = Nuker:CreateToggle({Name = 'Instant Break', Tooltip = 'Breaks blocks in a single hit'})
+	HitChance = Nuker:CreateToggle({
+		Name = 'Hit Chance',
+		Tooltip = 'Misses some swings on purpose',
+		Function = function(callback)
+			if Chance.Object then
+				Chance.Object.Visible = callback
+			end
+		end
+	})
+	Chance = Nuker:CreateSlider({
+		Name = 'Chance',
+		Tooltip = 'Percent of swings that land',
+		Min = 1,
+		Max = 100,
+		Default = 90,
+		Suffix = '%',
+		Visible = false,
+		Darker = true
+	})
+	AutoTool = Nuker:CreateToggle({
+		Name = 'Auto Tool',
+		Tooltip = 'Swaps to the best tool for each block',
+		Default = true
+	})
+	LimitItem = Nuker:CreateToggle({
+		Name = 'Limit to Items',
+		Tooltip = 'Only breaks when tools are held'
 	})
 	
 end)
@@ -31311,1119 +32464,6 @@ run(function()
 		Tooltip = function()
 			return 'Drops items fast when you hold '..dropKey().Name
 		end
-	})
-	
-end)
-
-run(function()
-	local BedPlates
-	local Background
-	local Color = {}
-	local ShowOwn
-	local Quantity
-	local FullLayers
-	local FullColor = {}
-	local UpdateRate
-	local Warn
-	local Warned = {}
-	local Reference = {}
-	local Signature = {}
-	local Folder = Instance.new('Folder')
-	Folder.Parent = vain.gui
-	
-	-- How deep a wrap is worth reporting on, and a ceiling on how much can be walked in
-	-- one go so a huge base cannot stall a refresh.
-	local MAX_LAYERS = 6
-	local SCAN_LIMIT = 1200
-	
-	-- Ore is part of the map that happens to be sitting against somebody's wrap, not
-	-- something they built to defend it. It is walked past rather than counted, so a bed
-	-- that touches a generator does not pick up a stray icon reading 1.
-	-- Terrain the map is made of rather than anything anybody placed. Snow is not on sale
-	-- in the shop at all - it is what a winter map's ground is covered in - so a bed sitting
-	-- on it picked up a plate counting the field it stands in, and the walk spread out
-	-- across that field instead of following the wrap round. Stepped over exactly the way
-	-- the island underneath is: not counted, not walked through, and not a hole in the layer
-	-- either, since it is solid.
-	local TERRAIN = {
-		snow = true
-	}
-	
-	local IGNORED = {
-		iron_ore = true,
-		iron_ore_mesh_block = true,
-		diamond_ore = true,
-		emerald_ore = true,
-		crystal_ore = true
-	}
-	
-	--[[
-		Walks outwards from the bed one layer at a time and reports what is around it: how
-		many of each block, and what each layer is made of.
-	
-		Following the six faces out from the bed the way the old scan did can only ever meet
-		one block per direction per step, so every layer came back as about eight however
-		many blocks were really in it. This walks the whole shell instead.
-	
-		Unbreakable blocks are stepped over rather than counted, which is what keeps the walk
-		out of the island the bed is standing on - it is solid, so it is not a hole in the
-		layer either, it just is not part of anybody's defence.
-	]]
-	local function scanBed(bed)
-		local names, counts, layers, open, mixed = {}, {}, {}, {}, {}
-		local seen, frontier, visited = {}, {}, 0
-	
-		-- Straight off the block handler rather than assuming which way the bed lies, so a
-		-- rotated one is walked from both of its halves like any other.
-		for _, v in bedwars.getContainedPositions(bed) do
-			local pos = v * 3
-			seen[pos] = true
-			table.insert(frontier, pos)
-		end
-	
-		for depth = 1, MAX_LAYERS do
-			local nextfrontier, types = {}, {}
-			layers[depth] = types
-	
-			for _, pos in frontier do
-				for _, side in sides do
-					local at = pos + side
-					local block = getPlacedBlock(at)
-					if not block then
-						-- Nothing here, so this layer has a way through it. Checked before the
-						-- already-visited test on purpose: a gap next to two different layers
-						-- was being claimed by the nearer one and never counted against the
-						-- other, so a layer with a hole beside it still came out complete.
-						open[depth] = true
-						seen[at] = true
-						continue
-					end
-	
-					if seen[at] then continue end
-					seen[at] = true
-					if block == bed or block:GetAttribute('NoBreak') or TERRAIN[block.Name] then continue end
-	
-					-- Still stepped through, so a wrap with ore embedded in it is followed all
-					-- the way round, and still solid, so it does not read as a hole either.
-					if IGNORED[block.Name] then
-						-- It does stop the layer being a full layer of anything though. A spot
-						-- taken by a generator is a spot nobody wrapped, whatever is around it.
-						mixed[depth] = true
-					else
-						if not table.find(names, block.Name) then
-							table.insert(names, block.Name)
-						end
-						counts[block.Name] = (counts[block.Name] or 0) + 1
-						types[block.Name] = (types[block.Name] or 0) + 1
-					end
-	
-					visited += 1
-					table.insert(nextfrontier, at)
-				end
-			end
-	
-			frontier = nextfrontier
-			if #frontier == 0 or visited >= SCAN_LIMIT then break end
-		end
-	
-		-- A hole anywhere further in means the wrap has already been breached, so nothing
-		-- outside it is a complete layer either. Breaking blocks reshuffles which layer the
-		-- survivors land in, and a layer left holding two blocks of one kind would otherwise
-		-- report itself complete.
-		local breached = false
-		local full = {}
-		for depth = 1, MAX_LAYERS do
-			local types = layers[depth]
-			if not types then break end
-			if open[depth] then breached = true end
-			if breached or mixed[depth] then continue end
-	
-			local only, kinds = nil, 0
-			for name in types do
-				only = name
-				kinds += 1
-			end
-			if kinds == 1 then
-				full[only] = true
-			end
-		end
-	
-		return names, counts, full, layers
-	end
-	
-	-- What the plate would look like, as a string. Re-checking is cheap but tearing down
-	-- and rebuilding every icon is not, so with a refresh running on a timer the drawing
-	-- only happens when this comes out different from last time.
-	local function signature(order, counts, full)
-		local parts = {}
-		for _, name in order do
-			table.insert(parts, name .. 'x' .. counts[name] .. (full[name] and '!' or ''))
-		end
-		table.insert(parts, tostring(Quantity and Quantity.Enabled) .. tostring(FullLayers and FullLayers.Enabled))
-		table.insert(parts, string.format('%.3f %.3f %.3f %.3f', FullColor.Hue or 0, FullColor.Sat or 0, FullColor.Value or 0, FullColor.Opacity or 0))
-		return table.concat(parts, '|')
-	end
-	
-	-- A bed carries a NoBreak attribute for the team it belongs to, which is how the game
-	-- stops you breaking your own. Asked live rather than cached, since your team is not
-	-- settled the moment the plates are first drawn. No team at all - spectating - matches
-	-- nothing, so every plate stays up.
-	local function isOwnBed(bed)
-		return bed:GetAttribute('Team' .. (lplr:GetAttribute('Team') or -1) .. 'NoBreak') ~= nil
-	end
-	
-	-- Which team a bed belongs to, read off the same no-break attribute isOwnBed matches
-	-- on: the team barred from breaking a bed is the team that owns it. Lowest id wins so
-	-- a bed carrying more than one stays on one answer instead of flipping between them,
-	-- since GetAttributes is not ordered. Falls back to the raw number when the queue has
-	-- no display name, and to nothing when the bed carries no such attribute at all.
-	local function bedTeamName(bed)
-		local id
-		for name in bed:GetAttributes() do
-			local found = tonumber(name:match('^Team(%d+)NoBreak$'))
-			if found and (not id or found < id) then
-				id = found
-			end
-		end
-		if not id then return end
-	
-		local queue = bedwars.QueueMeta[store.queueType]
-		local team = queue and queue.teams and queue.teams[id]
-		return (team and team.displayName) or ('Team ' .. id)
-	end
-	
-	local function refreshAdornee(v)
-		if not v.Adornee then return end
-	
-		local order, counts, full, layers = scanBed(v.Adornee)
-		-- Toughest first. A block the metadata has never heard of sorts last rather than
-		-- throwing, which would take every plate down with it.
-		local function health(name)
-			local meta = bedwars.ItemMeta[name]
-			return (meta and meta.block and meta.block.health) or 0
-		end
-		table.sort(order, function(a, b)
-			return health(a) > health(b)
-		end)
-		-- Set before the signature check below, so flicking the setting takes effect even
-		-- when nothing about the wrap itself has changed.
-		--[[
-			Obsidian going onto the ring touching the bed, said once as it happens.
-	
-			Edge triggered on purpose: the plates are re-scanned several times a second, so
-			reporting the state rather than the change would repeat the same warning forever.
-			The flag clears when the obsidian is gone, so a bed being re-plated later warns
-			again rather than staying silent because it once had some.
-		]]
-		if Warn and Warn.Enabled then
-			local bed = v.Adornee
-			local plated = (layers[1] and layers[1].obsidian) ~= nil
-	
-			if plated and not Warned[bed] then
-				if isOwnBed(bed) then
-					notif('BedPlates', 'Obsidian is going on your bed!', 8, 'alert')
-				else
-					local team = bedTeamName(bed)
-					notif('BedPlates', team and ('Obsidian is going on the ' .. team .. ' bed!') or 'Someone is putting obsidian on a bed!', 8, 'alert')
-				end
-			end
-			Warned[bed] = plated or nil
-		end
-	
-		v.Enabled = #order > 0 and (not ShowOwn or ShowOwn.Enabled or not isOwnBed(v.Adornee))
-	
-		local sig = signature(order, counts, full)
-		if Signature[v] == sig then return end
-		Signature[v] = sig
-	
-		for _, obj in v.Frame:GetChildren() do
-			if obj.Name == 'Block' then
-				obj:Destroy()
-			end
-		end
-	
-		local showfull = FullLayers and FullLayers.Enabled
-		local showcount = Quantity and Quantity.Enabled
-	
-		for _, block in order do
-			local complete = showfull and full[block]
-	
-			local holder = Instance.new('Frame')
-			holder.Name = 'Block'
-			holder.Size = UDim2.fromOffset(32, 32)
-			holder.BackgroundColor3 = Color3.fromHSV(FullColor.Hue or 0, FullColor.Sat or 0, FullColor.Value or 1)
-			holder.BackgroundTransparency = complete and (1 - (FullColor.Opacity or 1)) or 1
-			holder.Parent = v.Frame
-			local holdercorner = Instance.new('UICorner')
-			holdercorner.CornerRadius = UDim.new(0, 4)
-			holdercorner.Parent = holder
-	
-			local blockimage = Instance.new('ImageLabel')
-			blockimage.Size = UDim2.fromScale(1, 1)
-			blockimage.BackgroundTransparency = 1
-			blockimage.Image = bedwars.getIcon({itemType = block}, true)
-			blockimage.Parent = holder
-	
-			if showcount then
-				-- Across the whole icon rather than tucked into a corner: at the size these
-				-- plates are drawn on screen, anything smaller cannot be read at a glance.
-				-- White on a dark outline so it stands off whatever block is behind it.
-				local amount = Instance.new('TextLabel')
-				amount.Size = UDim2.fromScale(1, 1)
-				amount.BackgroundTransparency = 1
-				amount.Text = tostring(counts[block])
-				amount.TextColor3 = Color3.new(1, 1, 1)
-				amount.TextScaled = true
-				amount.FontFace = uipallet.FontSemiBold
-				amount.ZIndex = 2
-				amount.Parent = holder
-				local outline = Instance.new('UIStroke')
-				outline.Color = Color3.new()
-				outline.Thickness = 2
-				outline.Parent = amount
-				-- Keeps a two digit count off the edges of the icon.
-				local padding = Instance.new('UIPadding')
-				padding.PaddingTop = UDim.new(0, 3)
-				padding.PaddingBottom = UDim.new(0, 3)
-				padding.Parent = amount
-			end
-		end
-	end
-	
-	local function refreshAll()
-		for _, v in Reference do
-			refreshAdornee(v)
-		end
-	end
-	
-	local function Added(v)
-		local billboard = Instance.new('BillboardGui')
-		billboard.Parent = Folder
-		billboard.Name = 'bed'
-		billboard.StudsOffsetWorldSpace = Vector3.new(0, 3, 0)
-		billboard.Size = UDim2.fromOffset(36, 36)
-		billboard.AlwaysOnTop = true
-		billboard.ClipsDescendants = false
-		billboard.Adornee = v
-		local blur = addBlur(billboard)
-		blur.Visible = Background.Enabled
-		local frame = Instance.new('Frame')
-		frame.Size = UDim2.fromScale(1, 1)
-		frame.BackgroundColor3 = Color3.fromHSV(Color.Hue, Color.Sat, Color.Value)
-		frame.BackgroundTransparency = 1 - (Background.Enabled and Color.Opacity or 0)
-		frame.Parent = billboard
-		local layout = Instance.new('UIListLayout')
-		layout.FillDirection = Enum.FillDirection.Horizontal
-		layout.Padding = UDim.new(0, 4)
-		layout.VerticalAlignment = Enum.VerticalAlignment.Center
-		layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-		layout:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(function()
-			billboard.Size = UDim2.fromOffset(math.max(layout.AbsoluteContentSize.X + 4, 36), 36)
-		end)
-		layout.Parent = frame
-		local corner = Instance.new('UICorner')
-		corner.CornerRadius = UDim.new(0, 4)
-		corner.Parent = frame
-		Reference[v] = billboard
-		refreshAdornee(billboard)
-	end
-	
-	local function refreshNear(data)
-		data = data.blockRef.blockPosition * 3
-		for i, v in Reference do
-			if (data - i.Position).Magnitude <= 30 then
-				refreshAdornee(v)
-			end
-		end
-	end
-	
-	BedPlates = vain.Categories.Minigames:CreateModule({
-		Name = 'BedPlates',
-		Function = function(callback)
-			if callback then
-				for _, v in collectionService:GetTagged('bed') do
-					task.spawn(Added, v)
-				end
-				BedPlates:Clean(vainEvents.PlaceBlockEvent.Event:Connect(refreshNear))
-				BedPlates:Clean(vainEvents.BreakBlockEvent.Event:Connect(refreshNear))
-				BedPlates:Clean(collectionService:GetInstanceAddedSignal('bed'):Connect(Added))
-				BedPlates:Clean(collectionService:GetInstanceRemovedSignal('bed'):Connect(function(v)
-					if Reference[v] then
-						Signature[Reference[v]] = nil
-						Reference[v]:Destroy()
-						Reference[v]:ClearAllChildren()
-						Reference[v] = nil
-					end
-				end))
-	
-				-- The block events only report what the server tells us about, and a layer
-				-- that quietly stopped being complete is exactly the thing you want to notice.
-				-- Guarded so one bad pass cannot kill the loop, with the wait outside so a
-				-- repeating error cannot spin the CPU.
-				task.spawn(function()
-					repeat
-						local ok = pcall(refreshAll)
-						-- The slider may not exist yet if a saved config switched this on while the
-						-- file was still running, and an error out here would end the loop for good.
-						task.wait(ok and UpdateRate and (1 / UpdateRate.Value) or 0.5)
-					until not BedPlates.Enabled
-				end)
-			else
-				table.clear(Warned)
-				table.clear(Reference)
-				table.clear(Signature)
-				Folder:ClearAllChildren()
-			end
-		end,
-		Tooltip = 'Displays blocks over the bed'
-	})
-	Warn = BedPlates:CreateToggle({
-		Name = 'Obsidian Warning',
-		Tooltip = 'Warns when obsidian reaches a bed'
-	})
-	UpdateRate = BedPlates:CreateSlider({
-		Name = 'Update Rate',
-		Tooltip = 'How often the plates are re-checked\nLower costs less performance',
-		Min = 1,
-		Max = 60,
-		Default = 10,
-		Suffix = 'hz'
-	})
-	ShowOwn = BedPlates:CreateToggle({
-		Name = 'Show Own',
-		Tooltip = 'Also plates your own bed',
-		Function = refreshAll,
-		Default = true
-	})
-	Quantity = BedPlates:CreateToggle({
-		Name = 'Show Amount',
-		Tooltip = 'Shows how many of each block there are',
-		Function = refreshAll,
-		Default = true
-	})
-	FullLayers = BedPlates:CreateToggle({
-		Name = 'Highlight Full Layers',
-		Tooltip = 'Marks blocks that cover a whole layer on their own',
-		Function = function(callback)
-			if FullColor.Object then
-				FullColor.Object.Visible = callback
-			end
-			refreshAll()
-		end,
-		Default = true
-	})
-	FullColor = BedPlates:CreateColorSlider({
-		Name = 'Full Layer Color',
-		Tooltip = 'Color of the full layer highlight',
-		DefaultHue = 0.33,
-		DefaultSat = 0.75,
-		DefaultValue = 1,
-		DefaultOpacity = 0.6,
-		Function = refreshAll,
-		Darker = true
-	})
-	Background = BedPlates:CreateToggle({
-		Name = 'Background',
-		Tooltip = 'Draws a background behind the text',
-		Function = function(callback)
-			if Color.Object then
-				Color.Object.Visible = callback
-			end
-			for _, v in Reference do
-				v.Frame.BackgroundTransparency = 1 - (callback and Color.Opacity or 0)
-				v.Blur.Visible = callback
-			end
-		end,
-		Default = true
-	})
-	Color = BedPlates:CreateColorSlider({
-		Name = 'Background Color',
-		Tooltip = 'Color of the background',
-		DefaultValue = 0,
-		DefaultOpacity = 0.5,
-		Function = function(hue, sat, val, opacity)
-			for _, v in Reference do
-				v.Frame.BackgroundColor3 = Color3.fromHSV(hue, sat, val)
-				v.Frame.BackgroundTransparency = 1 - opacity
-			end
-		end,
-		Darker = true
-	})
-	
-end)
-
-run(function()
-	local Nuker
-	local Range
-	local BreakSpeed
-	local UpdateRate
-	local Angle
-	local HitChance
-	local Chance = {}
-	local TargetMode
-	local ViewMode
-	local Custom
-	local Bed
-	local LuckyBlock
-	local IronOre
-	local Tesla
-	local Effect
-	local CustomHealth = {}
-	local Animation
-	local SelfBreak
-	local InstantBreak
-	local LimitItem
-	local AutoTool
-	local customlist, parts, candidates = {}, {}, {}
-	
-	-- The route into each thing being dug towards, nearest end first, so a started hole is
-	-- carried on down rather than abandoned for whatever the mode ranks best on the outer
-	-- face. One table per target, handed straight to breakBlock and refilled by it.
-	local tunnel = {}
-	local breakOptions = {}
-	
-	-- Ranks used by the Priority target mode, in the order the categories were tried
-	-- before target modes existed.
-	local RANK_BED = 1
-	local RANK_CUSTOM = 2
-	local RANK_ORE = 3
-	local RANK_LUCKY = 4
-	local RANK_TESLA = 5
-	
-	-- Random has to stay put once it has chosen, or every pass reshuffles and the nuker
-	-- hops between blocks without ever finishing one. Hashing the position gives an order
-	-- that is arbitrary but stable, and the salt makes it a different one each time the
-	-- module is switched on.
-	local randomSalt = 0
-	
-	local function randomKey(pos)
-		local n = math.sin((pos.X * 12.9898) + (pos.Y * 78.233) + (pos.Z * 37.719) + randomSalt) * 43758.5453
-		return n - math.floor(n)
-	end
-	
-	local function blockMeta(name)
-		local meta = bedwars.ItemMeta[name]
-		return meta and meta.block
-	end
-	
-	-- Only 4 of the 14 lucky block types carry the 'LuckyBlock' collection tag - purple,
-	-- halloween, flying, glitched and the rest never get it - so collecting by that tag
-	-- found nothing in most modes and the toggle looked dead. Every one of them does have
-	-- a luckyBlock table on its block meta, which is what the game itself tests.
-	local function isLuckyBlock(name)
-		local meta = blockMeta(name)
-		return (meta and meta.luckyBlock) ~= nil
-	end
-	
-	-- iron_ore is the item you collect; the thing standing in the world is
-	-- iron_ore_mesh_block. Both are accepted in case a mode places either.
-	local function isIronOre(name)
-		return name == 'iron_ore' or name == 'iron_ore_mesh_block'
-	end
-	
-	-- Every setting here is created after CreateModule returns, so all of them can still be
-	-- nil while this file is executing, and the module can be switched on inside that
-	-- window when the GUI restores a saved config.
-	local function wantedBlock(name)
-		if Custom and Custom.ListEnabled and table.find(Custom.ListEnabled, name) then return true end
-		if IronOre and IronOre.Enabled and isIronOre(name) then return true end
-		if LuckyBlock and LuckyBlock.Enabled and isLuckyBlock(name) then return true end
-		return false
-	end
-	
-	-- The collection is filtered as it is built, so anything that changes what counts has
-	-- to rebuild it from the block store rather than just flipping a flag.
-	local function rebuildList()
-		if not customlist then return end
-		table.clear(customlist)
-		for _, obj in store.blocks do
-			if wantedBlock(obj.Name) then
-				table.insert(customlist, obj)
-			end
-		end
-	end
-	
-	local function customRank(name)
-		if Custom and Custom.ListEnabled and table.find(Custom.ListEnabled, name) then return RANK_CUSTOM end
-		if isLuckyBlock(name) then return RANK_LUCKY end
-		return RANK_ORE
-	end
-	
-	-- First person puts the camera inside your own head, so the gap between the camera and
-	-- the head is what separates the two views. Shiftlock still counts as third person here,
-	-- which matches what you see on screen.
-	local function viewAllowed()
-		if not ViewMode or ViewMode.Value == 'Both' then return true end
-		return bedwars.isFirstPerson() == (ViewMode.Value == 'First Person')
-	end
-	
-	--[[
-		The healthbar owns everything it draws. It used to borrow BlockBreaker's
-		healthbarMaid and healthbarProgressRef, which current builds moved onto a separate
-		BlockHealthbar object - so the nil check at the top returned early every single
-		time and the custom bar never appeared at all.
-	]]
-	local healthbar = {token = 0}
-	
-	local function clearHealthbar()
-		healthbar.token += 1
-		if healthbar.mounted then
-			pcall(bedwars.Roact.unmount, healthbar.mounted)
-		end
-		if healthbar.part then
-			pcall(function()
-				healthbar.part:Destroy()
-			end)
-		end
-		healthbar.mounted, healthbar.part, healthbar.progress, healthbar.position = nil, nil, nil, nil
-	end
-	
-	local function mountHealthbar(blockRef, health, maxHealth, block)
-		local create = bedwars.Roact.createElement
-		local percent = math.clamp(health / maxHealth, 0, 1)
-		local meta = bedwars.ItemMeta[block.Name]
-		local name = (meta and meta.displayName) or block.Name
-	
-		local part = Instance.new('Part')
-		part.Size = Vector3.one
-		part.CFrame = CFrame.new(bedwars.BlockController:getWorldPosition(blockRef.blockPosition))
-		part.Transparency = 1
-		part.Anchored = true
-		part.CanCollide = false
-		part.CanQuery = false
-		part.Parent = workspace
-		pcall(function()
-			bedwars.QueryUtil:setQueryIgnored(part, true)
-		end)
-	
-		healthbar.part = part
-		healthbar.position = blockRef.blockPosition
-		healthbar.progress = bedwars.Roact.createRef()
-	
-		healthbar.mounted = bedwars.Roact.mount(create('BillboardGui', {
-			Size = UDim2.fromOffset(249, 102),
-			StudsOffset = Vector3.new(0, 2.5, 0),
-			Adornee = part,
-			MaxDistance = 40,
-			AlwaysOnTop = true
-		}, {
-			create('Frame', {
-				Size = UDim2.fromOffset(160, 50),
-				Position = UDim2.fromOffset(44, 32),
-				BackgroundColor3 = Color3.new(),
-				BackgroundTransparency = 0.5
-			}, {
-				create('UICorner', {CornerRadius = UDim.new(0, 5)}),
-				create('ImageLabel', {
-					Size = UDim2.new(1, 89, 1, 52),
-					Position = UDim2.fromOffset(-48, -31),
-					BackgroundTransparency = 1,
-					Image = getcustomasset('vain/assets/new/blur.png'),
-					ScaleType = Enum.ScaleType.Slice,
-					SliceCenter = Rect.new(52, 31, 261, 502)
-				}),
-				create('TextLabel', {
-					Size = UDim2.fromOffset(145, 14),
-					Position = UDim2.fromOffset(13, 12),
-					BackgroundTransparency = 1,
-					Text = name,
-					TextXAlignment = Enum.TextXAlignment.Left,
-					TextYAlignment = Enum.TextYAlignment.Top,
-					TextColor3 = Color3.new(),
-					TextScaled = true,
-					Font = Enum.Font.Arial
-				}),
-				create('TextLabel', {
-					Size = UDim2.fromOffset(145, 14),
-					Position = UDim2.fromOffset(12, 11),
-					BackgroundTransparency = 1,
-					Text = name,
-					TextXAlignment = Enum.TextXAlignment.Left,
-					TextYAlignment = Enum.TextYAlignment.Top,
-					TextColor3 = color.Dark(uipallet.Text, 0.16),
-					TextScaled = true,
-					Font = Enum.Font.Arial
-				}),
-				create('Frame', {
-					Size = UDim2.fromOffset(138, 4),
-					Position = UDim2.fromOffset(12, 32),
-					BackgroundColor3 = uipallet.Main
-				}, {
-					create('UICorner', {CornerRadius = UDim.new(1, 0)}),
-					create('Frame', {
-						[bedwars.Roact.Ref] = healthbar.progress,
-						Size = UDim2.fromScale(percent, 1),
-						BackgroundColor3 = Color3.fromHSV(math.clamp(percent / 2.5, 0, 1), 0.89, 0.75)
-					}, {create('UICorner', {CornerRadius = UDim.new(1, 0)})})
-				})
-			})
-		}), part)
-	end
-	
-	local function customHealthbar(_, blockRef, health, maxHealth, changeHealth, block)
-		if block:GetAttribute('NoHealthbar') or not maxHealth or maxHealth <= 0 then return end
-	
-		if not healthbar.part or healthbar.position ~= blockRef.blockPosition then
-			clearHealthbar()
-			mountHealthbar(blockRef, health, maxHealth, block)
-		end
-	
-		local progress = healthbar.progress and healthbar.progress:getValue()
-		if not progress then return end
-	
-		local newpercent = math.clamp((health - changeHealth) / maxHealth, 0, 1)
-		tweenService:Create(progress, TweenInfo.new(0.3), {
-			Size = UDim2.fromScale(newpercent, 1), BackgroundColor3 = Color3.fromHSV(math.clamp(newpercent / 2.5, 0, 1), 0.89, 0.75)
-		}):Play()
-	
-		-- The token makes the delayed cleanup drop itself when a newer hit has already
-		-- claimed the bar, so it can never take down the bar for the block you moved on to.
-		healthbar.token += 1
-		local token = healthbar.token
-		task.delay(5, function()
-			if healthbar.token == token then
-				clearHealthbar()
-			end
-		end)
-	end
-	
-	local function gather(list, rank, localPosition)
-		if not list then return end
-		for _, v in list do
-			if not v or not v.Parent then continue end
-			-- A block that is a model rather than a part has no Position at all, and one
-			-- bad entry used to abort the whole pass before anything got broken.
-			local ok, pos = pcall(function()
-				return v.Position
-			end)
-			if not ok or not pos then continue end
-	
-			local dist = (pos - localPosition).Magnitude
-			if dist >= Range.Value then continue end
-	
-			table.insert(candidates, {
-				Block = v,
-				Position = pos,
-				Distance = dist,
-				Rank = rank or customRank(v.Name)
-			})
-		end
-	end
-	
-	-- Health scores every opening of a structure, which is a store lookup each, so the
-	-- answers are held for the length of one pass and dropped with the candidates.
-	local hitsCache = {}
-	
-	--[[
-		Cursor and Recently Hit are steered by hand rather than run on their own. Both name
-		a single block to dig from and nothing else is allowed, so pointing at nothing that
-		leads anywhere means nothing gets broken.
-	
-		Which block you are on comes from the game's own selector, so it agrees exactly with
-		what the game thinks you are pointing at, range and obstructions included.
-	]]
-	local BLOCK_SELECT = 1
-	local cursorTarget = nil
-	local manualHit = nil
-	
-	local function cursorBlock()
-		local ok, info = pcall(function()
-			return bedwars.BlockEngine:getBlockSelector():getMouseInfo(BLOCK_SELECT)
-		end)
-		local ref = ok and info and info.target and info.target.blockRef
-		local pos = ref and ref.blockPosition
-		return pos and (pos * 3) or nil
-	end
-	
-	local function blockHitsAt(node)
-		local cached = hitsCache[node]
-		if cached then return cached end
-	
-		local ok, hits = pcall(function()
-			local block = bedwars.getPlacedBlock(node)
-			return block and bedwars.getBlockHits(block, node) or nil
-		end)
-		hits = (ok and hits) or math.huge
-		hitsCache[node] = hits
-		return hits
-	end
-	
-	--[[
-		A target mode picks the block that actually gets broken, measured from your
-		character - the defences in front of a bed, not the bed sitting behind them. These
-		score the openings breakBlock can start at; ranking only the beds and ore left the
-		choice of which wall to mine to whichever the pathfinder happened to reach first,
-		so standing at one side of a build was no reason for it to break that side.
-		node is a world position, cost is the hits to tunnel from there to the target, and
-		reach is the distance from your character.
-	]]
-	local entryScorers = {
-		Nearest = function(_, _, reach)
-			return reach
-		end,
-		Farthest = function(_, _, reach)
-			return -reach
-		end,
-		Health = function(node)
-			return blockHitsAt(node)
-		end,
-		Shortest = function(_, cost)
-			return cost
-		end,
-		Lowest = function(node)
-			return node.Y
-		end,
-		Highest = function(node)
-			return -node.Y
-		end,
-		Random = function(node)
-			return randomKey(node)
-		end,
-		-- Both of these answer for exactly one block and refuse the rest. Nothing under the
-		-- cursor, or nothing hit yet, means no way in is offered and so nothing is mined.
-		Cursor = function(node)
-			return (cursorTarget and node == cursorTarget) and 0 or nil
-		end,
-		['Recently Hit'] = function(node)
-			return (manualHit and node == manualHit) and 0 or nil
-		end
-	}
-	
-	-- Cursor is re-aimed every pass, so moving off a block drops it straight away and it
-	-- keeps no route at all. Every other mode, Recently Hit included, keeps the route it
-	-- had: Recently Hit sees the tunnel through to the bed until you strike a different
-	-- block, and the rest are untouched.
-	local NO_ROUTE = {Cursor = true}
-	
-	-- What to go for is fixed: beds first, then whatever else is switched on, nearest of
-	-- each. Which block gets broken on the way in is the target mode's job, and that is
-	-- decided per opening in entryScorers rather than here.
-	local function rankCandidates()
-		if #candidates < 2 then return end
-	
-		table.sort(candidates, function(a, b)
-			if a.Rank == b.Rank then return a.Distance < b.Distance end
-			return a.Rank < b.Rank
-		end)
-	end
-	
-	local function attemptBreak()
-		for _, entry in candidates do
-			local v = entry.Block
-			if not v or not v.Parent then continue end
-	
-			local ok, isBreakable = pcall(function()
-				return bedwars.BlockController:isBlockBreakable({blockPosition = entry.Position / 3}, lplr)
-			end)
-			if not ok or not isBreakable then continue end
-	
-			if not SelfBreak.Enabled and v:GetAttribute('PlacedByUserId') == lplr.UserId then continue end
-			if (v:GetAttribute('BedShieldEndTime') or 0) > workspace:GetServerTimeNow() then continue end
-			if LimitItem.Enabled then
-				local held = store.hand.tool and bedwars.ItemMeta[store.hand.tool.Name]
-				if not (held and held.breakBlock) then continue end
-			end
-	
-			-- pcall succeeding only means nothing threw. breakBlock returns quietly when the
-			-- target is out of reach, has no route left, or is one of your own - all of which
-			-- used to read as a successful hit, so the pass stopped here and the same
-			-- unreachable block was picked again every time. Only a returned block counts.
-			local broke = false
-			-- A miss is a swing that went out and did not land, so it costs the same time as a
-			-- hit would rather than being retried on the next block straight away.
-			if HitChance.Enabled and math.random(100) > Chance.Value then
-				task.wait(BreakSpeed.Value)
-				return true
-			end
-	
-			local ok2 = pcall(function()
-				-- Self Break has to reach the dig route, not just the target: breakBlock
-				-- tunnels towards a block rather than hitting it directly, so with the check
-				-- on the target alone every block on the way there got broken regardless.
-				local route = tunnel[v]
-				if not route then
-					route = {}
-					tunnel[v] = route
-				end
-	
-				breakOptions.Range = Range.Value
-				breakOptions.Angle = Angle.Value
-				breakOptions.Score = entryScorers[TargetMode.Value]
-				-- Read on the way in and refilled on the way out, so the route carries from
-				-- one hit to the next. A break that never went out leaves it untouched.
-				-- Cursor keeps no route at all: you are aiming it, so the block you are on
-				-- wins over anything it was part way through.
-				breakOptions.Prefer = not NO_ROUTE[TargetMode.Value] and route or nil
-				breakOptions.Route = route
-	
-				local target, _, endpos = bedwars.breakBlock(v, Effect.Enabled, Animation.Enabled, CustomHealth.Enabled and customHealthbar or nil, not SelfBreak.Enabled, AutoTool.Enabled, breakOptions)
-				if not target then return end
-				broke = true
-	
-				-- Drawn from the route being followed rather than from a freshly worked out
-				-- one. Those are the same length but tie constantly, so the recomputed one
-				-- drifts between equally short alternatives on every hit - it was drawing a
-				-- detour while the blocks actually coming down ran perfectly straight.
-				if Effect.Enabled then
-					local from = table.find(route, target) or 1
-					for i, part in parts do
-						local pos = route[from + i - 1]
-						part.Position = pos or Vector3.zero
-						if pos then
-							part.BoxHandleAdornment.Color3 = pos == endpos and Color3.new(1, 0.2, 0.2) or pos == target and Color3.new(0.2, 0.2, 1) or Color3.new(0.2, 1, 0.2)
-						end
-					end
-				end
-			end)
-			if ok2 and broke then
-				task.wait(InstantBreak.Enabled and (store.damageBlockFail > tick() and 4.5 or 0) or BreakSpeed.Value)
-				return true
-			end
-		end
-	
-		return false
-	end
-	
-	Nuker = vain.Categories.Minigames:CreateModule({
-		Name = 'Nuker',
-		Function = function(callback)
-			if callback then
-				randomSalt = math.random() * 1000
-	
-				for _ = 1, 30 do
-					local part = Instance.new('Part')
-					part.Anchored = true
-					part.CanQuery = false
-					part.CanCollide = false
-					part.Transparency = 1
-					part.Parent = gameCamera
-					local highlight = Instance.new('BoxHandleAdornment')
-					highlight.Size = Vector3.one
-					highlight.AlwaysOnTop = true
-					highlight.ZIndex = 1
-					highlight.Transparency = 0.5
-					highlight.Adornee = part
-					highlight.Parent = part
-					table.insert(parts, part)
-				end
-	
-				-- onBreak is the game's own swing at a block. Nuker never goes through it - it
-				-- calls the damage remote straight out - so its own hits cannot move the block
-				-- you picked, which is the whole point of steering it by hand.
-				pcall(function()
-					Nuker:Clean(bedwars.BlockBreaker.onBreak:Connect(function()
-						local hit = cursorBlock()
-						if hit and hit ~= manualHit then
-							manualHit = hit
-							-- Struck somewhere new, so nothing part way through is carried over.
-							table.clear(tunnel)
-						end
-					end))
-				end)
-	
-				local beds = collection('bed', Nuker)
-				-- Teslas carry a real tag, so they are collected rather than name matched.
-				-- 'tesla' and 'tesla_trap' are ItemType values, not tags.
-				local teslas = collection('tesla-trap', Nuker)
-				-- Ore, lucky blocks and anything you list are ordinary blocks named by their
-				-- item type, so they come out of the one 'block' collection.
-				customlist = collection('block', Nuker, function(tab, obj)
-					if wantedBlock(obj.Name) then
-						table.insert(tab, obj)
-					end
-				end)
-	
-				repeat
-					local ok = pcall(function()
-						if not entitylib.isAlive then return end
-	
-						if not viewAllowed() then
-							for _, v in parts do
-								v.Position = Vector3.zero
-							end
-							return
-						end
-	
-						local localPosition = entitylib.character.RootPart.Position
-						cursorTarget = TargetMode.Value == 'Cursor' and cursorBlock() or nil
-						table.clear(candidates)
-						table.clear(hitsCache)
-						gather(Bed.Enabled and beds, RANK_BED, localPosition)
-						gather(customlist, nil, localPosition)
-						gather(Tesla.Enabled and teslas, RANK_TESLA, localPosition)
-						rankCandidates()
-	
-						if attemptBreak() then return end
-	
-						for _, v in parts do
-							v.Position = Vector3.zero
-						end
-					end)
-					if not ok then
-						task.wait(0.5)
-					else
-						task.wait(1 / UpdateRate.Value)
-					end
-				until not Nuker.Enabled
-			else
-				cursorTarget, manualHit = nil, nil
-				clearHealthbar()
-				table.clear(candidates)
-				table.clear(hitsCache)
-				table.clear(tunnel)
-				for _, v in parts do
-					v:ClearAllChildren()
-					v:Destroy()
-				end
-				table.clear(parts)
-			end
-		end,
-		Tooltip = 'Breaks blocks around you automatically'
-	})
-	TargetMode = Nuker:CreateDropdown({
-		Name = 'Target Mode',
-		Tooltip = 'Where the way in starts, measured from you',
-		Function = function()
-			table.clear(tunnel)
-		end,
-		List = {'Smart', 'Nearest', 'Cursor', 'Recently Hit', 'Farthest', 'Health', 'Shortest', 'Lowest', 'Highest', 'Random'},
-		Tooltips = {
-			Smart = 'Nearest side in, unless it is much thicker',
-			Nearest = 'Closest block to you',
-			Cursor = 'Only what is under your cursor',
-			['Recently Hit'] = 'Digs on from the last block you hit',
-			Farthest = 'Furthest block still in range',
-			Health = 'Weakest block, your tool counted',
-			Shortest = 'Fewest blocks through to the bed',
-			Lowest = 'Lowest block first, cuts supports',
-			Highest = 'Highest block first',
-			Random = 'No fixed order'
-		}
-	})
-	ViewMode = Nuker:CreateDropdown({
-		Name = 'View Mode',
-		Tooltip = 'Which camera view this breaks in',
-		List = {'Both', 'First Person', 'Third Person'},
-		Tooltips = {
-			Both = 'Breaks in either view',
-			['First Person'] = 'Only while the camera is in your head',
-			['Third Person'] = 'Only while the camera is behind you'
-		}
-	})
-	Range = Nuker:CreateSlider({
-		Name = 'Break Range',
-		Tooltip = 'How far you can break blocks from\nGame default is 18',
-		Min = 1,
-		Max = 30,
-		Default = 30,
-		Suffix = function(val)
-			return val == 1 and 'stud' or 'studs'
-		end
-	})
-	BreakSpeed = Nuker:CreateSlider({
-		Name = 'Break Speed',
-		Tooltip = 'Delay between blocks, lower is faster\nGame default is 0.3',
-		Min = 0,
-		Max = 0.3,
-		Default = 0.25,
-		Decimal = 100,
-		Suffix = 'seconds'
-	})
-	Angle = Nuker:CreateSlider({
-		Name = 'Angle',
-		Tooltip = 'How wide a cone in front of you blocks break in\n360 breaks behind you too',
-		Min = 1,
-		Max = 360,
-		Default = 90,
-		Suffix = 'degrees'
-	})
-	UpdateRate = Nuker:CreateSlider({
-		Name = 'Update Rate',
-		Tooltip = 'How often blocks are re-checked\nLower costs less performance',
-		Min = 1,
-		Max = 120,
-		Default = 60,
-		Suffix = 'hz'
-	})
-	Custom = Nuker:CreateTextList({
-		Name = 'Custom',
-		Tooltip = 'Extra block names to break',
-		Function = rebuildList
-	})
-	Bed = Nuker:CreateToggle({
-		Name = 'Break Bed',
-		Tooltip = 'Breaks beds',
-		Default = true
-	})
-	LuckyBlock = Nuker:CreateToggle({
-		Name = 'Break Lucky Block',
-		Tooltip = 'Breaks every lucky block type',
-		Default = true,
-		Function = rebuildList
-	})
-	IronOre = Nuker:CreateToggle({
-		Name = 'Break Iron Ore',
-		Tooltip = 'Breaks iron ore',
-		Default = true,
-		Function = rebuildList
-	})
-	Tesla = Nuker:CreateToggle({
-		Name = 'Break Tesla',
-		Tooltip = 'Breaks tesla traps',
-		Default = true
-	})
-	Effect = Nuker:CreateToggle({
-		Name = 'Show Healthbar & Effects',
-		Tooltip = 'Shows break progress and particles',
-		Function = function(callback)
-			if CustomHealth.Object then
-				CustomHealth.Object.Visible = callback
-			end
-			if not callback then
-				clearHealthbar()
-			end
-		end,
-		Default = true
-	})
-	CustomHealth = Nuker:CreateToggle({
-		Name = 'Custom Healthbar',
-		Tooltip = 'Uses the Vain healthbar instead of the game one',
-		Function = function()
-			clearHealthbar()
-		end,
-		Default = true,
-		Darker = true
-	})
-	Animation = Nuker:CreateToggle({Name = 'Animation', Tooltip = 'Plays the break animation'})
-	SelfBreak = Nuker:CreateToggle({Name = 'Self Break', Tooltip = 'Also breaks blocks you placed yourself'})
-	InstantBreak = Nuker:CreateToggle({Name = 'Instant Break', Tooltip = 'Breaks blocks in a single hit'})
-	HitChance = Nuker:CreateToggle({
-		Name = 'Hit Chance',
-		Tooltip = 'Misses some swings on purpose',
-		Function = function(callback)
-			if Chance.Object then
-				Chance.Object.Visible = callback
-			end
-		end
-	})
-	Chance = Nuker:CreateSlider({
-		Name = 'Chance',
-		Tooltip = 'Percent of swings that land',
-		Min = 1,
-		Max = 100,
-		Default = 90,
-		Suffix = '%',
-		Visible = false,
-		Darker = true
-	})
-	AutoTool = Nuker:CreateToggle({
-		Name = 'Auto Tool',
-		Tooltip = 'Swaps to the best tool for each block',
-		Default = true
-	})
-	LimitItem = Nuker:CreateToggle({
-		Name = 'Limit to Items',
-		Tooltip = 'Only breaks when tools are held'
 	})
 	
 end)
