@@ -780,7 +780,10 @@ components = {
 			local knobholder = Instance.new('Frame')
 			knobholder.Name = 'Knob'
 			knobholder.Size = UDim2.fromOffset(24, 4)
-			knobholder.Position = UDim2.fromScale(1, 0.5)
+			-- The knob sits inside fill, whose width is clamped to 0.04-0.96 so the bar keeps its
+		-- rounded ends. Scale 1 is therefore the clamped width, not the hue, and the dot drifted
+		-- off its colour at both extremes. Dividing by the clamp maps it back onto the real hue.
+		knobholder.Position = UDim2.fromScale(optionapi.Hue / math.clamp(optionapi.Hue, 0.04, 0.96), 0.5)
 			knobholder.AnchorPoint = Vector2.new(0.5, 0.5)
 			knobholder.BackgroundColor3 = slider.BackgroundColor3
 			knobholder.BorderSizePixel = 0
@@ -893,15 +896,15 @@ components = {
 		preview.Parent = slider
 		local expandbutton = Instance.new('TextButton')
 		expandbutton.Name = 'Expand'
-		expandbutton.Size = UDim2.fromOffset(17, 13)
+		expandbutton.Size = UDim2.fromOffset(20, 14)
 		expandbutton.Position = UDim2.new(0, textService:GetTextSize(title.Text, title.TextSize, title.Font, Vector2.new(1000, 1000)).X + 11, 0, 7)
 		expandbutton.BackgroundTransparency = 1
 		expandbutton.Text = ''
 		expandbutton.Parent = slider
 		local expand = Instance.new('ImageLabel')
 		expand.Name = 'Expand'
-		expand.Size = UDim2.fromOffset(9, 5)
-		expand.Position = UDim2.fromOffset(4, 4)
+		expand.Size = UDim2.fromOffset(14, 8)
+		expand.Position = UDim2.fromOffset(2, 3)
 		expand.BackgroundTransparency = 1
 		expand.Image = getcustomasset('vain/assets/new/expandicon.png')
 		expand.ImageColor3 = color.Dark(uipallet.Text, 0.43)
@@ -1010,6 +1013,8 @@ components = {
 		
 			if self.Rainbow then
 				fill.Size = UDim2.fromScale(math.clamp(self.Hue, 0.04, 0.96), 1)
+				-- Kept in step with the clamp above, same reason as where the knob is built.
+				knobholder.Position = UDim2.fromScale(self.Hue / math.clamp(self.Hue, 0.04, 0.96), 0.5)
 			else
 				tween:Tween(fill, uipallet.Tween, {
 					Size = UDim2.fromScale(math.clamp(self.Hue, 0.04, 0.96), 1)
@@ -1217,7 +1222,7 @@ components = {
 		addCorner(button, UDim.new(0, 6))
 		local arrow = Instance.new('ImageLabel')
 		arrow.Name = 'Arrow'
-		arrow.Size = UDim2.fromOffset(4, 8)
+		arrow.Size = UDim2.fromOffset(7, 14)
 		arrow.Position = UDim2.new(1, -17, 0, 11)
 		arrow.BackgroundTransparency = 1
 		arrow.Image = getcustomasset('vain/assets/new/expandright.png')
@@ -3061,7 +3066,10 @@ function mainapi:CreateGUI()
 			-- Drawn larger than the size the category declares, keeping its aspect. Those
 			-- sizes are what each icon was authored at, not how big it should read here.
 			local isize = categorysettings.Size
-			icon.Size = UDim2.fromOffset(math.round(isize.X.Offset * 1.45), math.round(isize.Y.Offset * 1.45))
+			-- Only the small ones. Overlays is authored at 24 and does not need it; scaling
+			-- everything made that one overbearing.
+			local f = isize.X.Offset < 20 and 1.45 or 1
+			icon.Size = UDim2.fromOffset(math.round(isize.X.Offset * f), math.round(isize.Y.Offset * f))
 			icon.Position = UDim2.fromOffset(12, 11)
 			icon.BackgroundTransparency = 1
 			icon.Image = categorysettings.Icon
@@ -3366,8 +3374,8 @@ function mainapi:CreateGUI()
 		button.Parent = settingschildren
 		local arrow = Instance.new('ImageLabel')
 		arrow.Name = 'Arrow'
-		arrow.Size = UDim2.fromOffset(4, 8)
-		arrow.Position = UDim2.new(1, -20, 0, 16)
+		arrow.Size = UDim2.fromOffset(7, 14)
+		arrow.Position = UDim2.new(1, -21, 0, 13)
 		arrow.BackgroundTransparency = 1
 		arrow.Image = getcustomasset('vain/assets/new/expandright.png')
 		arrow.ImageColor3 = color.Light(uipallet.Main, 0.37)
@@ -3672,8 +3680,8 @@ function mainapi:CreateGUI()
 		expandbutton.Parent = slider
 		local expandicon = Instance.new('ImageLabel')
 		expandicon.Name = 'Expand'
-		expandicon.Size = UDim2.fromOffset(9, 5)
-		expandicon.Position = UDim2.fromOffset(4, 4)
+		expandicon.Size = UDim2.fromOffset(14, 8)
+		expandicon.Position = UDim2.fromOffset(2, 3)
 		expandicon.BackgroundTransparency = 1
 		expandicon.Image = getcustomasset('vain/assets/new/expandicon.png')
 		expandicon.ImageColor3 = color.Dark(uipallet.Text, 0.43)
@@ -6261,7 +6269,7 @@ mainapi.Categories.Main:CreateDivider()
 mainapi:CreateCategory({
 	Name = 'Combat',
 	Icon = getcustomasset('vain/assets/new/combaticon.png'),
-	Size = UDim2.fromOffset(13, 14)
+	Size = UDim2.fromOffset(17, 17)
 })
 mainapi:CreateCategory({
 	Name = 'Blatant',
@@ -6302,7 +6310,7 @@ if table.find({6872274481, 8444591321, 8560631822}, game.PlaceId) then
 	mainapi:CreateCategory({
 		Name = 'Kit',
 		Icon = getcustomasset('vain/assets/new/combaticon.png'),
-		Size = UDim2.fromOffset(13, 14)
+		Size = UDim2.fromOffset(17, 17)
 	})
 end
 mainapi.Categories.Main:CreateDivider('misc')
