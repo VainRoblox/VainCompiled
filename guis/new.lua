@@ -3048,7 +3048,7 @@ function mainapi:CreateGUI()
 		button.BackgroundColor3 = uipallet.Main
 		button.BorderSizePixel = 0
 		button.AutoButtonColor = false
-		button.Text = (categorysettings.Icon and '                                 ' or '             ')..categorysettings.Name
+		button.Text = (categorysettings.Icon and '                        ' or '             ')..categorysettings.Name
 		button.TextXAlignment = Enum.TextXAlignment.Left
 		button.TextColor3 = color.Dark(uipallet.Text, 0.16)
 		button.TextSize = 14
@@ -3058,8 +3058,11 @@ function mainapi:CreateGUI()
 		if categorysettings.Icon then
 			icon = Instance.new('ImageLabel')
 			icon.Name = 'Icon'
-			icon.Size = categorysettings.Size
-			icon.Position = UDim2.fromOffset(13, 13)
+			-- Drawn larger than the size the category declares, keeping its aspect. Those
+			-- sizes are what each icon was authored at, not how big it should read here.
+			local isize = categorysettings.Size
+			icon.Size = UDim2.fromOffset(math.round(isize.X.Offset * 1.45), math.round(isize.Y.Offset * 1.45))
+			icon.Position = UDim2.fromOffset(12, 11)
 			icon.BackgroundTransparency = 1
 			icon.Image = categorysettings.Icon
 			icon.ImageColor3 = color.Dark(uipallet.Text, 0.16)
@@ -3082,8 +3085,8 @@ function mainapi:CreateGUI()
 		end
 		local arrow = Instance.new('ImageLabel')
 		arrow.Name = 'Arrow'
-		arrow.Size = UDim2.fromOffset(4, 8)
-		arrow.Position = UDim2.new(1, -20, 0, 16)
+		arrow.Size = UDim2.fromOffset(8, 16)
+		arrow.Position = UDim2.new(1, -22, 0, 12)
 		arrow.BackgroundTransparency = 1
 		arrow.Image = getcustomasset('vain/assets/new/expandright.png')
 		arrow.ImageColor3 = color.Light(uipallet.Main, 0.37)
