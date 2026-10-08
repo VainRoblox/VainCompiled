@@ -73,7 +73,6 @@ local getcustomassets = {
 	['vain/assets/old/settingsicon.png'] = 'rbxasset://settingsicon.png',
 	['vain/assets/old/targetinfoicon.png'] = 'rbxasset://targetinfoicon.png',
 	['vain/assets/old/textguiicon.png'] = 'rbxasset://textguiicon.png',
-	['vain/assets/old/textv4.png'] = 'rbxasset://textv4.png',
 	['vain/assets/old/textvain.png'] = 'rbxasset://textvain.png',
 	['vain/assets/old/utilityicon.png'] = 'rbxasset://utilityicon.png',
 	['vain/assets/old/vain.png'] = 'rbxassetid://14373395239',
@@ -4340,15 +4339,6 @@ mainapi:Clean(textgui.Children:GetPropertyChangedSignal('AbsolutePosition'):Conn
 	end
 end))
 
-local VainLogoV4 = Instance.new('ImageLabel')
-VainLogoV4.Name = 'Logo2'
-VainLogoV4.Size = UDim2.fromOffset(43, 30)
-VainLogoV4.Position = UDim2.new(1, 1, 0, -2)
-VainLogoV4.BackgroundColor3 = Color3.new()
-VainLogoV4.BackgroundTransparency = 1
-VainLogoV4.BorderSizePixel = 0
-VainLogoV4.Image = getcustomasset('vain/assets/old/textv4.png')
-VainLogoV4.Parent = VainLogo
 local VainLogoShadow = VainLogo:Clone()
 VainLogoShadow.Position = UDim2.fromOffset(1, 1)
 VainLogoShadow.ZIndex = 0
@@ -4356,9 +4346,6 @@ VainLogoShadow.Visible = true
 VainLogoShadow.ImageColor3 = Color3.new()
 VainLogoShadow.ImageTransparency = 0.65
 VainLogoShadow.Parent = VainLogo
-VainLogoShadow.Logo2.ZIndex = 0
-VainLogoShadow.Logo2.ImageColor3 = Color3.new()
-VainLogoShadow.Logo2.ImageTransparency = 0.65
 local VainLogoGradient = Instance.new('UIGradient')
 VainLogoGradient.Rotation = 90
 VainLogoGradient.Parent = VainLogo

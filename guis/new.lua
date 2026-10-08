@@ -103,7 +103,6 @@ local getcustomassets = {
 	['vain/assets/new/guisettings.png'] = 'rbxassetid://14368318994',
 	['vain/assets/new/guislider.png'] = 'rbxassetid://14368320020',
 	['vain/assets/new/guisliderrain.png'] = 'rbxassetid://14368321228',
-	['vain/assets/new/guiv4.png'] = 'rbxassetid://14368322199',
 	['vain/assets/new/guivain.png'] = 'rbxassetid://14657521312',
 	['vain/assets/new/info.png'] = 'rbxassetid://14368324807',
 	['vain/assets/new/inventoryicon.png'] = 'rbxassetid://14928011633',
@@ -132,7 +131,6 @@ local getcustomassets = {
 	['vain/assets/new/targetplayers2.png'] = 'rbxassetid://14497397862',
 	['vain/assets/new/targetstab.png'] = 'rbxassetid://14497393895',
 	['vain/assets/new/textguiicon.png'] = 'rbxassetid://14368355456',
-	['vain/assets/new/textv4.png'] = 'rbxassetid://14368357095',
 	['vain/assets/new/textvain.png'] = 'rbxassetid://14368358200',
 	['vain/assets/new/utilityicon.png'] = 'rbxassetid://14368359107',
 	['vain/assets/new/vain.png'] = 'rbxassetid://14373395239',
@@ -2875,13 +2873,6 @@ function mainapi:CreateGUI()
 	logo.Image = getcustomasset('vain/assets/new/guivain.png')
 	logo.ImageColor3 = select(3, uipallet.Main:ToHSV()) > 0.5 and uipallet.Text or Color3.new(1, 1, 1)
 	logo.Parent = window
-	local logov4 = Instance.new('ImageLabel')
-	logov4.Name = 'V4Logo'
-	logov4.Size = UDim2.fromOffset(28, 16)
-	logov4.Position = UDim2.new(1, 1, 0, 1)
-	logov4.BackgroundTransparency = 1
-	logov4.Image = getcustomasset('vain/assets/new/guiv4.png')
-	logov4.Parent = logo
 	local children = Instance.new('Frame')
 	children.Name = 'Children'
 	children.Size = UDim2.new(1, 0, 1, -33)
@@ -6869,15 +6860,6 @@ mainapi:Clean(textgui.Children:GetPropertyChangedSignal('AbsolutePosition'):Conn
 	end
 end))
 
-local VainLogoV4 = Instance.new('ImageLabel')
-VainLogoV4.Name = 'Logo2'
-VainLogoV4.Size = UDim2.fromOffset(33, 18)
-VainLogoV4.Position = UDim2.new(1, 1, 0, 1)
-VainLogoV4.BackgroundColor3 = Color3.new()
-VainLogoV4.BackgroundTransparency = 1
-VainLogoV4.BorderSizePixel = 0
-VainLogoV4.Image = getcustomasset('vain/assets/new/textv4.png')
-VainLogoV4.Parent = VainLogo
 local VainLogoShadow = VainLogo:Clone()
 VainLogoShadow.Position = UDim2.fromOffset(1, 1)
 VainLogoShadow.ZIndex = 0
@@ -6885,9 +6867,6 @@ VainLogoShadow.Visible = true
 VainLogoShadow.ImageColor3 = Color3.new()
 VainLogoShadow.ImageTransparency = 0.65
 VainLogoShadow.Parent = VainLogo
-VainLogoShadow.Logo2.ZIndex = 0
-VainLogoShadow.Logo2.ImageColor3 = Color3.new()
-VainLogoShadow.Logo2.ImageTransparency = 0.65
 local VainLogoGradient = Instance.new('UIGradient')
 VainLogoGradient.Rotation = 90
 VainLogoGradient.Parent = VainLogo
@@ -7358,7 +7337,6 @@ function mainapi:UpdateGUI(hue, sat, val, default)
 
 	for i, v in mainapi.Categories do
 		if i == 'Main' then
-			v.Object.VainLogo.V4Logo.ImageColor3 = Color3.fromHSV(hue, sat, val)
 			for _, button in v.Buttons do
 				if button.Enabled then
 					button.Object.TextColor3 = rainbow and Color3.fromHSV(mainapi:Color((hue - (button.Index * 0.025)) % 1)) or Color3.fromHSV(hue, sat, val)
