@@ -55,7 +55,7 @@ run(function()
 end)
 
 for name, v in vain.Modules do
-	if v.Category == 'Combat' then
+	if v.Category == 'Combat' or v.Category == 'Minigames' then
 		vain:Remove(name)
 	end
 end
@@ -90,7 +90,7 @@ end)
 run(function()
 	local AutoGamble
 	
-	AutoGamble = vain.Categories.Utility:CreateModule({
+	AutoGamble = vain.Categories.Minigames:CreateModule({
 		Name = 'AutoGamble',
 		Function = function(callback)
 			if callback then

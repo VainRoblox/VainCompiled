@@ -83,20 +83,6 @@ if not isfile('vain/profiles/gui.txt') then
 end
 local gui = readfile('vain/profiles/gui.txt')
 
---[[
-	A saved theme that no longer ships falls back to the default.
-
-	Removing the rise, liquidbounce and wurst themes left anyone who had one selected
-	pointing at a file that is not there any more, and downloadFile hands that straight to
-	loadstring - so the script died before the GUI existed to tell them why. The profile is
-	rewritten as well, so the fallback happens once rather than on every injection.
-]]
-local SHIPPED = {new = true, old = true}
-if not SHIPPED[gui] then
-	gui = 'new'
-	pcall(writefile, 'vain/profiles/gui.txt', gui)
-end
-
 if not isfolder('vain/assets/'..gui) then
 	makefolder('vain/assets/'..gui)
 end

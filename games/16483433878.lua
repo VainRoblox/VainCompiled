@@ -35,7 +35,7 @@ run(function()
 	end)
 end)
 
-for _, v in {'AimAssist', 'Reach', 'SilentAim', 'TriggerBot', 'AntiFall', 'HitBoxes', 'Invisible', 'Jesus', 'Killaura', 'TargetStrafe', 'AntiRagdoll', 'Disabler', 'Freecam', 'ChatSpammer', 'SpinBot'} do
+for _, v in {'AimAssist', 'Reach', 'SilentAim', 'TriggerBot', 'AntiFall', 'HitBoxes', 'Invisible', 'Jesus', 'Killaura', 'TargetStrafe', 'AntiRagdoll', 'Disabler', 'MurderMystery', 'Freecam', 'ChatSpammer', 'SpinBot'} do
 	vain:Remove(v)
 end
 
@@ -562,7 +562,7 @@ end)
 run(function()
 	local AutoCamel
 	
-	AutoCamel = vain.Categories.Utility:CreateModule({
+	AutoCamel = vain.Categories.Minigames:CreateModule({
 		Name = 'AutoCamel',
 		Function = function(callback)
 			if callback then
@@ -590,7 +590,7 @@ end)
 run(function()
 	local AutoCloudGrind
 	
-	AutoCloudGrind = vain.Categories.Utility:CreateModule({
+	AutoCloudGrind = vain.Categories.Minigames:CreateModule({
 		Name = 'AutoCloudGrind',
 		Function = function(callback)
 			if callback then
@@ -627,7 +627,7 @@ run(function()
 	local KeepList
 	local old
 	
-	AutoFish = vain.Categories.Utility:CreateModule({
+	AutoFish = vain.Categories.Minigames:CreateModule({
 		Name = 'AutoFish',
 		Function = function(callback)
 			if callback then
@@ -671,7 +671,7 @@ end)
 run(function()
 	local AutoPaint
 	
-	AutoPaint = vain.Categories.Utility:CreateModule({
+	AutoPaint = vain.Categories.Minigames:CreateModule({
 		Name = 'AutoPaint',
 		Function = function(callback)
 			if callback then

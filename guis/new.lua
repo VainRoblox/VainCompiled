@@ -5227,11 +5227,25 @@ function mainapi:CreateSearch()
 	searchicon.Image = getcustomasset('vain/assets/new/search.png')
 	searchicon.ImageColor3 = color.Light(uipallet.Main, 0.37)
 	searchicon.Parent = searchbkg
+	local legiticon = Instance.new('ImageButton')
+	legiticon.Name = 'Legit'
+	legiticon.Size = UDim2.fromOffset(29, 16)
+	legiticon.Position = UDim2.fromOffset(8, 11)
+	legiticon.BackgroundTransparency = 1
+	legiticon.Image = getcustomasset('vain/assets/new/legit.png')
+	legiticon.Parent = searchbkg
+	local legitdivider = Instance.new('Frame')
+	legitdivider.Name = 'LegitDivider'
+	legitdivider.Size = UDim2.fromOffset(2, 12)
+	legitdivider.Position = UDim2.fromOffset(43, 13)
+	legitdivider.BackgroundColor3 = color.Light(uipallet.Main, 0.14)
+	legitdivider.BorderSizePixel = 0
+	legitdivider.Parent = searchbkg
 	addBlur(searchbkg)
 	addCorner(searchbkg)
 	local search = Instance.new('TextBox')
-	search.Size = UDim2.new(1, -34, 0, 37)
-	search.Position = UDim2.fromOffset(12, 0)
+	search.Size = UDim2.new(1, -50, 0, 37)
+	search.Position = UDim2.fromOffset(50, 0)
 	search.BackgroundTransparency = 1
 	search.Text = ''
 	search.PlaceholderText = ''
@@ -5267,6 +5281,11 @@ function mainapi:CreateSearch()
 
 	children:GetPropertyChangedSignal('CanvasPosition'):Connect(function()
 		divider.Visible = children.CanvasPosition.Y > 10 and children.Visible
+	end)
+	legiticon.MouseButton1Click:Connect(function()
+		clickgui.Visible = false
+		self.Legit.Window.Visible = true
+		self.Legit.Window.Position = UDim2.new(0.5, -350, 0.5, -194)
 	end)
 	search:GetPropertyChangedSignal('Text'):Connect(function()
 		for _, v in children:GetChildren() do
@@ -5324,6 +5343,7 @@ function mainapi:CreateSearch()
 		searchbkg.Size = UDim2.fromOffset(220, math.min(37 + windowlist.AbsoluteContentSize.Y / scale.Scale, 437))
 	end)
 
+	self.Legit.Icon = legiticon
 end
 
 function mainapi:CreateLegit()
@@ -5373,19 +5393,6 @@ function mainapi:CreateLegit()
 	table.insert(mainapi.Windows, window)
 
 	function legitapi:CreateModule(modulesettings)
-		--[[
-			Built as a normal module in the Legit category rather than a card in this
-			window. Still registered in legitapi.Modules, because overlay dragging and
-			the rainbow sweep both iterate that table and neither knows about categories.
-		]]
-		local category = mainapi.Categories.Legit
-		if category then
-			local api = category:CreateModule(modulesettings)
-			api.Legit = true
-			legitapi.Modules[modulesettings.Name] = api
-			return api
-		end
-
 		mainapi:Remove(modulesettings.Name)
 		local moduleapi = {
 			Enabled = false,
@@ -5867,9 +5874,7 @@ function mainapi:Load(skipgui, profile)
 		end
 
 		for i, v in savedata.Legit do
-			-- Profiles written before these became ordinary modules still carry a Legit
-			-- section, so it is read from Modules first and that table second.
-			local object = self.Modules[i] or self.Legit.Modules[i]
+			local object = self.Legit.Modules[i]
 			if not object then continue end
 			if object.Options and v.Options then
 				self:LoadOptions(object, v.Options)
@@ -5995,9 +6000,6 @@ function mainapi:Save(newprofile)
 	end
 
 	for i, v in self.Legit.Modules do
-		-- Already saved under Modules; a second copy would be applied again on load and
-		-- toggle the module back.
-		if self.Modules[i] then continue end
 		savedata.Legit[i] = {
 			Enabled = v.Enabled,
 			Position = v.Children and {X = v.Children.Position.X.Offset, Y = v.Children.Position.Y.Offset} or nil,
@@ -6249,9 +6251,9 @@ mainapi:CreateCategory({
 	Size = UDim2.fromOffset(15, 14)
 })
 mainapi:CreateCategory({
-	Name = 'Legit',
-	Icon = getcustomasset('vain/assets/new/legittab.png'),
-	Size = UDim2.fromOffset(16, 16)
+	Name = 'Minigames',
+	Icon = getcustomasset('vain/assets/new/miniicon.png'),
+	Size = UDim2.fromOffset(19, 12)
 })
 -- Kit modules only exist for bedwars, so the category is gated on the place rather
 -- than shown everywhere. It has to be created here rather than from the game file:
@@ -6483,6 +6485,17 @@ guipane:CreateToggle({
 	Default = true,
 	Tooltip = 'Toggles visibility of these'
 })
+guipane:CreateToggle({
+	Name = 'Show legit mode',
+	Function = function(enabled)
+		clickgui.Search.Legit.Visible = enabled
+		clickgui.Search.LegitDivider.Visible = enabled
+		clickgui.Search.TextBox.Size = UDim2.new(1, enabled and -50 or -10, 0, 37)
+		clickgui.Search.TextBox.Position = UDim2.fromOffset(enabled and 50 or 10, 0)
+	end,
+	Default = true,
+	Tooltip = 'Shows the button to change to Legit Mode'
+})
 local scaleslider = {Object = {}, Value = 1}
 mainapi.Scale = guipane:CreateToggle({
 	Name = 'Auto rescale',
@@ -6513,7 +6526,7 @@ scaleslider = guipane:CreateSlider({
 })
 guipane:CreateDropdown({
 	Name = 'GUI Theme',
-	List = {'new', 'old'},
+	List = inputService.TouchEnabled and {'new', 'old'} or {'new', 'old', 'rise'},
 	Function = function(val, mouse)
 		if mouse then
 			writefile('vain/profiles/gui.txt', val)
@@ -6525,7 +6538,7 @@ guipane:CreateDropdown({
 			end
 		end
 	end,
-	Tooltip = 'new - The current theme\nold - The theme before it'
+	Tooltip = 'new - The newest vain theme to since v4.05\nold - The vain theme pre v4.05\nrise - Rise 6.0'
 })
 mainapi.RainbowMode = guipane:CreateDropdown({
 	Name = 'Rainbow Mode',
@@ -6568,7 +6581,7 @@ guipane:CreateButton({
 			UtilityCategory = 5,
 			WorldCategory = 6,
 			InventoryCategory = 7,
-			LegitCategory = 8,
+			MinigamesCategory = 8,
 			FriendsCategory = 9,
 			ProfilesCategory = 10
 		}

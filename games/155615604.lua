@@ -690,7 +690,7 @@ do
 	end
 end
 
-for _, v in {'Reach', 'Jesus'} do
+for _, v in {'Reach', 'Jesus', 'MurderMystery'} do
 	vain:Remove(v)
 end
 

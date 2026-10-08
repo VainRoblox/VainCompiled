@@ -3727,7 +3727,7 @@ mainapi:CreateCategory({
 	Icon = getcustomasset('vain/assets/old/worldicon.png')
 })
 mainapi:CreateCategory({
-	Name = 'Legit',
+	Name = 'Minigames',
 	Icon = getcustomasset('vain/assets/old/worldicon.png')
 })
 mainapi.Legit = mainapi:CreateLegit({
@@ -3954,7 +3954,7 @@ scaleslider = topbar:CreateSlider({
 })
 topbar:CreateDropdown({
 	Name = 'GUI Theme',
-	List = {'new', 'old'},
+	List = inputService.TouchEnabled and {'new', 'old'} or {'new', 'old', 'rise'},
 	Function = function(val, mouse)
 		if mouse then
 			writefile('vain/profiles/gui.txt', val)
@@ -3966,7 +3966,7 @@ topbar:CreateDropdown({
 			end
 		end
 	end,
-	Tooltip = 'new - The current theme\nold - The theme before it'
+	Tooltip = 'new - The newest vain theme to since v4.05\nold - The vain theme pre v4.05\nrise - Rise 6.0'
 })
 mainapi.RainbowMode = topbar:CreateDropdown({
 	Name = 'Rainbow Mode',
@@ -4025,7 +4025,7 @@ topbar:CreateButton({
 			UtilityCategory = 5,
 			WorldCategory = 6,
 			InventoryCategory = 7,
-			LegitCategory = 8,
+			MinigamesCategory = 8,
 			LegitCategory = 9,
 			FriendsCategory = 10,
 			ProfilesCategory = 11
