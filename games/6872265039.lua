@@ -55,9 +55,7 @@ run(function()
 end)
 
 for name, v in vain.Modules do
-	-- MurderMystery moved from Minigames to Utility when that category was retired, so
-	-- it is named directly rather than caught by its category.
-	if v.Category == 'Combat' or name == 'MurderMystery' then
+	if v.Category == 'Combat' then
 		vain:Remove(name)
 	end
 end
