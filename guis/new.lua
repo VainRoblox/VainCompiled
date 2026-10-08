@@ -6526,7 +6526,7 @@ scaleslider = guipane:CreateSlider({
 })
 guipane:CreateDropdown({
 	Name = 'GUI Theme',
-	List = inputService.TouchEnabled and {'new', 'old'} or {'new', 'old', 'rise'},
+	List = {'new', 'old'},
 	Function = function(val, mouse)
 		if mouse then
 			writefile('vain/profiles/gui.txt', val)
