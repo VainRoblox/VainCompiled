@@ -73,6 +73,7 @@ local getcustomassets = {
 	['vain/assets/old/settingsicon.png'] = 'rbxasset://settingsicon.png',
 	['vain/assets/old/targetinfoicon.png'] = 'rbxasset://targetinfoicon.png',
 	['vain/assets/old/textguiicon.png'] = 'rbxasset://textguiicon.png',
+	['vain/assets/old/textv4.png'] = 'rbxasset://textv4.png',
 	['vain/assets/old/textvain.png'] = 'rbxasset://textvain.png',
 	['vain/assets/old/utilityicon.png'] = 'rbxasset://utilityicon.png',
 	['vain/assets/old/vain.png'] = 'rbxassetid://14373395239',
@@ -2057,17 +2058,6 @@ function mainapi:CreateBar()
 
 	for i, v in components do
 		categoryapi['Create'..i] = function(self, optionsettings)
-			--[[
-				A torn down api takes no more options.
-
-				Uninject and Remove run loopClean over these tables, which strips every
-				field including Options. A run() block from the previous instance can
-				still be part way through adding settings when that happens, and the
-				component then writes into api.Options[name] on a table that no longer
-				has one - "attempt to index nil with 'CPS'", from re-injecting while the
-				old copy was still loading.
-			]]
-			if not categoryapi.Options then return end
 			return v(optionsettings, children, categoryapi)
 		end
 	end
@@ -2266,17 +2256,6 @@ function mainapi:CreateCategory(categorysettings)
 		for i, v in components do
 			moduleapi['Create'..i] = function(self, optionsettings)
 				dotsbutton.Text = '·\n·\n·'
-				--[[
-					A torn down api takes no more options.
-
-					Uninject and Remove run loopClean over these tables, which strips every
-					field including Options. A run() block from the previous instance can
-					still be part way through adding settings when that happens, and the
-					component then writes into api.Options[name] on a table that no longer
-					has one - "attempt to index nil with 'CPS'", from re-injecting while the
-					old copy was still loading.
-				]]
-				if not moduleapi.Options then return end
 				return v(optionsettings, modulechildren, moduleapi)
 			end
 		end
@@ -2400,7 +2379,6 @@ function mainapi:CreateCategory(categorysettings)
 
 	for i, v in components do
 		categoryapi['Create'..i] = function(self, optionsettings)
-			if not categoryapi.Options then return end
 			return v(optionsettings, children, categoryapi)
 		end
 	end
@@ -2600,7 +2578,6 @@ function mainapi:CreateLegit(categorysettings)
 		for i, v in components do
 			moduleapi['Create'..i] = function(self, optionsettings)
 				dotsbutton.Text = '·\n·\n·'
-				if not moduleapi.Options then return end
 				return v(optionsettings, settingschildren, moduleapi)
 			end
 		end
@@ -2662,7 +2639,6 @@ function mainapi:CreateLegit(categorysettings)
 
 	for i, v in components do
 		categoryapi['Create'..i] = function(self, optionsettings)
-			if not categoryapi.Options then return end
 			return v(optionsettings, children, categoryapi)
 		end
 	end
@@ -3149,7 +3125,6 @@ function mainapi:CreateCategoryList(categorysettings)
 
 	for i, v in components do
 		categoryapi['Create'..i] = function(self, optionsettings)
-			if not categoryapi.Options then return end
 			return v(optionsettings, childrentwo, categoryapi)
 		end
 	end
@@ -4365,6 +4340,15 @@ mainapi:Clean(textgui.Children:GetPropertyChangedSignal('AbsolutePosition'):Conn
 	end
 end))
 
+local VainLogoV4 = Instance.new('ImageLabel')
+VainLogoV4.Name = 'Logo2'
+VainLogoV4.Size = UDim2.fromOffset(43, 30)
+VainLogoV4.Position = UDim2.new(1, 1, 0, -2)
+VainLogoV4.BackgroundColor3 = Color3.new()
+VainLogoV4.BackgroundTransparency = 1
+VainLogoV4.BorderSizePixel = 0
+VainLogoV4.Image = getcustomasset('vain/assets/old/textv4.png')
+VainLogoV4.Parent = VainLogo
 local VainLogoShadow = VainLogo:Clone()
 VainLogoShadow.Position = UDim2.fromOffset(1, 1)
 VainLogoShadow.ZIndex = 0
@@ -4372,6 +4356,9 @@ VainLogoShadow.Visible = true
 VainLogoShadow.ImageColor3 = Color3.new()
 VainLogoShadow.ImageTransparency = 0.65
 VainLogoShadow.Parent = VainLogo
+VainLogoShadow.Logo2.ZIndex = 0
+VainLogoShadow.Logo2.ImageColor3 = Color3.new()
+VainLogoShadow.Logo2.ImageTransparency = 0.65
 local VainLogoGradient = Instance.new('UIGradient')
 VainLogoGradient.Rotation = 90
 VainLogoGradient.Parent = VainLogo

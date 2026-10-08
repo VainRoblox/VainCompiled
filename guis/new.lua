@@ -103,6 +103,7 @@ local getcustomassets = {
 	['vain/assets/new/guisettings.png'] = 'rbxassetid://14368318994',
 	['vain/assets/new/guislider.png'] = 'rbxassetid://14368320020',
 	['vain/assets/new/guisliderrain.png'] = 'rbxassetid://14368321228',
+	['vain/assets/new/guiv4.png'] = 'rbxassetid://14368322199',
 	['vain/assets/new/guivain.png'] = 'rbxassetid://14657521312',
 	['vain/assets/new/info.png'] = 'rbxassetid://14368324807',
 	['vain/assets/new/inventoryicon.png'] = 'rbxassetid://14928011633',
@@ -131,6 +132,7 @@ local getcustomassets = {
 	['vain/assets/new/targetplayers2.png'] = 'rbxassetid://14497397862',
 	['vain/assets/new/targetstab.png'] = 'rbxassetid://14497393895',
 	['vain/assets/new/textguiicon.png'] = 'rbxassetid://14368355456',
+	['vain/assets/new/textv4.png'] = 'rbxassetid://14368357095',
 	['vain/assets/new/textvain.png'] = 'rbxassetid://14368358200',
 	['vain/assets/new/utilityicon.png'] = 'rbxassetid://14368359107',
 	['vain/assets/new/vain.png'] = 'rbxassetid://14373395239',
@@ -643,9 +645,6 @@ end
 
 do
 	function tween:Tween(obj, tweeninfo, goal, tab)
-		if mainapi.ThreadFix then
-			pcall(setthreadidentity, 8)
-		end
 		tab = tab or self.tweens
 		if tab[obj] then
 			tab[obj]:Cancel()
@@ -783,10 +782,7 @@ components = {
 			local knobholder = Instance.new('Frame')
 			knobholder.Name = 'Knob'
 			knobholder.Size = UDim2.fromOffset(24, 4)
-			-- The knob sits inside fill, whose width is clamped to 0.04-0.96 so the bar keeps its
-		-- rounded ends. Scale 1 is therefore the clamped width, not the hue, and the dot drifted
-		-- off its colour at both extremes. Dividing by the clamp maps it back onto the real hue.
-		knobholder.Position = UDim2.fromScale(optionapi.Hue / math.clamp(optionapi.Hue, 0.04, 0.96), 0.5)
+			knobholder.Position = UDim2.fromScale(1, 0.5)
 			knobholder.AnchorPoint = Vector2.new(0.5, 0.5)
 			knobholder.BackgroundColor3 = slider.BackgroundColor3
 			knobholder.BorderSizePixel = 0
@@ -899,15 +895,15 @@ components = {
 		preview.Parent = slider
 		local expandbutton = Instance.new('TextButton')
 		expandbutton.Name = 'Expand'
-		expandbutton.Size = UDim2.fromOffset(20, 14)
+		expandbutton.Size = UDim2.fromOffset(17, 13)
 		expandbutton.Position = UDim2.new(0, textService:GetTextSize(title.Text, title.TextSize, title.Font, Vector2.new(1000, 1000)).X + 11, 0, 7)
 		expandbutton.BackgroundTransparency = 1
 		expandbutton.Text = ''
 		expandbutton.Parent = slider
 		local expand = Instance.new('ImageLabel')
 		expand.Name = 'Expand'
-		expand.Size = UDim2.fromOffset(16, 10)
-		expand.Position = UDim2.fromOffset(2, 3)
+		expand.Size = UDim2.fromOffset(9, 5)
+		expand.Position = UDim2.fromOffset(4, 4)
 		expand.BackgroundTransparency = 1
 		expand.Image = getcustomasset('vain/assets/new/expandicon.png')
 		expand.ImageColor3 = color.Dark(uipallet.Text, 0.43)
@@ -1016,8 +1012,6 @@ components = {
 		
 			if self.Rainbow then
 				fill.Size = UDim2.fromScale(math.clamp(self.Hue, 0.04, 0.96), 1)
-				-- Kept in step with the clamp above, same reason as where the knob is built.
-				knobholder.Position = UDim2.fromScale(self.Hue / math.clamp(self.Hue, 0.04, 0.96), 0.5)
 			else
 				tween:Tween(fill, uipallet.Tween, {
 					Size = UDim2.fromScale(math.clamp(self.Hue, 0.04, 0.96), 1)
@@ -1225,7 +1219,7 @@ components = {
 		addCorner(button, UDim.new(0, 6))
 		local arrow = Instance.new('ImageLabel')
 		arrow.Name = 'Arrow'
-		arrow.Size = UDim2.fromOffset(10, 20)
+		arrow.Size = UDim2.fromOffset(4, 8)
 		arrow.Position = UDim2.new(1, -17, 0, 11)
 		arrow.BackgroundTransparency = 1
 		arrow.Image = getcustomasset('vain/assets/new/expandright.png')
@@ -2881,6 +2875,13 @@ function mainapi:CreateGUI()
 	logo.Image = getcustomasset('vain/assets/new/guivain.png')
 	logo.ImageColor3 = select(3, uipallet.Main:ToHSV()) > 0.5 and uipallet.Text or Color3.new(1, 1, 1)
 	logo.Parent = window
+	local logov4 = Instance.new('ImageLabel')
+	logov4.Name = 'V4Logo'
+	logov4.Size = UDim2.fromOffset(28, 16)
+	logov4.Position = UDim2.new(1, 1, 0, 1)
+	logov4.BackgroundTransparency = 1
+	logov4.Image = getcustomasset('vain/assets/new/guiv4.png')
+	logov4.Parent = logo
 	local children = Instance.new('Frame')
 	children.Name = 'Children'
 	children.Size = UDim2.new(1, 0, 1, -33)
@@ -3056,7 +3057,7 @@ function mainapi:CreateGUI()
 		button.BackgroundColor3 = uipallet.Main
 		button.BorderSizePixel = 0
 		button.AutoButtonColor = false
-		button.Text = (categorysettings.Icon and '                   ' or '             ')..categorysettings.Name
+		button.Text = (categorysettings.Icon and '                                 ' or '             ')..categorysettings.Name
 		button.TextXAlignment = Enum.TextXAlignment.Left
 		button.TextColor3 = color.Dark(uipallet.Text, 0.16)
 		button.TextSize = 14
@@ -3066,14 +3067,8 @@ function mainapi:CreateGUI()
 		if categorysettings.Icon then
 			icon = Instance.new('ImageLabel')
 			icon.Name = 'Icon'
-			-- Drawn larger than the size the category declares, keeping its aspect. Those
-			-- sizes are what each icon was authored at, not how big it should read here.
-			local isize = categorysettings.Size
-			-- Only the small ones. Overlays is authored at 24 and does not need it; scaling
-			-- everything made that one overbearing.
-			local f = isize.X.Offset < 20 and 1.25 or 1
-			icon.Size = UDim2.fromOffset(math.round(isize.X.Offset * f), math.round(isize.Y.Offset * f))
-			icon.Position = UDim2.fromOffset(12, 11)
+			icon.Size = categorysettings.Size
+			icon.Position = UDim2.fromOffset(13, 13)
 			icon.BackgroundTransparency = 1
 			icon.Image = categorysettings.Icon
 			icon.ImageColor3 = color.Dark(uipallet.Text, 0.16)
@@ -3096,8 +3091,8 @@ function mainapi:CreateGUI()
 		end
 		local arrow = Instance.new('ImageLabel')
 		arrow.Name = 'Arrow'
-		arrow.Size = UDim2.fromOffset(8, 16)
-		arrow.Position = UDim2.new(1, -22, 0, 13)
+		arrow.Size = UDim2.fromOffset(4, 8)
+		arrow.Position = UDim2.new(1, -20, 0, 16)
 		arrow.BackgroundTransparency = 1
 		arrow.Image = getcustomasset('vain/assets/new/expandright.png')
 		arrow.ImageColor3 = color.Light(uipallet.Main, 0.37)
@@ -3157,8 +3152,8 @@ function mainapi:CreateGUI()
 		bar.Parent = children
 		components.Divider(bar)
 		local button = Instance.new('ImageButton')
-		button.Size = UDim2.fromOffset(19, 19)
-		button.Position = UDim2.new(1, -27, 0, 10)
+		button.Size = UDim2.fromOffset(24, 24)
+		button.Position = UDim2.new(1, -29, 0, 7)
 		button.BackgroundTransparency = 1
 		button.AutoButtonColor = false
 		button.Image = getcustomasset('vain/assets/new/overlaysicon.png')
@@ -3377,8 +3372,8 @@ function mainapi:CreateGUI()
 		button.Parent = settingschildren
 		local arrow = Instance.new('ImageLabel')
 		arrow.Name = 'Arrow'
-		arrow.Size = UDim2.fromOffset(7, 14)
-		arrow.Position = UDim2.new(1, -21, 0, 14)
+		arrow.Size = UDim2.fromOffset(4, 8)
+		arrow.Position = UDim2.new(1, -20, 0, 16)
 		arrow.BackgroundTransparency = 1
 		arrow.Image = getcustomasset('vain/assets/new/expandright.png')
 		arrow.ImageColor3 = color.Light(uipallet.Main, 0.37)
@@ -3683,8 +3678,8 @@ function mainapi:CreateGUI()
 		expandbutton.Parent = slider
 		local expandicon = Instance.new('ImageLabel')
 		expandicon.Name = 'Expand'
-		expandicon.Size = UDim2.fromOffset(12, 7)
-		expandicon.Position = UDim2.fromOffset(3, 4)
+		expandicon.Size = UDim2.fromOffset(9, 5)
+		expandicon.Position = UDim2.fromOffset(4, 4)
 		expandicon.BackgroundTransparency = 1
 		expandicon.Image = getcustomasset('vain/assets/new/expandicon.png')
 		expandicon.ImageColor3 = color.Dark(uipallet.Text, 0.43)
@@ -4269,17 +4264,6 @@ function mainapi:CreateCategory(categorysettings)
 
 		for i, v in components do
 			moduleapi['Create'..i] = function(_, optionsettings)
-				--[[
-					A torn down api takes no more options.
-
-					Uninject and Remove run loopClean over these tables, which strips every
-					field including Options. A run() block from the previous instance can
-					still be part way through adding settings when that happens, and the
-					component then writes into api.Options[name] on a table that no longer
-					has one - "attempt to index nil with 'CPS'", from re-injecting while the
-					old copy was still loading.
-				]]
-				if not moduleapi.Options then return end
 				return v(optionsettings, modulechildren, moduleapi)
 			end
 		end
@@ -4625,17 +4609,6 @@ function mainapi:CreateOverlay(categorysettings)
 
 	for i, v in components do
 		categoryapi['Create'..i] = function(self, optionsettings)
-			--[[
-				A torn down api takes no more options.
-
-				Uninject and Remove run loopClean over these tables, which strips every
-				field including Options. A run() block from the previous instance can
-				still be part way through adding settings when that happens, and the
-				component then writes into api.Options[name] on a table that no longer
-				has one - "attempt to index nil with 'CPS'", from re-injecting while the
-				old copy was still loading.
-			]]
-			if not categoryapi.Options then return end
 			return v(optionsettings, children, categoryapi)
 		end
 	end
@@ -5148,17 +5121,6 @@ function mainapi:CreateCategoryList(categorysettings)
 
 	for i, v in components do
 		categoryapi['Create'..i] = function(self, optionsettings)
-			--[[
-				A torn down api takes no more options.
-
-				Uninject and Remove run loopClean over these tables, which strips every
-				field including Options. A run() block from the previous instance can
-				still be part way through adding settings when that happens, and the
-				component then writes into api.Options[name] on a table that no longer
-				has one - "attempt to index nil with 'CPS'", from re-injecting while the
-				old copy was still loading.
-			]]
-			if not categoryapi.Options then return end
 			return v(optionsettings, childrentwo, categoryapi)
 		end
 	end
@@ -5412,12 +5374,9 @@ function mainapi:CreateLegit()
 
 	function legitapi:CreateModule(modulesettings)
 		--[[
-			Built as a normal module in the Legit category rather than as a card in this
-			window. The window remains for editing overlay placeholders; the modules
-			belong in the sidebar with the rest.
-
-			Registered in legitapi.Modules as well, since overlay dragging and the
-			rainbow sweep both iterate that table and neither knows about categories.
+			Built as a normal module in the Legit category rather than a card in this
+			window. Still registered in legitapi.Modules, because overlay dragging and
+			the rainbow sweep both iterate that table and neither knows about categories.
 		]]
 		local category = mainapi.Categories.Legit
 		if category then
@@ -5645,17 +5604,6 @@ function mainapi:CreateLegit()
 
 		for i, v in components do
 			moduleapi['Create'..i] = function(_, optionsettings)
-				--[[
-					A torn down api takes no more options.
-
-					Uninject and Remove run loopClean over these tables, which strips every
-					field including Options. A run() block from the previous instance can
-					still be part way through adding settings when that happens, and the
-					component then writes into api.Options[name] on a table that no longer
-					has one - "attempt to index nil with 'CPS'", from re-injecting while the
-					old copy was still loading.
-				]]
-				if not moduleapi.Options then return end
 				return v(optionsettings, settingschildren, moduleapi)
 			end
 		end
@@ -5919,8 +5867,8 @@ function mainapi:Load(skipgui, profile)
 		end
 
 		for i, v in savedata.Legit do
-			-- Profiles written before these became ordinary modules keep a Legit section,
-			-- so it is still read - from Modules first, since that is where they are now.
+			-- Profiles written before these became ordinary modules still carry a Legit
+			-- section, so it is read from Modules first and that table second.
 			local object = self.Modules[i] or self.Legit.Modules[i]
 			if not object then continue end
 			if object.Options and v.Options then
@@ -6047,8 +5995,8 @@ function mainapi:Save(newprofile)
 	end
 
 	for i, v in self.Legit.Modules do
-		-- Already written under Modules; a second copy here would be applied again on
-		-- load and flip the module back.
+		-- Already saved under Modules; a second copy would be applied again on load and
+		-- toggle the module back.
 		if self.Modules[i] then continue end
 		savedata.Legit[i] = {
 			Enabled = v.Enabled,
@@ -6908,6 +6856,15 @@ mainapi:Clean(textgui.Children:GetPropertyChangedSignal('AbsolutePosition'):Conn
 	end
 end))
 
+local VainLogoV4 = Instance.new('ImageLabel')
+VainLogoV4.Name = 'Logo2'
+VainLogoV4.Size = UDim2.fromOffset(33, 18)
+VainLogoV4.Position = UDim2.new(1, 1, 0, 1)
+VainLogoV4.BackgroundColor3 = Color3.new()
+VainLogoV4.BackgroundTransparency = 1
+VainLogoV4.BorderSizePixel = 0
+VainLogoV4.Image = getcustomasset('vain/assets/new/textv4.png')
+VainLogoV4.Parent = VainLogo
 local VainLogoShadow = VainLogo:Clone()
 VainLogoShadow.Position = UDim2.fromOffset(1, 1)
 VainLogoShadow.ZIndex = 0
@@ -6915,6 +6872,9 @@ VainLogoShadow.Visible = true
 VainLogoShadow.ImageColor3 = Color3.new()
 VainLogoShadow.ImageTransparency = 0.65
 VainLogoShadow.Parent = VainLogo
+VainLogoShadow.Logo2.ZIndex = 0
+VainLogoShadow.Logo2.ImageColor3 = Color3.new()
+VainLogoShadow.Logo2.ImageTransparency = 0.65
 local VainLogoGradient = Instance.new('UIGradient')
 VainLogoGradient.Rotation = 90
 VainLogoGradient.Parent = VainLogo
@@ -7385,6 +7345,7 @@ function mainapi:UpdateGUI(hue, sat, val, default)
 
 	for i, v in mainapi.Categories do
 		if i == 'Main' then
+			v.Object.VainLogo.V4Logo.ImageColor3 = Color3.fromHSV(hue, sat, val)
 			for _, button in v.Buttons do
 				if button.Enabled then
 					button.Object.TextColor3 = rainbow and Color3.fromHSV(mainapi:Color((hue - (button.Index * 0.025)) % 1)) or Color3.fromHSV(hue, sat, val)
