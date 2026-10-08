@@ -3965,7 +3965,7 @@ topbar:CreateDropdown({
 			end
 		end
 	end,
-	Tooltip = 'new - The newest vain theme to since v4.05\nold - The vain theme pre v4.05\nrise - Rise 6.0'
+	Tooltip = 'new - The current theme\nold - The theme before it'
 })
 mainapi.RainbowMode = topbar:CreateDropdown({
 	Name = 'Rainbow Mode',
