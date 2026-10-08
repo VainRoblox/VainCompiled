@@ -146,7 +146,7 @@ end
 	protection cannot be replaced by assigning over it.
 
 	An assignment of the wrapper itself is ignored rather than nested - modules that save
-	the old check and put it back afterwards (MurderMystery does) would otherwise wrap it
+	the old check and put it back afterwards would otherwise wrap it
 	one layer deeper every time they were toggled.
 ]]
 setmetatable(entitylib, {

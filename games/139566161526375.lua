@@ -99,7 +99,7 @@ run(function()
 	end)
 end)
 
-for _, v in {'Reach', 'SilentAim', 'Disabler', 'HitBoxes', 'MurderMystery', 'AutoRejoin'} do
+for _, v in {'Reach', 'SilentAim', 'Disabler', 'HitBoxes', 'AutoRejoin'} do
 	vain:Remove(v)
 end
 
