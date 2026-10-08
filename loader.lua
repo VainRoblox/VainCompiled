@@ -66,6 +66,42 @@ local function wipeAssets()
 	end
 end
 
+--[[
+	A one-time forced reset of everything cached, for clients left on a bad build.
+
+	The watermark wipe cannot touch images, and keying the asset wipe on the commit only
+	helps a client that reaches this code with a cache it can compare - it does nothing
+	for one holding a stale guis/new.lua or a half written folder. Bumping this number
+	clears the lot once, on every client, whatever state it is in.
+
+	Raise it only to force that: a reset costs everyone one slower injection.
+]]
+local CACHE_VERSION = '2'
+
+local function forceReset()
+	if isfile('vain/profiles/cache.txt') and readfile('vain/profiles/cache.txt') == CACHE_VERSION then
+		return
+	end
+	for _, folder in {'vain/assets', 'vain/games', 'vain/guis', 'vain/libraries'} do
+		if isfolder(folder) then
+			for _, entry in listfiles(folder) do
+				if isfolder(entry) then
+					for _, file in listfiles(entry) do
+						pcall(delfile, file)
+					end
+				else
+					pcall(delfile, entry)
+				end
+			end
+		end
+	end
+	-- main.lua lives directly in vain/ and is wiped by name rather than by walking the
+	-- folder, so that profiles and the loader itself are left alone.
+	pcall(delfile, 'vain/main.lua')
+	pcall(writefile, 'vain/profiles/cache.txt', CACHE_VERSION)
+	print('[Vain] cache reset')
+end
+
 local function wipeFolder(path)
 	if not isfolder(path) then return end
 	for _, file in listfiles(path) do
@@ -113,6 +149,8 @@ if not shared.VainDeveloper then
 	-- has to be included because main.lua lives there - clearing only the
 	-- subfolders left the old entry point in place. wipeFolder only removes files
 	-- carrying the download watermark, so saved profiles and downloaded assets stay.
+	forceReset()
+
 	for _, folder in {'vain', 'vain/games', 'vain/guis', 'vain/libraries'} do
 		wipeFolder(folder)
 	end
