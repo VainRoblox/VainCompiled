@@ -2057,6 +2057,17 @@ function mainapi:CreateBar()
 
 	for i, v in components do
 		categoryapi['Create'..i] = function(self, optionsettings)
+			--[[
+				A torn down api takes no more options.
+
+				Uninject and Remove run loopClean over these tables, which strips every
+				field including Options. A run() block from the previous instance can
+				still be part way through adding settings when that happens, and the
+				component then writes into api.Options[name] on a table that no longer
+				has one - "attempt to index nil with 'CPS'", from re-injecting while the
+				old copy was still loading.
+			]]
+			if not categoryapi.Options then return end
 			return v(optionsettings, children, categoryapi)
 		end
 	end
@@ -2255,6 +2266,17 @@ function mainapi:CreateCategory(categorysettings)
 		for i, v in components do
 			moduleapi['Create'..i] = function(self, optionsettings)
 				dotsbutton.Text = '·\n·\n·'
+				--[[
+					A torn down api takes no more options.
+
+					Uninject and Remove run loopClean over these tables, which strips every
+					field including Options. A run() block from the previous instance can
+					still be part way through adding settings when that happens, and the
+					component then writes into api.Options[name] on a table that no longer
+					has one - "attempt to index nil with 'CPS'", from re-injecting while the
+					old copy was still loading.
+				]]
+				if not moduleapi.Options then return end
 				return v(optionsettings, modulechildren, moduleapi)
 			end
 		end
@@ -2378,6 +2400,7 @@ function mainapi:CreateCategory(categorysettings)
 
 	for i, v in components do
 		categoryapi['Create'..i] = function(self, optionsettings)
+			if not categoryapi.Options then return end
 			return v(optionsettings, children, categoryapi)
 		end
 	end
@@ -2577,6 +2600,7 @@ function mainapi:CreateLegit(categorysettings)
 		for i, v in components do
 			moduleapi['Create'..i] = function(self, optionsettings)
 				dotsbutton.Text = '·\n·\n·'
+				if not moduleapi.Options then return end
 				return v(optionsettings, settingschildren, moduleapi)
 			end
 		end
@@ -2638,6 +2662,7 @@ function mainapi:CreateLegit(categorysettings)
 
 	for i, v in components do
 		categoryapi['Create'..i] = function(self, optionsettings)
+			if not categoryapi.Options then return end
 			return v(optionsettings, children, categoryapi)
 		end
 	end
@@ -3124,6 +3149,7 @@ function mainapi:CreateCategoryList(categorysettings)
 
 	for i, v in components do
 		categoryapi['Create'..i] = function(self, optionsettings)
+			if not categoryapi.Options then return end
 			return v(optionsettings, childrentwo, categoryapi)
 		end
 	end
