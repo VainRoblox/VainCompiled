@@ -15114,6 +15114,100 @@ Legit = AutoBalloon:CreateToggle({
 
 
 run(function()
+	-- Lives in Utility/ rather than a Kit/ folder because VainBundler enumerates a
+	-- hardcoded category list and a Kit/ folder never reaches the compiled bundle. The
+	-- folder only decides what gets bundled; the category is the one it is created from,
+	-- which is Kit below.
+	--[[
+		Auto Equip Kit.
+	
+		Equips a kit the moment a round ends, so the next one starts with it already chosen
+		rather than you racing the lobby timer through the kit menu.
+	
+		It fires on the transition into the end state, not on the state itself. Equipping
+		repeatedly for as long as the match sits in that state would be one call every pass,
+		and the server has no reason to hear the same request forty times.
+	
+		The kit list and the call are built here rather than shared with EquipKit: game files
+		load in name order, so AutoEquipKit runs first and anything EquipKit published would
+		not exist yet.
+	]]
+	local AutoEquipKit
+	local Kit
+	local Notify
+	
+	local ids = {}
+	
+	local function kitList()
+		local names = {}
+		local ok = pcall(function()
+			for id, meta in bedwars.BedwarsKitMeta do
+				local name = type(meta) == 'table' and meta.name
+				if type(name) == 'string' and name ~= '' then
+					ids[name] = id
+					table.insert(names, name)
+				end
+			end
+		end)
+		-- Sorted because BedwarsKitMeta is a hash: its order moves between injections and
+		-- the dropdown would reshuffle every time.
+		table.sort(names)
+		if not ok or #names == 0 then
+			return {'None'}
+		end
+		table.insert(names, 1, 'None')
+		return names
+	end
+	
+	local function say(text)
+		if Notify.Enabled then
+			notif('AutoEquipKit', text, 6)
+		end
+	end
+	
+	AutoEquipKit = vain.Categories.Kit:CreateModule({
+		Name = 'AutoEquipKit',
+		Function = function(callback)
+			if not callback then
+				return
+			end
+	
+			-- Seeded with the state as it is now, so switching the module on during an
+			-- already finished match does not read as a transition and fire immediately.
+			local last = store.matchState
+	
+			repeat
+				local now = store.matchState
+				if now == 2 and last ~= 2 and Kit.Value ~= 'None' then
+					local id = ids[Kit.Value]
+					if id then
+						local ok, result = pcall(function()
+							return bedwars.Client:Get('BedwarsActivateKit'):CallServer({kit = id})
+						end)
+						say((ok and result ~= false) and (Kit.Value..' equipped for the next round')
+							or ('Could not equip '..Kit.Value))
+					end
+				end
+				last = now
+				task.wait(0.5)
+			until not AutoEquipKit.Enabled
+		end,
+		Tooltip = 'Equips a kit when the round ends'
+	})
+	Kit = AutoEquipKit:CreateDropdown({
+		Name = 'Kit',
+		Tooltip = 'Which kit to equip for next round',
+		List = kitList()
+	})
+	Notify = AutoEquipKit:CreateToggle({
+		Name = 'Notify',
+		Tooltip = 'Says when it equips',
+		Default = true
+	})
+	
+end)
+
+run(function()
 	local AutoPearl
 	local rayCheck = RaycastParams.new()
 	rayCheck.RespectCanCollide = true
@@ -15762,6 +15856,110 @@ run(function()
 	GameMessage = BedAlarm:CreateToggle({
 		Name = 'Game Message',
 		Tooltip = 'Shows the game\'s own bed alarm message'
+	})
+	
+end)
+
+run(function()
+	-- Lives in Utility/ rather than a Kit/ folder because VainBundler enumerates a
+	-- hardcoded category list and a Kit/ folder never reaches the compiled bundle. The
+	-- folder only decides what gets bundled; the category is the one it is created from,
+	-- which is Kit below.
+	--[[
+		Equip Kit.
+	
+		Switches your kit on a press, without opening the kit menu. Useful between rounds,
+		where the menu costs several clicks and the lobby is about to take the choice away
+		from you.
+	
+		The list is built from the game's own BedwarsKitMeta rather than written out here, so
+		a kit added by an update appears without this file changing. Names are sorted because
+		that table is a hash and its order moves between injections, which would reshuffle the
+		dropdown every time.
+	]]
+	local EquipKit
+	local Kit
+	local Notify
+	
+	-- name -> kit id, filled alongside the sorted list below.
+	local ids = {}
+	
+	local function kitList()
+		local names = {}
+		local ok = pcall(function()
+			for id, meta in bedwars.BedwarsKitMeta do
+				local name = type(meta) == 'table' and meta.name
+				if type(name) == 'string' and name ~= '' then
+					ids[name] = id
+					table.insert(names, name)
+				end
+			end
+		end)
+		table.sort(names)
+		if not ok or #names == 0 then
+			-- A dropdown with nothing in it cannot be opened, so it says why instead.
+			return {'None'}
+		end
+		table.insert(names, 1, 'None')
+		return names
+	end
+	
+	local function say(text)
+		if Notify.Enabled then
+			notif('EquipKit', text, 4)
+		end
+	end
+	
+	--[[
+		Asks the server to equip a kit.
+	
+		Shared with AutoEquipKit through the module table rather than duplicated, since both
+		need the same call and the same failure handling.
+	]]
+	local function equip(name)
+		local id = ids[name]
+		if not id then
+			return false, 'unknown kit'
+		end
+	
+		local ok, result = pcall(function()
+			return bedwars.Client:Get('BedwarsActivateKit'):CallServer({kit = id})
+		end)
+		if not ok then
+			return false, tostring(result)
+		end
+		-- The server answers with whether it took; false is a refusal, not an error.
+		return result ~= false, nil
+	end
+	
+	EquipKit = vain.Categories.Kit:CreateModule({
+		Name = 'EquipKit',
+		Function = function(callback)
+			if not callback then
+				return
+			end
+			-- A one off, like the other act-on-press modules: it puts itself away so the
+			-- keybind reads as a button.
+			EquipKit:Toggle()
+	
+			if Kit.Value == 'None' then
+				return say('Pick a kit first')
+			end
+	
+			local done, err = equip(Kit.Value)
+			say(done and ('Equipped '..Kit.Value) or ('Could not equip '..Kit.Value..(err and (': '..err) or '')))
+		end,
+		Tooltip = 'Equips the chosen kit'
+	})
+	Kit = EquipKit:CreateDropdown({
+		Name = 'Kit',
+		Tooltip = 'Which kit to equip',
+		List = kitList()
+	})
+	Notify = EquipKit:CreateToggle({
+		Name = 'Notify',
+		Tooltip = 'Says whether it worked',
+		Default = true
 	})
 	
 end)
