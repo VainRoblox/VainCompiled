@@ -22154,23 +22154,68 @@ run(function()
 	end)
 	
 	kitRun(function()
+	    local InfiniteKrystal
+	    local Gradual
+	    local Rate
 	    local old
 	
-	    vain.Categories.Kit:CreateModule({
+	    InfiniteKrystal = vain.Categories.Kit:CreateModule({
 	    	Name = 'Infinite Krystal',
-	    	Tooltip = 'Gives you max momentum forever',
+	    	Tooltip = 'Builds momentum faster, or pins it at max',
 	    	Function = function(call)
 	    		if call then
-	    			old = bedwars.GlacialSkaterController.updateMomentum
+	    			--[[
+	    				Saved once. Toggling on twice without a disable in between would
+	    				otherwise store the replacement as the original, and switching off
+	    				would leave the hook installed with no way back to the real function.
+	    			]]
+	    			old = old or bedwars.GlacialSkaterController.updateMomentum
 	    			bedwars.GlacialSkaterController.updateMomentum = function(self, ...)
-	    				self.momentum = 9e9
-	    				self.lastMomentumReport = 9e9
-	    				return old(self, ...)
+	    				if not (Gradual and Gradual.Enabled) then
+	    					self.momentum = 9e9
+	    					self.lastMomentumReport = 9e9
+	    					return old(self, ...)
+	    				end
+	
+	    				--[[
+	    					Multiplies what the game just earned rather than writing a value.
+	
+	    					Letting the original run first and scaling the difference keeps
+	    					every rule it applies - the cap, the decay while not skating, the
+	    					reset on landing - and only changes how fast the bar fills. Writing
+	    					a number straight in overrides all of that, which is what pinning
+	    					it at max does and why it reads as obviously not a player.
+	
+	    					Only gains are scaled. Amplifying a loss would make momentum drain
+	    					five times faster too, which is the opposite of the setting.
+	    				]]
+	    				local before = tonumber(self.momentum) or 0
+	    				local result = old(self, ...)
+	    				local after = tonumber(self.momentum) or 0
+	    				local gained = after - before
+	
+	    				if gained > 0 then
+	    					self.momentum = before + gained * (Rate.Value / 100)
+	    				end
+	
+	    				return result
 	    			end
-	    		else
+	    		elseif old then
 	    			bedwars.GlacialSkaterController.updateMomentum = old
 	    		end
 	    	end
+	    })
+	    Gradual = InfiniteKrystal:CreateToggle({
+	    	Name = 'Gradual',
+	    	Tooltip = 'Charges fast instead of sitting at max'
+	    })
+	    Rate = InfiniteKrystal:CreateSlider({
+	    	Name = 'Charge Rate',
+	    	Tooltip = 'How fast momentum builds\n100 is the normal speed',
+	    	Min = 0,
+	    	Max = 500,
+	    	Default = 200,
+	    	Suffix = '%'
 	    })
 	end)
 	
