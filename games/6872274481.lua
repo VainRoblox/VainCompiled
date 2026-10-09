@@ -22236,7 +22236,7 @@ run(function()
 	    	Name = 'Charge Rate',
 	    	Tooltip = 'How fast momentum builds\n100 is the normal speed',
 	    	Min = 0,
-	    	Max = 500,
+	    	Max = 1000,
 	    	Default = 200,
 	    	Suffix = '%'
 	    })
