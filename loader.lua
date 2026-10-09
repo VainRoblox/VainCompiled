@@ -137,30 +137,38 @@ if not shared.VainDeveloper then
 	end
 	commit = commit or 'main'
 
+	--[[
+		What the client last ran, read before it is overwritten.
+
+		The wipe below used to happen on every injection, so every inject re-downloaded
+		the whole script even when nothing had been published since the last one. The
+		cache only needs dropping when the build it was fetched from has actually moved,
+		and that is exactly what this comparison is.
+	]]
+	local previous = isfile('vain/profiles/commit.txt') and readfile('vain/profiles/commit.txt') or ''
+
 	-- Every URL downloadFile builds is based on this file, so it has to be rewritten
 	-- on each run. Leaving it stale pins the entire client to whichever commit was
 	-- cached at the time and no amount of re-injecting will ever fetch an update.
 	writefile('vain/profiles/commit.txt', commit)
 	-- Printed so a stale client is obvious: if this hash does not change between
 	-- injections after a push, the update is being cached rather than fetched.
-	print('[Vain] loading commit ' .. commit)
+	print('[Vain] loading commit ' .. commit .. (previous == commit and ' (cached)' or ''))
 
-	-- Drop the cached copies so the commit above is actually pulled. 'vain' itself
-	-- has to be included because main.lua lives there - clearing only the
-	-- subfolders left the old entry point in place. wipeFolder only removes files
-	-- carrying the download watermark, so saved profiles and downloaded assets stay.
 	forceReset()
 
-	for _, folder in {'vain', 'vain/games', 'vain/guis', 'vain/libraries'} do
-		wipeFolder(folder)
-	end
+	if previous ~= commit then
+		-- Drop the cached copies so the commit above is actually pulled. 'vain' itself
+		-- has to be included because main.lua lives there - clearing only the
+		-- subfolders left the old entry point in place. wipeFolder only removes files
+		-- carrying the download watermark, so saved profiles stay.
+		for _, folder in {'vain', 'vain/games', 'vain/guis', 'vain/libraries'} do
+			wipeFolder(folder)
+		end
 
-	-- Assets are tracked separately because they cannot carry the watermark. The commit
-	-- they were fetched at is recorded beside them and they are dropped when it moves.
-	local assetsAt = isfile('vain/profiles/assets.txt') and readfile('vain/profiles/assets.txt') or ''
-	if assetsAt ~= commit then
+		-- Assets cannot carry the watermark, so they are dropped here rather than by
+		-- wipeFolder. Same condition: only when the build has moved.
 		wipeAssets()
-		writefile('vain/profiles/assets.txt', commit)
 	end
 end
 
