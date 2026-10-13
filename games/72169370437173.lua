@@ -335,7 +335,10 @@ ShowFOV = Aimbot:CreateToggle({
 	Name = 'Show FOV',
 	Tooltip = 'Draws the FOV circle around your cursor',
 	Function = function(callback)
-		if FOVColor.Object then
+		-- FOVColor is created after this toggle, and Default = true makes the GUI run this
+		-- Function the moment the toggle is built - while FOVColor is still nil. Guarded so
+		-- that first call does not index a setting that does not exist yet.
+		if FOVColor and FOVColor.Object then
 			FOVColor.Object.Visible = callback
 		end
 		if CircleObject then
