@@ -60,6 +60,13 @@ local function resolveCombat()
 					pcall(function() combat.Util = require(parent.Util) end)
 					pcall(function() combat.Melee = require(handlers.Melee) end)
 					pcall(function() combat.Controller = require(parent.Controller) end)
+					-- Shared.Combat holds ShotSpeed/DrawnShot, which the projectile aimbot
+					-- needs to know how fast each weapon's shot leaves. FindFirstChild so this
+					-- never yields in a hot path.
+					local sharedFolder = replicatedStorage:FindFirstChild('Shared')
+					if sharedFolder and sharedFolder:FindFirstChild('Combat') then
+						pcall(function() combat.Combat = require(sharedFolder.Combat) end)
+					end
 					if combat.Controller then
 						return combat
 					end
@@ -643,16 +650,20 @@ run(function()
 	--[[
 		Killaura.
 	
-		The swing is the game's own: when an enemy is in range this presses Primary through the
-		Controller exactly as holding the mouse would, and the game runs its Detect pass and
-		sends the hits itself. Nothing here fakes a hit packet - it drives the real attack - so
-		it respects the weapon's cooldown and combo and carries the equip token the server checks,
-		which a hand-built packet would get wrong.
+		Swings the equipped melee weapon at enemies around you, through the game's own attack.
 	
-		Detect only looks down a cone in front of you, so on its own it would hit nobody you were
-		not already facing. While this is on it widens that cone through the shared Detect hook,
-		so a swing lands on whoever is around you rather than only what is dead ahead, and the
-		cone is put back the moment there is nothing to hit or the module goes off.
+		The game auto-swings a melee weapon while its handler's `holding` is set - its Update
+		runs every frame and calls Swing, which gates itself on the weapon's own cooldown. Real
+		input sets `holding` by pressing the attack, but that press is refused while the cursor
+		is free (a menu open) and depends on the input path. So this sets `holding` straight on
+		the live handler instead - the real one the game is running, read through base - which
+		drives the exact same auto-swing with none of that in the way, and still only ever as
+		fast as the weapon allows.
+	
+		It is a melee aura: a melee handler has a Detect method, a bow or a sling does not, so it
+		only engages when a melee weapon is out. Detect is widened while on, through the shared
+		hook, so a swing lands on whoever is around you at the range you set rather than only
+		what is dead ahead.
 	]]
 	local Killaura
 	local Targets
@@ -662,35 +673,40 @@ run(function()
 	local Mouse
 	local tribes = vain.Libraries.tribes
 	
-	-- Held, not clicked: pressing and releasing every frame fights the game's own combo timing,
-	-- while holding lets it swing on its own cooldown the way the mouse would. This tracks
-	-- whether we are currently holding so it is released exactly once.
-	local holding = false
+	-- The handler we set holding on, kept so it can be released exactly once.
+	local held = nil
 	
-	local function release(controller)
-		if holding then
-			holding = false
-			tribes.clearSwingDetect()
-			if controller and controller.Dispatch then
-				pcall(controller.Dispatch, 'Primary', false)
-			end
+	local function release()
+		if held then
+			pcall(function() held.holding = false end)
+			held = nil
 		end
+		tribes.clearSwingDetect()
 	end
 	
-	-- Whether any enemy the module is allowed to hit is within range. Uses the library's own
-	-- list, so the team check in base has already removed teammates.
+	-- The live melee handler, or nil when a non-melee weapon (or nothing) is equipped. A melee
+	-- handler is the one with a Detect and a Swing; ranged handlers have neither.
+	local function meleeHandler()
+		local state = tribes.handlerState()
+		local handler = state and state.handler
+		if handler and type(handler.Detect) == 'function' and type(handler.Swing) == 'function' then
+			return handler
+		end
+		return nil
+	end
+	
+	-- Whether any enemy the module may hit is within range. entitylib has already dropped
+	-- teammates through the base team check.
 	local function enemyInRange()
 		if not entitylib.isAlive then return false end
-		local here = entitylib.character.RootPart
-		if not here then return false end
-		local plrs = entitylib.AllPosition({
+		local found = entitylib.AllPosition({
 			Range = Range.Value,
 			Part = 'RootPart',
 			Players = Targets.Players.Enabled,
 			NPCs = Targets.NPCs.Enabled,
 			Limit = 1
 		})
-		return #plrs > 0
+		return #found > 0
 	end
 	
 	Killaura = vain.Categories.Combat:CreateModule({
@@ -703,38 +719,29 @@ run(function()
 				end
 	
 				Killaura:Clean(runService.Heartbeat:Connect(function()
-					local controller = tribes.resolveCombat().Controller
-					if not (controller and controller.Dispatch) then
-						return
-					end
-	
-					-- Hold only while the mouse is down, when that is asked for.
 					if Mouse.Enabled and not inputService:IsMouseButtonPressed(0) then
-						release(controller)
+						release()
 						return
 					end
 	
-					if not enemyInRange() then
-						release(controller)
+					local handler = meleeHandler()
+					if not handler or not enemyInRange() then
+						release()
 						return
 					end
 	
-					-- Widen the game's Detect so the swing reaches who is around, not only
-					-- ahead: the chosen cone, cap, and a reach floor matching the range the
-					-- module looks for targets at, so a swing lands as far as it will swing.
+					-- Widen the game's Detect so the swing reaches around you at the module's
+					-- range, not only the weapon's own cone and reach.
 					tribes.setSwingDetect(Angle.Value, Max.Value, Range.Value)
 	
-					if not holding then
-						holding = true
-						pcall(controller.Dispatch, 'Primary', true)
-					end
+					-- Drive the game's own auto-swing on the real handler.
+					handler.holding = true
+					held = handler
 				end))
 	
-				Killaura:Clean(function()
-					release(tribes.resolveCombat().Controller)
-				end)
+				Killaura:Clean(release)
 			else
-				release(tribes.resolveCombat().Controller)
+				release()
 			end
 		end,
 		Tooltip = 'Swings at enemies around you automatically'
@@ -745,7 +752,7 @@ run(function()
 	})
 	Range = Killaura:CreateSlider({
 		Name = 'Range',
-		Tooltip = 'How close an enemy must be before it swings\nYour weapon\'s own reach still applies to the hit',
+		Tooltip = 'How close an enemy must be before it swings',
 		Min = 4,
 		Max = 30,
 		Default = 14,
