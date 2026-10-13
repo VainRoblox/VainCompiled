@@ -218,13 +218,25 @@ vain.Libraries.tribes = {
 	end
 }
 
--- Said once, because silently aiming at teammates is worse than being told the game's check
--- could not be reached.
+--[[
+	Found once, at load, not lazily in a hot path.
+
+	The combat folder is copied into PlayerScripts a moment after you join, and requiring its
+	modules can yield while they wait for their own children - neither of which belongs in a
+	Heartbeat or a targetCheck that runs every frame. So the search is done here, retried
+	until it lands, and everything after reads the cached result instantly. If it never
+	lands, Killaura and Reach have nothing to drive, and that is said plainly rather than
+	leaving them looking broken.
+]]
 task.spawn(function()
-	task.wait(12)
-	if not select(2, isTeammate(lplr.Character)) and not resolveCombat().Util then
-		notif('Vain', 'Tribes: could not reach the game\'s team check, so teammates are not being filtered.', 15, 'alert')
+	for _ = 1, 60 do
+		if resolveCombat().Controller then
+			hookDetect()
+			return
+		end
+		task.wait(1)
 	end
+	notif('Vain', 'Tribes: combat system not found - Killaura and Reach will not work. Rejoin if this persists.', 15, 'alert')
 end)
 
 
@@ -308,27 +320,27 @@ Aimbot = vain.Categories.Combat:CreateModule({
 		if callback then
 			current = nil
 
-			-- The FOV circle follows the cursor; cheap, so it stays on the normal step.
-			Aimbot:Clean(runService.RenderStepped:Connect(function()
+			--[[
+				RenderStepped, not BindToRenderStep.
+
+				The aim has to be the last word on the camera each frame, and RenderStepped is
+				the last render event before the frame draws - it fires after the game's own
+				camera has placed itself, so writing the look here is what the game then reads.
+				BindToRenderStep would do the same by priority, but executor threads are not
+				always allowed to call it, and a capability error there switched the whole
+				module off - which is the aimbot that "did not work".
+
+				The game reads aim as its camera's position and look direction (GetAimRay
+				returns Ray.new(camera.CFrame.Position, camera.CFrame.LookVector)), so keeping
+				the camera's own position and only turning it to the target lands on exactly
+				the ray a swing or shot travels down.
+			]]
+			Aimbot:Clean(runService.RenderStepped:Connect(function(dt)
 				if CircleObject then
 					CircleObject.Position = inputService:GetMouseLocation()
 					CircleObject.Radius = FOV.Value
 				end
-			end))
 
-			--[[
-				The aim is written after the game has placed its camera, not before.
-
-				Tribes reads your aim as its camera's position and look direction - GetAimRay
-				returns Ray.new(camera.CFrame.Position, camera.CFrame.LookVector) - and its own
-				camera controller rewrites that CFrame every frame at the Camera render step.
-				A plain RenderStepped write lands before that and is overwritten the same
-				frame, so the aim never took. Binding one priority after the camera means our
-				look at the target is the last word, and because it keeps the camera's own
-				position it stays on exactly the ray the game will swing and shoot down.
-			]]
-			local bind = 'VainTribesAimbot'
-			runService:BindToRenderStep(bind, Enum.RenderPriority.Camera.Value + 1, function(dt)
 				if not entitylib.isAlive then
 					current = nil
 					return
@@ -370,10 +382,7 @@ Aimbot = vain.Categories.Combat:CreateModule({
 					local alpha = 1 - math.exp(-(1 / math.max(Smoothing.Value, 0.001)) * dt)
 					gameCamera.CFrame = gameCamera.CFrame:Lerp(goal, math.clamp(alpha, 0, 1))
 				end
-			end)
-			Aimbot:Clean(function()
-				pcall(function() runService:UnbindFromRenderStep(bind) end)
-			end)
+			end))
 		else
 			current = nil
 		end
@@ -539,6 +548,9 @@ run(function()
 		Function = function(callback)
 			if callback then
 				tribes.hookDetect()
+				if not tribes.resolveCombat().Controller then
+					notif('Killaura', 'Combat system not found yet - try again in a match', 6, 'alert')
+				end
 	
 				Killaura:Clean(runService.Heartbeat:Connect(function()
 					local controller = tribes.resolveCombat().Controller
