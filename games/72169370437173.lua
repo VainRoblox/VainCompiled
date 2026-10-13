@@ -835,20 +835,17 @@ run(function()
 	--[[
 		Hitbox.
 	
-		Grows the hit part on enemy bodies so shots are easier to land. It helps the ranged
-		weapons - bow, gun, thrown - because those hit-test against the body a projectile passes
-		through, so a bigger body is a bigger thing to hit. Melee does not gain from it: a melee
-		swing picks targets by distance, not by overlap, so Reach is what widens melee - this is
-		its ranged counterpart.
+		Grows the hit part on enemy bodies and draws it as a box, so you can see exactly where it
+		reaches. It helps the ranged weapons - bow, gun, thrown - which hit-test against the body
+		a projectile passes through, so a bigger body is a bigger thing to hit. Melee does not
+		gain from it: a swing picks targets by distance, not overlap, so Reach is what widens
+		melee - this is its ranged counterpart.
 	
-		Only the root part is grown, never the head. The root is invisible, so the hit area gets
-		bigger without a giant head filling your screen - that was the head part, which is drawn,
-		being resized. Show Hitbox then makes the grown root faintly visible when you want to see
-		where it reaches, at a transparency you set.
-	
-		Only enemies are touched, through the same Targetable check the rest of the client uses,
-		and every part is put back to its own size and transparency the moment the module goes
-		off or the body leaves range.
+		The root part is the one grown, never the head, so there is no giant head on screen - that
+		was the head, which is drawn, being resized. The box itself is a separate adornment drawn
+		on top, at the transparency you set, so it shows up reliably whatever the part behind it
+		is doing, and it is torn down the instant the body dies, leaves range or the module goes
+		off - as is the part's real size.
 	]]
 	local Hitbox
 	local Targets
@@ -856,24 +853,31 @@ run(function()
 	local Show
 	local Visibility
 	
-	-- part -> its real size and transparency, so both are restored exactly. Keyed by the part
-	-- so a respawned body with a fresh root is grown on its own terms.
+	-- part -> its real size, so it is restored to the stud. part -> adornment lives alongside.
 	local original = {}
+	local boxes = {}
 	
-	local function restore(part)
-		local saved = original[part]
-		if part and saved then
-			pcall(function()
-				part.Size = saved.size
-				part.Transparency = saved.transparency
-			end)
+	local folder = Instance.new('Folder')
+	folder.Name = 'VainHitbox'
+	folder.Parent = vain.gui
+	
+	local function drop(part)
+		if original[part] then
+			pcall(function() part.Size = original[part] end)
 			original[part] = nil
+		end
+		if boxes[part] then
+			pcall(function() boxes[part]:Destroy() end)
+			boxes[part] = nil
 		end
 	end
 	
-	local function restoreAll()
+	local function dropAll()
 		for part in original do
-			restore(part)
+			drop(part)
+		end
+		for part in boxes do
+			drop(part)
 		end
 	end
 	
@@ -883,39 +887,53 @@ run(function()
 			if callback then
 				Hitbox:Clean(runService.Heartbeat:Connect(function()
 					local wanted = {}
+					local size = Size.Value
 	
 					for _, entity in entitylib.List do
 						local allow = entity.Targetable
 							and (entity.Player and Targets.Players.Enabled or (entity.NPC and Targets.NPCs.Enabled))
-						-- The root only: it is the invisible part shots hit, so growing it does
-						-- not put a block on screen unless Show Hitbox asks for one.
 						local part = allow and entity.RootPart
 						if not part then continue end
 	
 						wanted[part] = true
 						if not original[part] then
-							original[part] = {size = part.Size, transparency = part.Transparency}
+							original[part] = part.Size
 						end
-	
-						local size = Size.Value
 						part.Size = Vector3.new(size, size, size)
-						-- Shown faintly when asked, invisible otherwise - the root's own
-						-- transparency is kept for when the module goes off.
-						part.Transparency = Show.Enabled and (1 - Visibility.Value) or original[part].transparency
+	
+						-- The visible box: a separate adornment so it shows reliably, on top,
+						-- at the transparency chosen, without touching how the part itself draws.
+						if Show.Enabled then
+							local box = boxes[part]
+							if not box then
+								box = Instance.new('BoxHandleAdornment')
+								box.Adornee = part
+								box.AlwaysOnTop = true
+								box.ZIndex = 0
+								box.Parent = folder
+								boxes[part] = box
+							end
+							box.Size = Vector3.new(size, size, size)
+							box.Color3 = Color3.fromRGB(255, 80, 80)
+							box.Transparency = 1 - Visibility.Value
+						elseif boxes[part] then
+							pcall(function() boxes[part]:Destroy() end)
+							boxes[part] = nil
+						end
 					end
 	
-					-- Anything grown last pass that is no longer a wanted enemy root - died,
-					-- left range, changed team - is put back at once.
+					-- Anything touched last pass that is no longer a wanted enemy root is put
+					-- back and its box removed at once.
 					for part in original do
 						if not wanted[part] then
-							restore(part)
+							drop(part)
 						end
 					end
 				end))
 	
-				Hitbox:Clean(restoreAll)
+				Hitbox:Clean(dropAll)
 			else
-				restoreAll()
+				dropAll()
 			end
 		end,
 		Tooltip = 'Grows enemy hitboxes so ranged shots land easier\nUse Reach for melee'
@@ -936,20 +954,19 @@ run(function()
 	})
 	Show = Hitbox:CreateToggle({
 		Name = 'Show Hitbox',
-		Tooltip = 'Draws the grown hit part so you can see it',
+		Tooltip = 'Draws the hitbox so you can see it',
 		Function = function(callback)
 			if Visibility and Visibility.Object then
 				Visibility.Object.Visible = callback
 			end
-			-- Hidden again straight away when turned off, without waiting for the next pass.
 			if not callback then
-				for part, saved in original do
-					pcall(function()
-						part.Transparency = saved.transparency
-					end)
+				for part in boxes do
+					pcall(function() boxes[part]:Destroy() end)
+					boxes[part] = nil
 				end
 			end
-		end
+		end,
+		Default = true
 	})
 	Visibility = Hitbox:CreateSlider({
 		Name = 'Visibility',
@@ -958,8 +975,418 @@ run(function()
 		Max = 1,
 		Default = 0.5,
 		Decimal = 100,
-		Darker = true,
-		Visible = false
+		Darker = true
+	})
+	
+end)
+
+--[[
+	Projectile Aimbot.
+
+	Silent, like the Bedwars one: it does not move your camera. When a projectile weapon is
+	drawn and a target sits inside the circle, it replaces the direction the shot is built
+	from with one solved to land on where the target will be - lead, drop and the target's
+	own motion all accounted for - so the shot curves onto them while your aim stays where
+	you put it.
+
+	It works because the client hands the server the direction it fires. That direction comes
+	from Util.AimDirection, so this wraps that one function: when it should aim, it returns
+	the solved direction; otherwise it returns exactly what the game would have. Melee asks
+	the same function for its facing, but a melee weapon is never a projectile weapon, so the
+	swing is left alone. Speed and gravity are read from the equipped weapon itself, so each
+	bow, sling or javelin is solved at its own arc.
+]]
+local ProjectileAimbot
+local Targets
+local TargetPart
+local FOV
+local Range
+local HitChance
+local ShowFOV
+local FOVColor
+local CircleObject
+local tribes = vain.Libraries.tribes
+local prediction = tribes.prediction
+
+-- The weapons that fire something with travel time. A melee handler has no kind here, so it
+-- never matches and its facing is left untouched.
+local RANGED = {
+	Bow = true, Crossbow = true, Musket = true, Pistol = true, Blunderbuss = true,
+	Javelin = true, Sling = true, Bomb = true, Knives = true
+}
+
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+local hooked = false
+
+local function mousePosition()
+	if inputService.TouchEnabled then
+		return gameCamera.ViewportSize / 2
+	end
+	return inputService:GetMouseLocation()
+end
+
+-- Whichever of head or root sits closer to the cursor, for the Nearest part option.
+local function nearestPart(entity)
+	local best, bestMag = 'RootPart', math.huge
+	for _, name in {'Head', 'RootPart'} do
+		local part = entity[name]
+		if part then
+			local screen, visible = gameCamera:WorldToViewportPoint(part.Position)
+			local mag = visible and (mousePosition() - Vector2.new(screen.X, screen.Y)).Magnitude or math.huge
+			if mag < bestMag then
+				best, bestMag = name, mag
+			end
+		end
+	end
+	return best
+end
+
+-- The solved direction to fire in, or nil to let the game aim itself.
+local function solve(origin)
+	if not (ProjectileAimbot.Enabled and entitylib.isAlive) then return nil end
+
+	local state = tribes.handlerState()
+	local handler = state and state.handler
+	if not (handler and handler.tuning and state.kind and RANGED[state.kind]) then
+		return nil
+	end
+
+	local target = entitylib.EntityMouse({
+		Part = TargetPart.Value == 'Nearest' and 'RootPart' or TargetPart.Value,
+		Range = FOV.Value,
+		Players = Targets.Players.Enabled,
+		NPCs = Targets.NPCs.Enabled,
+		Wallcheck = Targets.Walls.Enabled,
+		Origin = origin
+	})
+	if not target then return nil end
+
+	local part = target[TargetPart.Value == 'Nearest' and nearestPart(target) or TargetPart.Value]
+	if not part then return nil end
+	if (part.Position - origin).Magnitude > Range.Value then return nil end
+
+	-- Speed and gravity straight off the equipped weapon, so each one is solved at its own
+	-- arc. ShotSpeed is the full-draw speed, which is what an aimed shot is fired at.
+	local tuning = handler.tuning
+	local gravity = tuning.gravity or 60
+	local combat = tribes.resolveCombat().Combat
+	local speed = (combat and combat.ShotSpeed and combat.ShotSpeed(tuning)) or tuning.speed or tuning.speedMax or 200
+
+	local aimpos = part.Position
+	-- Hit Chance throws a shot wide on purpose by nudging the aim off the target.
+	if HitChance.Value < 100 and math.random(1, 100) > HitChance.Value then
+		aimpos = aimpos + Vector3.new(math.random(-4, 4), math.random(-2, 2), math.random(-4, 4))
+	end
+
+	local velocity = part.AssemblyLinearVelocity
+	rayParams.FilterDescendantsInstances = {gameCamera, entitylib.character and entitylib.character.Character or nil, target.Character}
+
+	local calc = prediction.SolveTrajectory(
+		origin, speed, gravity, aimpos, velocity,
+		workspace.Gravity, target.HipHeight or 2, nil, rayParams, nil
+	)
+	if not calc then return nil end
+
+	targetinfo.Targets[target] = tick() + 1
+	local direction = calc - origin
+	return direction.Magnitude > 0 and direction.Unit or nil
+end
+
+ProjectileAimbot = vain.Categories.Blatant:CreateModule({
+	Name = 'ProjectileAimbot',
+	Function = function(callback)
+		if CircleObject then
+			CircleObject.Visible = callback and ShowFOV.Enabled
+		end
+
+		if not callback then
+			return
+		end
+
+		-- Installed once and left in: a passthrough while off, guarded by Enabled. Tearing
+		-- a function hook out and in races with every shot that reads it.
+		if not hooked then
+			local c = tribes.resolveCombat()
+			if not (c.Util and type(c.Util.AimDirection) == 'function') then
+				notif('ProjectileAimbot', 'Combat system not found yet - try again in a match', 6, 'alert')
+			else
+				local real = c.Util.AimDirection
+				c.Util.AimDirection = function(origin)
+					local ok, dir = pcall(solve, origin)
+					if ok and dir then
+						return dir
+					end
+					return real(origin)
+				end
+				hooked = true
+			end
+		end
+
+		-- The circle follows the cursor; targets are picked from inside it.
+		ProjectileAimbot:Clean(runService.RenderStepped:Connect(function()
+			if CircleObject then
+				CircleObject.Position = mousePosition()
+				CircleObject.Radius = FOV.Value
+				CircleObject.Visible = ProjectileAimbot.Enabled and ShowFOV.Enabled
+			end
+		end))
+	end,
+	Tooltip = 'Silently curves your projectiles onto the enemy'
+})
+Targets = ProjectileAimbot:CreateTargets({
+	Players = true,
+	Walls = true,
+	Tooltip = 'Which entities it may aim at'
+})
+TargetPart = ProjectileAimbot:CreateDropdown({
+	Name = 'Part',
+	Tooltip = 'Which body part to aim the shot at',
+	List = {'RootPart', 'Head', 'Nearest'},
+	Tooltips = {
+		RootPart = 'Aims at the middle of the body',
+		Head = 'Aims at the head',
+		Nearest = 'Whichever part is closer to your cursor'
+	}
+})
+FOV = ProjectileAimbot:CreateSlider({
+	Name = 'FOV',
+	Tooltip = 'How far from your cursor a target may be on screen',
+	Min = 10,
+	Max = 1000,
+	Default = 400,
+	Function = function(val)
+		if CircleObject then
+			CircleObject.Radius = val
+		end
+	end,
+	Suffix = 'px'
+})
+Range = ProjectileAimbot:CreateSlider({
+	Name = 'Range',
+	Tooltip = 'How far a target may be, in studs',
+	Min = 10,
+	Max = 800,
+	Default = 500,
+	Suffix = function(val)
+		return val == 1 and 'stud' or 'studs'
+	end
+})
+HitChance = ProjectileAimbot:CreateSlider({
+	Name = 'Hit Chance',
+	Tooltip = 'How often a shot is aimed at the target instead of beside it',
+	Min = 0,
+	Max = 100,
+	Default = 100,
+	Suffix = '%'
+})
+ShowFOV = ProjectileAimbot:CreateToggle({
+	Name = 'Show FOV',
+	Tooltip = 'Draws the circle targets are picked from',
+	Function = function(callback)
+		if FOVColor and FOVColor.Object then
+			FOVColor.Object.Visible = callback
+		end
+		if CircleObject then
+			CircleObject.Visible = callback and ProjectileAimbot.Enabled
+		end
+	end,
+	Default = true
+})
+FOVColor = ProjectileAimbot:CreateColorSlider({
+	Name = 'FOV Color',
+	Tooltip = 'Colour of the circle',
+	Function = function(hue, sat, val, opacity)
+		if CircleObject then
+			CircleObject.Color = Color3.fromHSV(hue, sat, val)
+			CircleObject.Transparency = opacity
+		end
+	end,
+	Darker = true
+})
+
+run(function()
+	CircleObject = Drawing.new('Circle')
+	CircleObject.Thickness = 2
+	CircleObject.Filled = false
+	CircleObject.Radius = FOV.Value
+	CircleObject.Color = Color3.fromHSV(FOVColor.Hue, FOVColor.Sat, FOVColor.Value)
+	CircleObject.Transparency = FOVColor.Opacity
+	CircleObject.Visible = false
+
+	vain:Clean(function()
+		CircleObject:Remove()
+	end)
+end)
+
+
+run(function()
+	--[[
+		Snap Trap ESP.
+	
+		Snap traps are placed in the world as instances carrying the CollectionService tag
+		BearTrap, so they are found by the tag rather than by guessing at names - a new trap is
+		picked up the instant it is tagged, and dropped when it is removed. Each gets a highlight
+		drawn through walls and, if you want it, a label with how far off it is, so a trap set in
+		a doorway or round a corner is seen before you walk onto it.
+	]]
+	local SnapTrapESP
+	local Color
+	local ShowDistance
+	local Range
+	local TextSize
+	
+	local collectionService = cloneref(game:GetService('CollectionService'))
+	
+	local TAG = 'BearTrap'
+	
+	-- trap instance -> {highlight, billboard, label}
+	local marks = {}
+	
+	-- A folder for the billboards, so they are torn down in one go and never leak into the
+	-- world the way a stray BillboardGui parented to a trap would when the trap is removed.
+	local folder = Instance.new('Folder')
+	folder.Name = 'VainSnapTrapESP'
+	folder.Parent = vain.gui
+	
+	local function colour()
+		return Color3.fromHSV(Color.Hue, Color.Sat, Color.Value)
+	end
+	
+	local function partOf(trap)
+		if trap:IsA('BasePart') then return trap end
+		return trap.PrimaryPart or trap:FindFirstChildWhichIsA('BasePart', true)
+	end
+	
+	local function clear(trap)
+		local mark = marks[trap]
+		if mark then
+			pcall(function() mark.highlight:Destroy() end)
+			pcall(function() mark.billboard:Destroy() end)
+			marks[trap] = nil
+		end
+	end
+	
+	local function clearAll()
+		for trap in marks do
+			clear(trap)
+		end
+	end
+	
+	local function ensure(trap)
+		if marks[trap] then return marks[trap] end
+		local part = partOf(trap)
+		if not part then return nil end
+	
+		local highlight = Instance.new('Highlight')
+		highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		highlight.Adornee = trap
+		highlight.FillTransparency = 0.6
+		highlight.OutlineTransparency = 0
+		highlight.Parent = folder
+	
+		local billboard = Instance.new('BillboardGui')
+		billboard.Size = UDim2.fromOffset(140, 20)
+		billboard.StudsOffset = Vector3.new(0, 2, 0)
+		billboard.AlwaysOnTop = true
+		billboard.Adornee = part
+		billboard.Parent = folder
+		local label = Instance.new('TextLabel')
+		label.Size = UDim2.fromScale(1, 1)
+		label.BackgroundTransparency = 1
+		label.Font = Enum.Font.GothamBold
+		label.TextStrokeTransparency = 0.4
+		label.Text = 'Snap Trap'
+		label.Parent = billboard
+	
+		marks[trap] = {highlight = highlight, billboard = billboard, label = label, part = part}
+		return marks[trap]
+	end
+	
+	SnapTrapESP = vain.Categories.Render:CreateModule({
+		Name = 'Snap Trap ESP',
+		Function = function(callback)
+			if callback then
+				-- Mark whatever is already down, then follow the tag as traps are set and sprung.
+				for _, trap in collectionService:GetTagged(TAG) do
+					ensure(trap)
+				end
+				SnapTrapESP:Clean(collectionService:GetInstanceAddedSignal(TAG):Connect(ensure))
+				SnapTrapESP:Clean(collectionService:GetInstanceRemovedSignal(TAG):Connect(clear))
+	
+				SnapTrapESP:Clean(runService.RenderStepped:Connect(function()
+					local tint = colour()
+					local origin = entitylib.isAlive and entitylib.character.RootPart.Position or gameCamera.CFrame.Position
+	
+					for trap, mark in marks do
+						if not trap.Parent or not mark.part.Parent then
+							clear(trap)
+						else
+							mark.highlight.FillColor = tint
+							mark.highlight.OutlineColor = tint
+	
+							if ShowDistance.Enabled then
+								local dist = math.floor((mark.part.Position - origin).Magnitude)
+								if dist > Range.Value then
+									mark.highlight.Enabled = false
+									mark.billboard.Enabled = false
+								else
+									mark.highlight.Enabled = true
+									mark.billboard.Enabled = true
+									mark.label.TextColor3 = tint
+									mark.label.TextSize = TextSize.Value
+									mark.label.Text = 'Snap Trap  '..dist..'m'
+								end
+							else
+								mark.highlight.Enabled = true
+								mark.billboard.Enabled = false
+							end
+						end
+					end
+				end))
+	
+				SnapTrapESP:Clean(clearAll)
+			else
+				clearAll()
+			end
+		end,
+		Tooltip = 'Shows snap traps through walls'
+	})
+	Color = SnapTrapESP:CreateColorSlider({
+		Name = 'Color',
+		Tooltip = 'Colour of the trap highlight',
+		DefaultHue = 0,
+		DefaultSat = 0.8,
+		DefaultValue = 1
+	})
+	ShowDistance = SnapTrapESP:CreateToggle({
+		Name = 'Show Distance',
+		Tooltip = 'Labels each trap with how far away it is',
+		Function = function(callback)
+			if TextSize and TextSize.Object then
+				TextSize.Object.Visible = callback
+			end
+		end,
+		Default = true
+	})
+	TextSize = SnapTrapESP:CreateSlider({
+		Name = 'Text Size',
+		Tooltip = 'How large the label is drawn',
+		Min = 8,
+		Max = 24,
+		Default = 14,
+		Darker = true
+	})
+	Range = SnapTrapESP:CreateSlider({
+		Name = 'Range',
+		Tooltip = 'How far a trap can be and still be shown',
+		Min = 20,
+		Max = 500,
+		Default = 300,
+		Suffix = function(val)
+			return val == 1 and 'stud' or 'studs'
+		end
 	})
 	
 end)
