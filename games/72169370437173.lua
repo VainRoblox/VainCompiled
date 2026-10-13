@@ -14,67 +14,121 @@ local vain = shared.vain
 local entitylib = vain.Libraries.entity
 local targetinfo = vain.Libraries.targetinfo
 local whitelist = vain.Libraries.whitelist
+local prediction = vain.Libraries.prediction
 
 local function notif(...)
 	return vain:CreateNotification(...)
 end
 
--- Tribes 3v3 (place 72169370437173, universe 10768498581, by Snick Co). It is a single
--- round-based place - the lobby and the match run in the same place, which is why the
--- game file is keyed to one id rather than a lobby/match pair.
---
--- The game does not use Roblox Teams: the match file carries zero Team objects, and sides
--- are tracked by the game's own Team1/Team2 system over remotes instead. So the universal
--- aim modules, which fall back to Player.Team, would see lplr.Team nil and return every
--- player as a valid target - teammates included. This override replaces that check with
--- one that looks where this game realistically keeps the side.
---
--- Where it lives is not something to assume, so this reads the places a Roblox game keeps
--- it and uses the first that answers. If none do, it says so rather than guessing:
--- returning "unknown" leaves targeting exactly as it is today instead of silently deciding
--- half the server is friendly. The probe below is there to find the real source fast.
-local TEAM_KEYS = {'Team', 'TeamName', 'TeamId', 'Side', 'Tribe', 'TribeId', 'Squad', 'squadra'}
+--[[
+	Tribes 3v3 (place 72169370437173, universe 10768498581, by Snick Co). A single
+	round-based place - the lobby and the match run in the same place.
 
-local function valueOf(container)
-	if not container then return nil end
-	for _, key in TEAM_KEYS do
-		local attr = container:GetAttribute(key)
-		if attr ~= nil then return tostring(attr) end
+	The combat is custom: no Roblox Tools held in hand, no TouchTransmitters, no Teams. A
+	swing is the client calling the game's own Controller, which runs a Detect pass and sends
+	the hit list to the server over a WeaponAction remote - the client chooses who it hit.
+	This file finds those modules so the combat modules can drive them directly, which is the
+	only way to land a hit here and the only honest source of who is a teammate.
+]]
+
+-- The combat modules, found once and cached. require returns the same table the game's own
+-- scripts hold, so a hook here is a hook on what the game actually runs.
+local combat = {}
+
+--[[
+	Finds the combat folder and requires its modules.
+
+	The folder is the one holding a Controller module beside a Handlers folder with a Melee
+	module and a Util module - the shape the game's own bootstrap relies on. Searched under
+	the player's scripts and ReplicatedStorage rather than the whole game, because those are
+	where client modules live and walking everything each call is far too much.
+]]
+local function resolveCombat()
+	if combat.Controller then
+		return combat
 	end
-	for _, key in TEAM_KEYS do
-		local child = container:FindFirstChild(key)
-		if child and child:IsA('ValueBase') and child.Value ~= nil then
-			return tostring(child.Value)
+
+	local roots = {lplr:FindFirstChild('PlayerScripts'), replicatedStorage}
+	for _, place in roots do
+		if not place then continue end
+		for _, d in place:GetDescendants() do
+			if d:IsA('ModuleScript') and d.Name == 'Controller' then
+				local parent = d.Parent
+				local handlers = parent and parent:FindFirstChild('Handlers')
+				if handlers and handlers:FindFirstChild('Melee') and parent:FindFirstChild('Util') then
+					combat.root = parent
+					pcall(function() combat.Util = require(parent.Util) end)
+					pcall(function() combat.Melee = require(handlers.Melee) end)
+					pcall(function() combat.Controller = require(parent.Controller) end)
+					if combat.Controller then
+						return combat
+					end
+				end
+			end
 		end
 	end
-	return nil
+	return combat
 end
 
-local function teamOf(player)
-	if not player then return nil end
+--[[
+	A single hook on Melee.Detect, shared by Reach and Killaura.
 
-	-- Roblox Teams, in case a mode does use them.
-	if player.Team then return tostring(player.Team) end
+	Detect is the function every melee swing calls to pick who it hit, from a range, a cone
+	angle and a cap - and the client's choice is what the server is told. Widening its
+	arguments is therefore the whole of Reach and the targeting half of Killaura, and both
+	done in one place so they compose instead of fighting over the same function.
 
-	local fromPlayer = valueOf(player)
-	if fromPlayer then return fromPlayer end
+	Installed once and left in. When nothing has set anything it adds zero to the range and
+	changes neither the arc nor the cap, so an idle hook is a plain passthrough rather than
+	something to tear back out and race over.
+]]
+local detect = {reach = 0, arc = nil, minTargets = nil}
+local detectHooked = false
 
-	local fromCharacter = valueOf(player.Character)
-	if fromCharacter then return fromCharacter end
-
-	return valueOf(player:FindFirstChild('leaderstats'))
+local function hookDetect()
+	if detectHooked then return true end
+	local c = resolveCombat()
+	if not (c.Melee and type(c.Melee.Detect) == 'function') then
+		return false
+	end
+	local real = c.Melee.Detect
+	c.Melee.Detect = function(self, range, arc, maxTargets)
+		range = (range or 8) + detect.reach
+		if detect.arc then arc = detect.arc end
+		if detect.minTargets then maxTargets = math.max(maxTargets or 1, detect.minTargets) end
+		return real(self, range, arc, maxTargets)
+	end
+	detectHooked = true
+	return true
 end
 
--- Replaces the library's check for this game only. Overriding this one function is enough:
--- entitylib calls it when an entity is added and again whenever it re-evaluates Targetable,
--- so every module that filters on Targetable picks this up for free.
+--[[
+	Whether a character is on your team, asked of the game itself.
+
+	Util.IsTeammate is the exact test the game runs before it will let a swing hit someone,
+	so using it means Vain draws the line in precisely the same place the game does, with
+	none of the attribute guessing a custom team system would otherwise need.
+]]
+local function isTeammate(character)
+	local c = resolveCombat()
+	if c.Util and type(c.Util.IsTeammate) == 'function' then
+		local ok, mate = pcall(c.Util.IsTeammate, character)
+		if ok then
+			return mate == true, true
+		end
+	end
+	return false, false
+end
+
+-- Replaces the library's check for this game only. entitylib calls it when an entity is
+-- added and whenever it re-evaluates Targetable, so every module that filters on Targetable
+-- filters teammates here for free.
 entitylib.targetCheck = function(entity)
 	if not entity.Player then
 		return true
 	end
 
-	-- Ranked players stay protected here too - without this half they would be as
-	-- targetable as anybody else in this game alone.
+	-- Ranked players stay protected here too.
 	if not select(2, whitelist:get(entity.Player)) then
 		return false
 	end
@@ -83,59 +137,93 @@ entitylib.targetCheck = function(entity)
 		return entity:TeamCheck()
 	end
 
-	local mine, theirs = teamOf(lplr), teamOf(entity.Player)
-	if mine == nil or theirs == nil then
-		-- Side could not be determined for one of us. Left targetable, which is the
-		-- behaviour without this file at all - better than hiding real enemies.
-		return true
+	local character = entity.Character
+	if character then
+		local mate, known = isTeammate(character)
+		if known then
+			return not mate
+		end
 	end
 
-	return mine ~= theirs
+	-- The game's own check could not be reached yet. Left targetable, which is the
+	-- behaviour without this file - better than hiding real enemies.
+	return true
 end
 
--- A one-shot probe, so the real side source can be found from a live match rather than
--- guessed from a static place file. It dumps, for a couple of other players, every
--- attribute and named value on the player, character and leaderstats, which is where a
--- side assignment realistically sits. Run it in a match and send the output.
 vain.Libraries.tribes = {
-	teamOf = teamOf,
-	teamKeys = TEAM_KEYS,
+	prediction = prediction,
+	resolveCombat = resolveCombat,
+	isTeammate = isTeammate,
+
+	-- Reach and Killaura reach the shared Detect hook through these rather than touching the
+	-- game's modules themselves, so neither has to know the other exists.
+	hookDetect = hookDetect,
+	setReach = function(extra)
+		hookDetect()
+		detect.reach = extra or 0
+	end,
+	setSwingDetect = function(arc, minTargets)
+		hookDetect()
+		detect.arc = arc
+		detect.minTargets = minTargets
+	end,
+	clearSwingDetect = function()
+		detect.arc = nil
+		detect.minTargets = nil
+	end,
+
+	--[[
+		A one-shot dump of the other players, for anything the source does not already answer
+		- a side source the game's own check somehow misses, or the loadout a player carries.
+		It walks the player, character, backpack and leaderstats and lists every attribute,
+		value and child model, because a loadout here is Tools in the backpack keyed by a
+		SlotIndex attribute. Run it near an enemy and send the output.
+	]]
 	probe = function()
 		local lines = {}
+
+		local function dump(label, container, deep)
+			if not container then return end
+			local ok, attrs = pcall(function() return container:GetAttributes() end)
+			if ok then
+				for key, value in attrs do
+					table.insert(lines, label..' attr '..tostring(key)..' = '..tostring(value)..' ('..typeof(value)..')')
+				end
+			end
+			for _, child in container:GetChildren() do
+				if child:IsA('ValueBase') then
+					table.insert(lines, label..' value '..child.Name..' = '..tostring(child.Value))
+				elseif deep and (child:IsA('Model') or child:IsA('Folder') or child:IsA('Tool')) then
+					local slot = child:GetAttribute('SlotIndex')
+					table.insert(lines, label..' child '..child.ClassName..' "'..child.Name..'"'..(slot and (' slot '..tostring(slot)) or ''))
+				end
+			end
+		end
+
 		for _, player in playersService:GetPlayers() do
 			if player == lplr then continue end
 			table.insert(lines, '== '..player.Name..' ==')
-			for _, where in {{'player', player}, {'character', player.Character}, {'leaderstats', player:FindFirstChild('leaderstats')}} do
-				local label, container = where[1], where[2]
-				if not container then continue end
-				local ok, attrs = pcall(function() return container:GetAttributes() end)
-				if ok then
-					for key, value in attrs do
-						table.insert(lines, label..' attr '..tostring(key)..' = '..tostring(value))
-					end
-				end
-				for _, child in container:GetChildren() do
-					if child:IsA('ValueBase') then
-						table.insert(lines, label..' value '..child.Name..' = '..tostring(child.Value))
-					end
-				end
-			end
-			if #lines > 120 then break end
+			dump('player', player, false)
+			dump('character', player.Character, true)
+			dump('backpack', player:FindFirstChildOfClass('Backpack'), true)
+			dump('leaderstats', player:FindFirstChild('leaderstats'), false)
+			if #lines > 200 then break end
 		end
+
 		local text = table.concat(lines, '\n')
-		print('[Vain] Tribes side probe:\n'..text)
+		print('[Vain] Tribes probe:\n'..text)
 		pcall(function() setclipboard(text) end)
 		notif('Vain', 'Tribes probe copied to clipboard and printed to console', 10, 'check')
 		return text
 	end
 }
 
--- Said once, because silently aiming at teammates is worse than being told the side source
--- needs finding. If the probe helper exists, point at it.
+-- Said once, because silently aiming at teammates is worse than being told the game's check
+-- could not be reached.
 task.spawn(function()
-	task.wait(10)
-	if teamOf(lplr) == nil then
-		notif('Vain', 'Tribes: could not work out your side, so teammates are not filtered. In a match, run vain.Libraries.tribes.probe() and send the output.', 15, 'alert')
+	task.wait(12)
+	if not select(2, isTeammate(lplr.Character)) and not resolveCombat().Util then
+		notif('Vain', 'Tribes: could not reach the game\'s team check, so teammates are not being filtered.', 15, 'alert')
 	end
 end)
 
@@ -220,12 +308,27 @@ Aimbot = vain.Categories.Combat:CreateModule({
 		if callback then
 			current = nil
 
+			-- The FOV circle follows the cursor; cheap, so it stays on the normal step.
 			Aimbot:Clean(runService.RenderStepped:Connect(function()
 				if CircleObject then
 					CircleObject.Position = inputService:GetMouseLocation()
 					CircleObject.Radius = FOV.Value
 				end
+			end))
 
+			--[[
+				The aim is written after the game has placed its camera, not before.
+
+				Tribes reads your aim as its camera's position and look direction - GetAimRay
+				returns Ray.new(camera.CFrame.Position, camera.CFrame.LookVector) - and its own
+				camera controller rewrites that CFrame every frame at the Camera render step.
+				A plain RenderStepped write lands before that and is overwritten the same
+				frame, so the aim never took. Binding one priority after the camera means our
+				look at the target is the last word, and because it keeps the camera's own
+				position it stays on exactly the ray the game will swing and shoot down.
+			]]
+			local bind = 'VainTribesAimbot'
+			runService:BindToRenderStep(bind, Enum.RenderPriority.Camera.Value + 1, function(dt)
 				if not entitylib.isAlive then
 					current = nil
 					return
@@ -237,9 +340,8 @@ Aimbot = vain.Categories.Combat:CreateModule({
 				end
 
 				-- Sticky keeps the current target until it dies, leaves range or leaves
-				-- the cone, rather than re-picking every frame. Without it the aim
-				-- snaps between two enemies standing near each other and lands on
-                -- neither.
+				-- the cone, rather than re-picking every frame. Without it the aim snaps
+				-- between two enemies standing near each other and lands on neither.
 				if Sticky.Enabled and current and current.Targetable and current.Character and current.Character.Parent then
 					local part = partOf(current)
 					local dist = part and screenDistance(part.Position)
@@ -258,16 +360,20 @@ Aimbot = vain.Categories.Combat:CreateModule({
 
 				targetinfo.Targets[current] = tick() + 1
 
+				-- From the camera's own position, so the result is the ray the game reads.
 				local goal = CFrame.new(gameCamera.CFrame.Position, part.Position)
 				if Smoothing.Value <= 0 then
 					gameCamera.CFrame = goal
 				else
-					-- Framerate independent, so the feel does not change with FPS. A
-					-- plain per-frame lerp moves twice as fast at 120 as at 60.
-					local alpha = 1 - math.exp(-(1 / math.max(Smoothing.Value, 0.001)) * runService.RenderStepped:Wait())
+					-- Framerate independent off the real frame time, so the feel does not
+					-- change with FPS. A plain per-frame lerp moves twice as fast at 120.
+					local alpha = 1 - math.exp(-(1 / math.max(Smoothing.Value, 0.001)) * dt)
 					gameCamera.CFrame = gameCamera.CFrame:Lerp(goal, math.clamp(alpha, 0, 1))
 				end
-			end))
+			end)
+			Aimbot:Clean(function()
+				pcall(function() runService:UnbindFromRenderStep(bind) end)
+			end)
 		else
 			current = nil
 		end
@@ -371,4 +477,345 @@ run(function()
 	vain:Clean(function()
 		CircleObject:Remove()
 	end)
+end)
+
+
+run(function()
+	--[[
+		Killaura.
+	
+		The swing is the game's own: when an enemy is in range this presses Primary through the
+		Controller exactly as holding the mouse would, and the game runs its Detect pass and
+		sends the hits itself. Nothing here fakes a hit packet - it drives the real attack - so
+		it respects the weapon's cooldown and combo and carries the equip token the server checks,
+		which a hand-built packet would get wrong.
+	
+		Detect only looks down a cone in front of you, so on its own it would hit nobody you were
+		not already facing. While this is on it widens that cone through the shared Detect hook,
+		so a swing lands on whoever is around you rather than only what is dead ahead, and the
+		cone is put back the moment there is nothing to hit or the module goes off.
+	]]
+	local Killaura
+	local Targets
+	local Range
+	local Angle
+	local Max
+	local Mouse
+	local tribes = vain.Libraries.tribes
+	
+	-- Held, not clicked: pressing and releasing every frame fights the game's own combo timing,
+	-- while holding lets it swing on its own cooldown the way the mouse would. This tracks
+	-- whether we are currently holding so it is released exactly once.
+	local holding = false
+	
+	local function release(controller)
+		if holding then
+			holding = false
+			tribes.clearSwingDetect()
+			if controller and controller.Dispatch then
+				pcall(controller.Dispatch, 'Primary', false)
+			end
+		end
+	end
+	
+	-- Whether any enemy the module is allowed to hit is within range. Uses the library's own
+	-- list, so the team check in base has already removed teammates.
+	local function enemyInRange()
+		if not entitylib.isAlive then return false end
+		local here = entitylib.character.RootPart
+		if not here then return false end
+		local plrs = entitylib.AllPosition({
+			Range = Range.Value,
+			Part = 'RootPart',
+			Players = Targets.Players.Enabled,
+			NPCs = Targets.NPCs.Enabled,
+			Limit = 1
+		})
+		return #plrs > 0
+	end
+	
+	Killaura = vain.Categories.Combat:CreateModule({
+		Name = 'Killaura',
+		Function = function(callback)
+			if callback then
+				tribes.hookDetect()
+	
+				Killaura:Clean(runService.Heartbeat:Connect(function()
+					local controller = tribes.resolveCombat().Controller
+					if not (controller and controller.Dispatch) then
+						return
+					end
+	
+					-- Hold only while the mouse is down, when that is asked for.
+					if Mouse.Enabled and not inputService:IsMouseButtonPressed(0) then
+						release(controller)
+						return
+					end
+	
+					if not enemyInRange() then
+						release(controller)
+						return
+					end
+	
+					-- Widen the game's Detect so the swing reaches who is around, not only
+					-- ahead, and cap it at the chosen number of targets.
+					tribes.setSwingDetect(Angle.Value, Max.Value)
+	
+					if not holding then
+						holding = true
+						pcall(controller.Dispatch, 'Primary', true)
+					end
+				end))
+	
+				Killaura:Clean(function()
+					release(tribes.resolveCombat().Controller)
+				end)
+			else
+				release(tribes.resolveCombat().Controller)
+			end
+		end,
+		Tooltip = 'Swings at enemies around you automatically'
+	})
+	Targets = Killaura:CreateTargets({
+		Players = true,
+		Tooltip = 'Which entities it swings at'
+	})
+	Range = Killaura:CreateSlider({
+		Name = 'Range',
+		Tooltip = 'How close an enemy must be before it swings\nYour weapon\'s own reach still applies to the hit',
+		Min = 4,
+		Max = 30,
+		Default = 14,
+		Suffix = function(val)
+			return val == 1 and 'stud' or 'studs'
+		end
+	})
+	Angle = Killaura:CreateSlider({
+		Name = 'Angle',
+		Tooltip = 'How wide a cone the swing hits in\n180 hits all around you',
+		Min = 1,
+		Max = 180,
+		Default = 180,
+		Suffix = 'degrees'
+	})
+	Max = Killaura:CreateSlider({
+		Name = 'Max Targets',
+		Tooltip = 'How many enemies one swing may hit',
+		Min = 1,
+		Max = 6,
+		Default = 3
+	})
+	Mouse = Killaura:CreateToggle({
+		Name = 'Require Mouse',
+		Tooltip = 'Only swings while you hold left click'
+	})
+	
+end)
+
+run(function()
+	--[[
+		Reach.
+	
+		A Tribes melee swing calls Detect(range, arc, maxTargets) to decide who it hit, and the
+		list it returns is what the client sends the server - the server is told who was hit, it
+		does not work it out. So adding to that range is the whole of reach here: the swings you
+		already throw simply find targets a few studs further out, through the game's own path,
+		with no extra packet and nothing the server did not already expect from a swing.
+	
+		The hook itself lives in base, shared with Killaura, so the two never fight over Detect.
+	]]
+	local Reach
+	local Range
+	local tribes = vain.Libraries.tribes
+	
+	Reach = vain.Categories.Combat:CreateModule({
+		Name = 'Reach',
+		Function = function(callback)
+			if callback then
+				if not tribes.hookDetect() then
+					notif('Reach', 'Combat system not found yet - try again in a match', 6, 'alert')
+				end
+				tribes.setReach(Range.Value)
+			else
+				tribes.setReach(0)
+			end
+		end,
+		Tooltip = 'Makes your melee hits reach further'
+	})
+	Range = Reach:CreateSlider({
+		Name = 'Extra Range',
+		Tooltip = 'Studs added to your weapon\'s reach',
+		Min = 0,
+		Max = 20,
+		Default = 6,
+		Decimal = 10,
+		Function = function(val)
+			if Reach.Enabled then
+				tribes.setReach(val)
+			end
+		end,
+		Suffix = function(val)
+			return val == 1 and 'stud' or 'studs'
+		end
+	})
+	
+end)
+
+run(function()
+	--[[
+		Combat Logger.
+	
+		Tribes ships no Roblox Tools and no TouchTransmitters - its weapons are a custom combat
+		system that talks to the server over its own remotes - so the universal Killaura, which
+		swings a Tool and fires a Touched interest, lands nothing here. A Tribes Killaura has to
+		fire the real remote instead, and the place file keeps its scripts as stripped bytecode,
+		so the only way to learn that remote is to watch the live client send it.
+	
+		This is that watch. While it is on it hooks the one method every remote call goes
+		through and prints the combat-looking ones - name, how it was called, and a readable dump
+		of the arguments - once each, so a single swing of each weapon reveals exactly what to
+		replay. Turn it on, hit a dummy or an enemy with each weapon, then send the console
+		output and the Killaura can be built against it.
+	]]
+	local CombatLogger
+	local Everything
+	local Clear
+	
+	-- One line per unique remote+method, so a weapon swung fifty times is logged once rather
+	-- than flooding the console. Cleared by the Clear button and on enable.
+	local seen = {}
+	
+	-- Names worth printing. A live game fires movement and replication remotes constantly, and
+	-- drowning the hit call in those is the opposite of useful, so by default only the combat
+	-- ones come through. Everything turns the filter off when a weapon's remote is named
+	-- something unexpected.
+	local COMBAT_WORDS = {
+		'hit', 'combat', 'melee', 'damage', 'attack', 'swing', 'strike',
+		'axe', 'club', 'dagger', 'harpoon', 'bow', 'arrow', 'spear', 'projectile', 'throw'
+	}
+	
+	local function interesting(name)
+		if Everything.Enabled then return true end
+		local lower = name:lower()
+		for _, word in COMBAT_WORDS do
+			if lower:find(word, 1, true) then return true end
+		end
+		return false
+	end
+	
+	-- A short, readable form of one argument. The hit remote's payload is the whole point, so
+	-- this spells out the things a hit carries - who, where, which part - rather than just
+	-- their types.
+	local function describe(value, depth)
+		local kind = typeof(value)
+		if kind == 'Instance' then
+			return value.ClassName..'('..value.Name..')'
+		elseif kind == 'Vector3' then
+			return ('Vector3(%.1f, %.1f, %.1f)'):format(value.X, value.Y, value.Z)
+		elseif kind == 'CFrame' then
+			local p = value.Position
+			return ('CFrame@(%.1f, %.1f, %.1f)'):format(p.X, p.Y, p.Z)
+		elseif kind == 'table' then
+			if depth and depth > 1 then return 'table' end
+			local parts = {}
+			for k, v in value do
+				table.insert(parts, tostring(k)..'='..describe(v, (depth or 0) + 1))
+				if #parts >= 8 then
+					table.insert(parts, '...')
+					break
+				end
+			end
+			return '{'..table.concat(parts, ', ')..'}'
+		elseif kind == 'string' then
+			return '"'..value..'"'
+		end
+		return tostring(value)
+	end
+	
+	local function dumpArgs(args)
+		local parts = {}
+		for i = 1, args.n do
+			parts[i] = describe(args[i])
+		end
+		return table.concat(parts, ', ')
+	end
+	
+	local function log(method, remote, args)
+		local ok, name = pcall(function()
+			return remote.Name
+		end)
+		name = ok and name or '?'
+		if not interesting(name) then return end
+	
+		local key = method..':'..name
+		if seen[key] then return end
+		seen[key] = true
+	
+		local line = ('[Tribes] %s %s(%s)'):format(method, name, dumpArgs(args))
+		print(line)
+		-- Each new remote is announced, so you know the swing registered without watching the
+		-- console - and the full detail is there when you go to copy it.
+		notif('Combat Logger', name..' logged', 4)
+	end
+	
+	CombatLogger = vain.Categories.Utility:CreateModule({
+		Name = 'Combat Logger',
+		Function = function(callback)
+			if not callback then
+				return
+			end
+			table.clear(seen)
+	
+			-- hookmetamethod on __namecall catches every FireServer / InvokeServer in one place,
+			-- which is where a custom combat system sends its hits. The original is kept and
+			-- called so the game plays normally while this watches.
+			local ok = pcall(function()
+				local mt = getrawmetatable(game)
+				local old
+				old = hookmetamethod(game, '__namecall', function(self, ...)
+					local method = getnamecallmethod()
+					if method == 'FireServer' or method == 'InvokeServer' then
+						local args = table.pack(...)
+						-- Logging must not throw into the game's call path, and must not run with
+						-- the game's identity, so it is guarded and the identity is reset first.
+						pcall(function()
+							if vain.ThreadFix then
+								setthreadidentity(8)
+							end
+							log(method, self, args)
+						end)
+					end
+					return old(self, ...)
+				end)
+				-- Undo the hook when the module is switched off, so it does not keep logging or
+				-- leave a dead hook behind.
+				CombatLogger:Clean(function()
+					pcall(function()
+						hookmetamethod(game, '__namecall', old)
+					end)
+				end)
+			end)
+	
+			if not ok then
+				notif('Combat Logger', 'Could not hook remotes on this executor', 8, 'alert')
+				CombatLogger:Toggle()
+			else
+				notif('Combat Logger', 'Watching. Hit an enemy with each weapon, then send the console output.', 10)
+			end
+		end,
+		Tooltip = 'Prints the combat remotes the game fires'
+	})
+	Everything = CombatLogger:CreateToggle({
+		Name = 'Log Everything',
+		Tooltip = 'Logs every remote, not just combat ones'
+	})
+	Clear = CombatLogger:CreateButton({
+		Name = 'Clear Seen',
+		Tooltip = 'Logs each remote once more',
+		Function = function()
+			table.clear(seen)
+			notif('Combat Logger', 'Cleared', 3)
+		end
+	})
+	
 end)
