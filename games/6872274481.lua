@@ -32119,7 +32119,21 @@ run(function()
 	local InstantBreak
 	local LimitItem
 	local AutoTool
+	local Lock
+	local LockTime
 	local customlist, parts, candidates = {}, {}, {}
+	
+	-- Lock on Block holds the one target it first commits to. While it is set and alive, that
+	-- block is the only thing broken, so the nuker digs one way into the bed instead of
+	-- re-ranking the openings every pass and wandering between sides. Cleared when the block
+	-- is gone, when you walk out of range of it, after Lock Time with no progress, or when the
+	-- module stops.
+	local lockedTarget = nil
+	
+	-- When the lock last made progress, so a lock that is stuck - shielded, walled off, out of
+	-- reach - is dropped after Lock Time, while one that is actively coming down is not. A hit
+	-- pushes this forward; reaching the limit releases the lock.
+	local lockedSince = 0
 	
 	-- The route into each thing being dug towards, nearest end first, so a started hole is
 	-- carried on down rather than abandoned for whatever the mode ranks best on the outer
@@ -32452,76 +32466,130 @@ run(function()
 		end)
 	end
 	
-	local function attemptBreak()
-		for _, entry in candidates do
-			local v = entry.Block
-			if not v or not v.Parent then continue end
+	-- One target, broken once. Returns true when a swing went out - a landed hit or a
+	-- deliberate miss - and nil when this block cannot be broken right now, so the caller
+	-- knows whether to move on. position is the block's world position, passed in because a
+	-- locked target is not in the candidate list that normally carries it.
+	local function tryBreak(v, position)
+		if not v or not v.Parent then return end
 	
-			local ok, isBreakable = pcall(function()
-				return bedwars.BlockController:isBlockBreakable({blockPosition = entry.Position / 3}, lplr)
-			end)
-			if not ok or not isBreakable then continue end
+		local ok, isBreakable = pcall(function()
+			return bedwars.BlockController:isBlockBreakable({blockPosition = position / 3}, lplr)
+		end)
+		if not ok or not isBreakable then return end
 	
-			if not SelfBreak.Enabled and v:GetAttribute('PlacedByUserId') == lplr.UserId then continue end
-			if (v:GetAttribute('BedShieldEndTime') or 0) > workspace:GetServerTimeNow() then continue end
-			if LimitItem.Enabled then
-				local held = store.hand.tool and bedwars.ItemMeta[store.hand.tool.Name]
-				if not (held and held.breakBlock) then continue end
+		if not SelfBreak.Enabled and v:GetAttribute('PlacedByUserId') == lplr.UserId then return end
+		if (v:GetAttribute('BedShieldEndTime') or 0) > workspace:GetServerTimeNow() then return end
+		if LimitItem.Enabled then
+			local held = store.hand.tool and bedwars.ItemMeta[store.hand.tool.Name]
+			if not (held and held.breakBlock) then return end
+		end
+	
+		-- pcall succeeding only means nothing threw. breakBlock returns quietly when the
+		-- target is out of reach, has no route left, or is one of your own - all of which
+		-- used to read as a successful hit, so the pass stopped here and the same
+		-- unreachable block was picked again every time. Only a returned block counts.
+		local broke = false
+		-- A miss is a swing that went out and did not land, so it costs the same time as a
+		-- hit would rather than being retried on the next block straight away.
+		if HitChance.Enabled and math.random(100) > Chance.Value then
+			task.wait(BreakSpeed.Value)
+			return true
+		end
+	
+		local ok2 = pcall(function()
+			-- Self Break has to reach the dig route, not just the target: breakBlock
+			-- tunnels towards a block rather than hitting it directly, so with the check
+			-- on the target alone every block on the way there got broken regardless.
+			local route = tunnel[v]
+			if not route then
+				route = {}
+				tunnel[v] = route
 			end
 	
-			-- pcall succeeding only means nothing threw. breakBlock returns quietly when the
-			-- target is out of reach, has no route left, or is one of your own - all of which
-			-- used to read as a successful hit, so the pass stopped here and the same
-			-- unreachable block was picked again every time. Only a returned block counts.
-			local broke = false
-			-- A miss is a swing that went out and did not land, so it costs the same time as a
-			-- hit would rather than being retried on the next block straight away.
-			if HitChance.Enabled and math.random(100) > Chance.Value then
-				task.wait(BreakSpeed.Value)
-				return true
-			end
+			breakOptions.Range = Range.Value
+			breakOptions.Angle = Angle.Value
+			breakOptions.Score = entryScorers[TargetMode.Value]
+			-- Read on the way in and refilled on the way out, so the route carries from
+			-- one hit to the next. A break that never went out leaves it untouched.
+			-- Cursor keeps no route at all: you are aiming it, so the block you are on
+			-- wins over anything it was part way through. Lock forces the route to be kept
+			-- whatever the mode, since the whole point is that the way in does not change.
+			breakOptions.Prefer = (Lock.Enabled or not NO_ROUTE[TargetMode.Value]) and route or nil
+			breakOptions.Route = route
 	
-			local ok2 = pcall(function()
-				-- Self Break has to reach the dig route, not just the target: breakBlock
-				-- tunnels towards a block rather than hitting it directly, so with the check
-				-- on the target alone every block on the way there got broken regardless.
-				local route = tunnel[v]
-				if not route then
-					route = {}
-					tunnel[v] = route
-				end
+			local target, _, endpos = bedwars.breakBlock(v, Effect.Enabled, Animation.Enabled, CustomHealth.Enabled and customHealthbar or nil, not SelfBreak.Enabled, AutoTool.Enabled, breakOptions)
+			if not target then return end
+			broke = true
 	
-				breakOptions.Range = Range.Value
-				breakOptions.Angle = Angle.Value
-				breakOptions.Score = entryScorers[TargetMode.Value]
-				-- Read on the way in and refilled on the way out, so the route carries from
-				-- one hit to the next. A break that never went out leaves it untouched.
-				-- Cursor keeps no route at all: you are aiming it, so the block you are on
-				-- wins over anything it was part way through.
-				breakOptions.Prefer = not NO_ROUTE[TargetMode.Value] and route or nil
-				breakOptions.Route = route
-	
-				local target, _, endpos = bedwars.breakBlock(v, Effect.Enabled, Animation.Enabled, CustomHealth.Enabled and customHealthbar or nil, not SelfBreak.Enabled, AutoTool.Enabled, breakOptions)
-				if not target then return end
-				broke = true
-	
-				-- Drawn from the route being followed rather than from a freshly worked out
-				-- one. Those are the same length but tie constantly, so the recomputed one
-				-- drifts between equally short alternatives on every hit - it was drawing a
-				-- detour while the blocks actually coming down ran perfectly straight.
-				if Effect.Enabled then
-					local from = table.find(route, target) or 1
-					for i, part in parts do
-						local pos = route[from + i - 1]
-						part.Position = pos or Vector3.zero
-						if pos then
-							part.BoxHandleAdornment.Color3 = pos == endpos and Color3.new(1, 0.2, 0.2) or pos == target and Color3.new(0.2, 0.2, 1) or Color3.new(0.2, 1, 0.2)
-						end
+			-- Drawn from the route being followed rather than from a freshly worked out
+			-- one. Those are the same length but tie constantly, so the recomputed one
+			-- drifts between equally short alternatives on every hit - it was drawing a
+			-- detour while the blocks actually coming down ran perfectly straight.
+			if Effect.Enabled then
+				local from = table.find(route, target) or 1
+				for i, part in parts do
+					local pos = route[from + i - 1]
+					part.Position = pos or Vector3.zero
+					if pos then
+						part.BoxHandleAdornment.Color3 = pos == endpos and Color3.new(1, 0.2, 0.2) or pos == target and Color3.new(0.2, 0.2, 1) or Color3.new(0.2, 1, 0.2)
 					end
 				end
+			end
+		end)
+		if ok2 and broke then
+			task.wait(InstantBreak.Enabled and (store.damageBlockFail > tick() and 4.5 or 0) or BreakSpeed.Value)
+			return true
+		end
+	end
+	
+	local function attemptBreak()
+		-- Locked: this block and nothing else, until it is gone. A pass where it cannot be
+		-- reached breaks nothing rather than falling back to another target - staying put is
+		-- what the setting is for - unless one of the releases below lets it go.
+		if Lock.Enabled and lockedTarget then
+			local ok, pos = pcall(function()
+				return lockedTarget.Position
 			end)
-			if ok2 and broke then
-				task.wait(InstantBreak.Enabled and (store.damageBlockFail > tick() and 4.5 or 0) or BreakSpeed.Value)
+	
+			local release = not lockedTarget.Parent
+			if not release and ok and pos then
+				-- Walked away: once the block is past break range you cannot touch it anyway,
+				-- so the lock lets go rather than pinning you to something out of reach. An
+				-- unreadable character position is treated as not far, so a momentary nil does
+				-- not drop a lock that is otherwise fine.
+				local okFar, far = pcall(function()
+					return (pos - entitylib.character.RootPart.Position).Magnitude > Range.Value
+				end)
+				-- Stuck: no hit has landed for Lock Time seconds, so a shielded or walled off
+				-- target is given up on. Zero means no timeout, only the other two releases.
+				local stale = LockTime.Value > 0 and (os.clock() - lockedSince) > LockTime.Value
+				release = (okFar and far) or stale
+			end
+	
+			if release then
+				lockedTarget = nil
+				table.clear(tunnel)
+			elseif ok and pos then
+				if tryBreak(lockedTarget, pos) then
+					-- A landed hit is progress, so the stuck timer starts again from here.
+					lockedSince = os.clock()
+					return true
+				end
+				return false
+			else
+				return false
+			end
+		end
+	
+		for _, entry in candidates do
+			if tryBreak(entry.Block, entry.Position) then
+				-- The first block committed to this pass becomes the lock, so every pass after
+				-- stays on it until it falls, moves out of range or goes stale.
+				if Lock.Enabled then
+					lockedTarget = entry.Block
+					lockedSince = os.clock()
+				end
 				return true
 			end
 		end
@@ -32611,7 +32679,7 @@ run(function()
 					end
 				until not Nuker.Enabled
 			else
-				cursorTarget, manualHit = nil, nil
+				cursorTarget, manualHit, lockedTarget = nil, nil, nil
 				clearHealthbar()
 				table.clear(candidates)
 				table.clear(hitsCache)
@@ -32644,6 +32712,28 @@ run(function()
 			Highest = 'Highest block first',
 			Random = 'No fixed order'
 		}
+	})
+	Lock = Nuker:CreateToggle({
+		Name = 'Lock on Block',
+		Tooltip = 'Keeps the first target until it is gone',
+		Function = function(callback)
+			lockedTarget = nil
+			if LockTime and LockTime.Object then
+				LockTime.Object.Visible = callback
+			end
+		end
+	})
+	LockTime = Nuker:CreateSlider({
+		Name = 'Lock Time',
+		Tooltip = 'Drop a stuck lock after this long\n0 never times out',
+		Min = 0,
+		Max = 30,
+		Default = 5,
+		Suffix = function(val)
+			return val == 0 and 'off' or (val == 1 and 'second' or 'seconds')
+		end,
+		Visible = false,
+		Darker = true
 	})
 	ViewMode = Nuker:CreateDropdown({
 		Name = 'View Mode',
