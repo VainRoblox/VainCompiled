@@ -7789,6 +7789,11 @@ run(function()
 		-- profile it had also Saved the current state over the imported file first. Between the
 		-- two, nothing the code carried ever reached the screen.
 		vain:Load(true, name)
+		-- Saved again now that the imported profile is the live one, so the GUI file records it
+		-- as the profile in use. Without this the load took for the session but the GUI file
+		-- still named the old profile, so the next reinject or server hop quietly loaded that
+		-- one instead and the import looked like it had worn off.
+		vain:Save()
 		return true
 	end
 	
