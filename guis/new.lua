@@ -3010,6 +3010,12 @@ function mainapi:CreateGUI()
 		label.Parent = bind
 
 		function optionapi:SetBind(tab)
+			-- Same as the module bind below: it destroys the mobile button and resizes the
+			-- label, so it needs the raised identity to touch those Instances when a load
+			-- reaches it from a bare executor thread.
+			if mainapi.ThreadFix then
+				setthreadidentity(8)
+			end
 			mainapi.Keybind = #tab <= 0 and mainapi.Keybind or table.clone(tab)
 			self.Bind = mainapi.Keybind
 			if mainapi.VainButton then
@@ -4211,6 +4217,13 @@ function mainapi:CreateCategory(categorysettings)
 		addMaid(moduleapi)
 
 		function moduleapi:SetBind(tab, mouse)
+			-- Needs the raised identity like every other function here that touches
+			-- Instances: it creates the mobile button and resizes the bind label, and when
+			-- it is reached from a thread that does not have it - a config load off an
+			-- import, say - a bare executor thread cannot access Instance and it throws.
+			if mainapi.ThreadFix then
+				setthreadidentity(8)
+			end
 			if tab.Mobile then
 				createMobileButton(moduleapi, Vector2.new(tab.X, tab.Y))
 				return
