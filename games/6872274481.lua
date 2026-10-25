@@ -1969,6 +1969,10 @@ run(function()
 	-- nil global in the next.
 	bedwars.sameTeam = sameTeam
 	bedwars.attackable = attackable
+	-- The shield a character is carrying, summed from its Shield* attributes. entity.Health
+	-- folds this in (base + shield), so a module wanting to show the two apart - the nametag
+	-- splitting health from shield - reads it back out through here.
+	bedwars.getShieldAttribute = getShieldAttribute
 
 	-- The game dropped SoundManager for AudioManager:playAudio(sound, config), so
 	-- bedwars.SoundManager resolved to nil and every module that plays a sound threw on
@@ -5504,6 +5508,10 @@ run(function()
 	local Limit
 	local LegitAura
 	local HitDelay
+	local IgnoreMilo
+	-- player -> true while they are disguised as a block by the Milo kit. Filled from the
+	-- game's own mimic broadcasts (see the tracker below), so it covers everyone, not just us.
+	local disguisedMilos = {}
 	local Particles, Boxes = {}, {}
 	-- entity -> tick() at which it may be attacked again
 	local AttackTimes = {}
@@ -5612,6 +5620,25 @@ run(function()
 
 		return sword, meta
 	end
+
+	-- Who is hiding as a block right now. The Milo kit mimics a block with MIMIC_BLOCK; the
+	-- server answers ValidatedMimicBlock (block type set = now a block, nil = dropped it) and
+	-- announces MimicBlockRevealed when a disguise breaks. Both are broadcast with the player
+	-- they are about - the same events the Milo module reads for itself - so this tracks every
+	-- player's state regardless of whether Killaura was on when they disguised. Connected once
+	-- at load and left running; the table is tiny and self-cleaning on leave.
+	local function trackMimic(name, disguisedFromData)
+		local ok, remote = pcall(function() return bedwars.Client:Get(name) end)
+		if ok and remote then
+			remote:Connect(function(data)
+				if type(data) ~= 'table' or not data.player then return end
+				disguisedMilos[data.player] = disguisedFromData(data) or nil
+			end)
+		end
+	end
+	trackMimic('ValidatedMimicBlock', function(data) return data.blockType ~= nil end)
+	trackMimic('MimicBlockRevealed', function() return false end)
+	playersService.PlayerRemoving:Connect(function(plr) disguisedMilos[plr] = nil end)
 
 	Killaura = vain.Categories.Blatant:CreateModule({
 		Name = 'Killaura',
@@ -5751,6 +5778,11 @@ run(function()
 									-- Entities can be torn down between selection and use (NPCs
 									-- despawning), so re-check rather than indexing blind.
 									if not v.Character or not v.Character.Parent then continue end
+
+									-- A Milo hiding as a block keeps a real, hittable hitbox, so
+									-- Killaura would otherwise lock onto a "block" and give them
+									-- away. Skip anyone the mimic tracker has down as disguised.
+									if IgnoreMilo.Enabled and v.Player and disguisedMilos[v.Player] then continue end
 
 									-- entitylib caches RootPart once when the entity is created and
 									-- never refreshes it - the code that would is commented out in
@@ -6061,6 +6093,7 @@ run(function()
 	Mouse = Killaura:CreateToggle({Name = 'Require mouse down', Tooltip = 'Only acts while you hold left click'})
 	Swing = Killaura:CreateToggle({Name = 'No Swing', Tooltip = 'Attacks without playing the swing animation'})
 	GUI = Killaura:CreateToggle({Name = 'GUI check', Tooltip = 'Stops acting while a game menu is open'})
+	IgnoreMilo = Killaura:CreateToggle({Name = 'Ignore disguised Milos', Tooltip = 'Skips Milo players while they are a block'})
 	Killaura:CreateToggle({
 		Name = 'Show target',
 		Tooltip = 'Draws a box around the target you are attacking',
@@ -10448,7 +10481,14 @@ run(function()
 		rather than one guessed name. If none match but a profile did come back, it prints the
 		profile's keys once, so the real field can be named and added.
 	]]
-	local levelCache, levelWaiting, levelProbed = {}, {}, false
+	local levelCache, levelWaiting, levelProbed, attrsProbed = {}, {}, false, false
+	-- Profile requests go through one worker that spaces them out, because a draft opens ~10
+	-- cards at once and firing that many RequestProfileData calls in the same frame gets the
+	-- burst throttled server-side. Before, a throttled call was pcall'd to nil and cached as
+	-- false forever, so every card that lost the race stayed blank for the whole match - which
+	-- read as "only players in a party show a level". Now a miss is retried a few times and only
+	-- the genuine no-level case is remembered.
+	local levelQueue, levelWorking = {}, false
 	
 	local function levelOf(profile)
 		if type(profile) ~= 'table' then return nil end
@@ -10462,37 +10502,167 @@ run(function()
 		return nil
 	end
 	
+	--[[
+		The level the way the tab leaderboard already has it, with no request to the server.
+	
+		The board shows every player's level the moment you open it, so the number is already on
+		the client - the point the profile request was missing. It reads two ways, in order of
+		cost: a plain attribute on the player if the game keeps one there, then the leaderboard UI
+		itself. A row reads "[level] [clan] name"; the level is the first all-digit bracket (a clan
+		tag is letters), whether the row is one rich-text label or a few labels side by side, so
+		this finds the row by the player's name and takes that first bracketed number from it.
+	]]
+	local function bracketedLevel(text)
+		for digits in text:gmatch('%[(%d+)%]') do
+			return tonumber(digits)
+		end
+	end
+	
+	local tablistRoot
+	
+	local function rowLevel(label)
+		-- The number can sit on the name label itself or on a sibling in the same row, so check
+		-- the label, then climb a step or two and scan the little subtree the row lives in.
+		local own = bracketedLevel(label.Text)
+		if own then return own end
+		local scope = label.Parent
+		for _ = 1, 2 do
+			if not scope then break end
+			for _, d in scope:GetDescendants() do
+				if d:IsA('TextLabel') then
+					local got = bracketedLevel(d.Text)
+					if got then return got end
+				end
+			end
+			scope = scope.Parent
+		end
+	end
+	
+	local function levelFromLeaderboard(player)
+		local name, display = player.Name, player.DisplayName
+		local roots = tablistRoot and tablistRoot.Parent and {tablistRoot} or lplr.PlayerGui:GetChildren()
+		for _, root in roots do
+			for _, d in root:GetDescendants() do
+				if d:IsA('TextLabel') then
+					local t = d.Text
+					if t:find(name, 1, true) or (display ~= '' and display ~= name and t:find(display, 1, true)) then
+						local lvl = rowLevel(d)
+						if lvl then
+							tablistRoot = root
+							return lvl
+						end
+					end
+				end
+			end
+		end
+	end
+	
+	-- The level without waiting on the server: an attribute, then a leaderstats-style value on
+	-- the player, then the leaderboard UI. All three read what is already on the client, so they
+	-- cover every player on the board - unlike the profile request, which the server only answers
+	-- in full for your own party.
+	local function instantLevel(player)
+		for _, key in {'Level', 'PlayerLevel', 'AccountLevel', 'BedwarsLevel', 'SeasonLevel'} do
+			local v = player:GetAttribute(key)
+			if type(v) == 'number' and v > 0 then return math.floor(v) end
+		end
+		local stats = player:FindFirstChild('leaderstats')
+		for _, name in {'Level', 'level', 'Levels'} do
+			local value = stats and stats:FindFirstChild(name) or player:FindFirstChild(name)
+			if value and value:IsA('ValueBase') and type(value.Value) == 'number' and value.Value > 0 then
+				return math.floor(value.Value)
+			end
+		end
+		local ok, lvl = pcall(levelFromLeaderboard, player)
+		if ok and lvl then return lvl end
+	end
+	
+	local function deliverLevel(userId, level)
+		for _, waiting in levelWaiting[userId] or {} do
+			task.spawn(pcall, waiting, level)
+		end
+		levelWaiting[userId] = nil
+	end
+	
+	-- One request at a time, spaced out, each retried a few times before it counts as a miss.
+	local function runLevelQueue()
+		if levelWorking then return end
+		levelWorking = true
+		task.spawn(function()
+			while #levelQueue > 0 do
+				local userId = table.remove(levelQueue, 1)
+				local player = playersService:GetPlayerByUserId(userId)
+				local level
+				if player then
+					-- Re-check the client-side sources on every pass: the tab leaderboard often
+					-- finishes populating a moment after a draft opens, so a card queued while it
+					-- was still empty fills in here once the board is up, without a request.
+					for attempt = 1, 5 do
+						level = instantLevel(player)
+						if level then break end
+						-- Only the profile request as a last resort, and only for our own party
+						-- (the server will not hand over anyone else's), so it is never the thing
+						-- the rest of the board waits on.
+						local ok, profile = pcall(function()
+							return bedwars.Client:Get('RequestProfileData'):CallServer(player)
+						end)
+						level = ok and levelOf(profile) or nil
+						if level then break end
+						if ok and type(profile) == 'table' and not levelProbed then
+							levelProbed = true
+							local keys = {}
+							for key in profile do keys[#keys + 1] = tostring(key) end
+							print('[Vain] KitRender: player level not found; profile keys: ' .. table.concat(keys, ', '))
+						end
+						task.wait(0.4 * attempt)
+					end
+				end
+				if player and not level and not attrsProbed then
+					-- Nothing on the player and nothing on the board for them: dump what the player
+					-- does carry, once, so the real level source can be named if this ever misses.
+					attrsProbed = true
+					local attrs, kids = {}, {}
+					for name in player:GetAttributes() do attrs[#attrs + 1] = name end
+					for _, child in player:GetChildren() do kids[#kids + 1] = child.Name end
+					print('[Vain] KitRender: no level for ' .. player.Name
+						.. '; attributes: ' .. table.concat(attrs, ', ')
+						.. '; children: ' .. table.concat(kids, ', '))
+				end
+				levelCache[userId] = level or false
+				deliverLevel(userId, level)
+				-- Gap between players so the next card's request does not land in the same frame.
+				task.wait(0.12)
+			end
+			levelWorking = false
+		end)
+	end
+	
 	local function fetchLevel(player, callback)
 		local userId = player.UserId
+	
+		-- The leaderboard almost always has it already, so try that first every time - it is
+		-- cheap once the board is found, needs no request, and covers everyone on it. Checked
+		-- ahead of a cached miss so a card drawn before the board was ready still fills in later.
+		local quick = instantLevel(player)
+		if quick then
+			levelCache[userId] = quick
+			callback(quick)
+			return
+		end
+	
 		local cached = levelCache[userId]
 		if cached ~= nil and cached ~= 'pending' then
 			callback(cached ~= false and cached or nil)
 			return
 		end
+		-- Only fall back to the profile request when the board has nothing for them (not on it,
+		-- or opened too early), and spread those out so the burst is not throttled.
 		levelWaiting[userId] = levelWaiting[userId] or {}
 		table.insert(levelWaiting[userId], callback)
 		if cached == 'pending' then return end
 		levelCache[userId] = 'pending'
-	
-		task.spawn(function()
-			local ok, profile = pcall(function()
-				return bedwars.Client:Get('RequestProfileData'):CallServer(player)
-			end)
-			local level = ok and levelOf(profile) or nil
-	
-			if ok and not level and type(profile) == 'table' and not levelProbed then
-				levelProbed = true
-				local keys = {}
-				for key in profile do keys[#keys + 1] = tostring(key) end
-				print('[Vain] KitRender: player level not found; profile keys: ' .. table.concat(keys, ', '))
-			end
-	
-			levelCache[userId] = level or false
-			for _, waiting in levelWaiting[userId] or {} do
-				task.spawn(pcall, waiting, level)
-			end
-			levelWaiting[userId] = nil
-		end)
+		table.insert(levelQueue, userId)
+		runLevelQueue()
 	end
 	
 	-- A small level badge in the top-left of a player's card, so their Bedwars level reads at a
@@ -10514,19 +10684,29 @@ run(function()
 			local existing = card:FindFirstChild('KitLevel')
 			if existing then existing:Destroy() end
 	
+			-- Sits just right of the party badge - a 0.16-height square at offset (6, 6) - rather
+			-- than on top of it, and kept compact so it is a small pill beside the party number
+			-- rather than a slab across the corner.
+			local badge = 0.16 * math.max(card.AbsoluteSize.Y, 32)
 			local label = Instance.new('TextLabel')
 			label.Name = 'KitLevel'
-			label.Position = UDim2.fromScale(0.03, 0.04)
-			label.Size = UDim2.fromScale(0.26, 0.15)
+			label.Position = UDim2.fromOffset(10 + badge, 6)
+			label.Size = UDim2.fromOffset(badge * 2.1, badge)
 			label.BackgroundColor3 = Color3.new(0, 0, 0)
 			label.BackgroundTransparency = 0.4
-			label.Text = ' ' .. level .. ' '
-			label.TextColor3 = Color3.fromRGB(255, 215, 90)
+			label.Text = tostring(level)
+			label.TextColor3 = Color3.new(1, 1, 1)
 			label.TextScaled = true
 			label.TextXAlignment = Enum.TextXAlignment.Center
 			label.Font = Enum.Font.GothamBold
-			label.ZIndex = 11
+			label.ZIndex = 21
 			label.Parent = card
+			local pad = Instance.new('UIPadding')
+			pad.PaddingLeft = UDim.new(0, 4)
+			pad.PaddingRight = UDim.new(0, 4)
+			pad.PaddingTop = UDim.new(0, 2)
+			pad.PaddingBottom = UDim.new(0, 2)
+			pad.Parent = label
 			Instance.new('UICorner', label).CornerRadius = UDim.new(0.25, 0)
 			KitDisplay:Clean(label)
 		end)
@@ -11033,6 +11213,41 @@ run(function()
 		return out
 	end
 	
+	--[[
+		Sheila's seahorse count. It is a running stack total, not a tier, and we want the stack
+		amount rather than the kit's level - and since both the level and the stacks ride on the
+		player as attributes and the exact names are not written down anywhere here, this picks the
+		one that is clearly the stack: an attribute that names a seahorse (or Sheila) and a stack /
+		count / charge. If a Sheila attribute is around but none matched, it prints the player's
+		attribute names once so the real one can be named outright.
+	]]
+	local seahorseProbed = false
+	local function seahorseStacks(ent)
+		if not ent.Player then return nil end
+		local found, hint = nil, false
+		for _, holder in {ent.Player, ent.Character} do
+			if holder then
+				for name, value in holder:GetAttributes() do
+					local lower = name:lower()
+					if lower:find('seahorse') or lower:find('sheila') then
+						hint = true
+						if not found and type(value) == 'number' and value > 0
+							and (lower:find('stack') or lower:find('count') or lower:find('charge')) then
+							found = math.floor(value)
+						end
+					end
+				end
+			end
+		end
+		if not found and hint and not seahorseProbed then
+			seahorseProbed = true
+			local keys = {}
+			for name in ent.Player:GetAttributes() do keys[#keys + 1] = name end
+			print('[Vain] NameTags: Sheila seahorse stacks not matched; player attributes: ' .. table.concat(keys, ', '))
+		end
+		return found
+	end
+	
 	-- rich lets the Normal renderer, whose label reads font tags, colour the Roman stats purple;
 	-- the Drawing renderer passes it false and gets the plain numeral, since its text is one
 	-- colour and cannot tint a single part.
@@ -11052,6 +11267,12 @@ run(function()
 					parts[#parts + 1] = stat[2] .. ' ' .. math.floor(value)
 				end
 			end
+		end
+		-- Sheila's seahorse stacks, shown as a bare number. In the Normal renderer the kit-stat
+		-- label is gold by default, so an untagged number reads yellow/golden on its own.
+		local stacks = seahorseStacks(ent)
+		if stacks then
+			parts[#parts + 1] = tostring(stacks)
 		end
 		return table.concat(parts, ' · ')
 	end
@@ -11496,6 +11717,29 @@ run(function()
 		return math.floor(14 * Scale.Value) + 3
 	end
 	
+	local function hexOf(colour)
+		return string.format('%02X%02X%02X',
+			math.floor(colour.R * 255 + 0.5), math.floor(colour.G * 255 + 0.5), math.floor(colour.B * 255 + 0.5))
+	end
+	
+	-- Bedwars folds a player's shield into their health - entity.Health is base + shield - so the
+	-- raw number reads too high. This hands back the two apart: the real health, and the shield on
+	-- top of it, so the tag can show "<health>(+<shield>)".
+	local function healthParts(ent)
+		local shield = 0
+		if ent.Character and bedwars.getShieldAttribute then
+			local ok, s = pcall(bedwars.getShieldAttribute, ent.Character)
+			if ok and type(s) == 'number' then shield = math.max(math.round(s), 0) end
+		end
+		local total = math.max(math.round(ent.Health or 0), 0)
+		return math.max(total - shield, 0), shield
+	end
+	
+	-- The colour health reads in at a given fraction of its max, the way it always has.
+	local function healthColour(ratio)
+		return Color3.fromHSV(math.clamp(ratio, 0, 1) / 2.5, 0.89, 0.75)
+	end
+	
 	local Added = {
 		Normal = function(ent)
 			if not Targets.Players.Enabled and ent.Player then return end
@@ -11555,7 +11799,11 @@ run(function()
 			rankicon.LayoutOrder = 5
 			rankicon.Visible = false
 			rankicon.Parent = row
-			newPiece(row, 'KitStat', 6)
+			-- The kit stat leads the row, on the very left inside the frame, with a black outline
+			-- so the numeral reads cleanly against whatever is behind the tag.
+			local kitStat = newPiece(row, 'KitStat', 0)
+			kitStat.TextStrokeColor3 = Color3.new()
+			kitStat.TextStrokeTransparency = 0
 	
 			--[[
 				The equipment as one centred row, laid out by a UIListLayout. Each icon used to
@@ -11629,7 +11877,10 @@ run(function()
 			end
 	
 			if Health.Enabled then
-				Strings[ent] = Strings[ent]..' '..math.round(ent.Health)
+				-- Split the shield back out of the health here too; this mode is one flat colour,
+				-- so the shield only gets the "(+N)" shape, not its own white.
+				local hp, shield = healthParts(ent)
+				Strings[ent] = Strings[ent]..' '..hp..(shield > 0 and '(+'..shield..')' or '')
 			end
 	
 			Strings[ent] = appendStatus(ent, Strings[ent], false)
@@ -11702,8 +11953,18 @@ run(function()
 	
 			row.HealthLabel.Visible = Health.Enabled
 			if Health.Enabled then
-				row.HealthLabel.Text = tostring(math.round(ent.Health))
-				row.HealthLabel.TextColor3 = Color3.fromHSV(math.clamp(ent.Health / math.max(ent.MaxHealth, 1), 0, 1) / 2.5, 0.89, 0.75)
+				local hp, shield = healthParts(ent)
+				local col = healthColour(hp / math.max(ent.MaxHealth, 1))
+				if shield > 0 then
+					-- Health in its usual colour, the shield after it as a white (+N) so it reads
+					-- as extra on top rather than part of the health.
+					row.HealthLabel.Text = string.format('<font color="#%s">%d</font><font color="#FFFFFF">(+%d)</font>',
+						hexOf(col), hp, shield)
+					row.HealthLabel.TextColor3 = Color3.new(1, 1, 1)
+				else
+					row.HealthLabel.Text = tostring(hp)
+					row.HealthLabel.TextColor3 = col
+				end
 			end
 	
 			local kitText = kitStatsOf(ent, true)
@@ -11756,7 +12017,8 @@ run(function()
 				end
 	
 				if Health.Enabled then
-					Strings[ent] = Strings[ent]..' '..math.round(ent.Health)
+					local hp, shield = healthParts(ent)
+					Strings[ent] = Strings[ent]..' '..hp..(shield > 0 and '(+'..shield..')' or '')
 				end
 	
 				Strings[ent] = appendStatus(ent, Strings[ent], false)
@@ -13348,6 +13610,64 @@ run(function()
 	end
 	
 	--[[
+		The TNT launch, learned from a real shot rather than trusted to the measured constants
+		above, so it re-fits itself if the game changes the numbers (which is how they go wrong -
+		the form is right, the values drift on updates).
+	
+		When a TNT projectile appears right at a cannon's barrel, its true starting velocity is
+		split, against that cannon's aim, into the speed along the aim and the vertical lift that
+		the prediction rebuilds it from - exactly the shape cannonPaths uses - so the learned pair
+		reproduces that shot and, since the launch is the same for every cannon, all the others
+		too. The first few are printed so the numbers can also just be read off.
+	]]
+	local tntSpeed, tntLift, tntGravity
+	local tntLogged = 0
+	
+	local function tntPart(inst)
+		if inst:IsA('BasePart') then return inst end
+		if inst:IsA('Model') then return inst.PrimaryPart or inst:FindFirstChildWhichIsA('BasePart') end
+	end
+	
+	local function learnTnt(inst)
+		local name = inst.Name:lower()
+		if name ~= 'tnt' and name ~= 'siege_tnt' then return end
+		-- A frame late, so the server has set the launch velocity on the part.
+		task.defer(function()
+			local root = tntPart(inst)
+			if not (root and root.Parent) then return end
+			local v = root.AssemblyLinearVelocity
+			if v.Magnitude < 2 then return end
+			-- The cannon it came out of: the one whose barrel it spawned on. Kept tight so a TNT
+			-- thrown by hand near a cannon cannot be mistaken for a cannon shot.
+			local cannon, gap
+			for block in cannonBlocks do
+				if block.Parent then
+					local d = (root.Position - barrelPoint(block)).Magnitude
+					if not gap or d < gap then cannon, gap = block, d end
+				end
+			end
+			if not cannon or gap > 8 then return end
+			local look = cannon:GetAttribute('LookVector')
+			if typeof(look) ~= 'Vector3' or look.Magnitude == 0 then return end
+			-- v = look.Unit * speed + (0, lift, 0). Solve speed off the horizontal part (which the
+			-- lift does not touch), then lift off what is left vertically, so it holds whether the
+			-- aim is level or tilted.
+			local lu = look.Unit
+			local horizontalFraction = (lu * Vector3.new(1, 0, 1)).Magnitude
+			local horizontalSpeed = (v * Vector3.new(1, 0, 1)).Magnitude
+			local speed = horizontalFraction > 0.001 and horizontalSpeed / horizontalFraction or v.Magnitude
+			tntSpeed = speed
+			tntLift = v.Y - lu.Y * speed
+			tntGravity = projectileGravity(root)
+			if tntLogged < 5 then
+				tntLogged += 1
+				print(string.format('[Vain] Trajectories TNT learned: speed %.2f, lift %.2f, gravity %.2f (constants were %.2f / %.2f / %.2f) | spawned %.1f studs from barrel',
+					speed, tntLift, tntGravity, TNT_SPEED, TNT_LIFT, workspace.Gravity, gap))
+			end
+		end)
+	end
+	
+	--[[
 		Once you are actually flying out of a cannon, the arc follows you instead: worked out
 		from where you are and how fast you are going each frame, the way a pearl's path is,
 		until you are back on the ground. The cannon you left stops drawing its own arc meanwhile,
@@ -13429,8 +13749,9 @@ run(function()
 				local start, velocity, gravity
 				if tnt then
 					start = barrelPoint(cannon)
-					velocity = look.Unit * TNT_SPEED + Vector3.new(0, TNT_LIFT, 0)
-					gravity = workspace.Gravity
+					-- Learned from a real shot once one has been seen, the measured constants until then.
+					velocity = look.Unit * (tntSpeed or TNT_SPEED) + Vector3.new(0, tntLift or TNT_LIFT, 0)
+					gravity = tntGravity or workspace.Gravity
 				else
 					local up = Vector3.new(0, jumpSpeed(), 0)
 					if cannon == mine then
@@ -13510,6 +13831,8 @@ run(function()
 			if callback then
 				for _, child in workspace:GetChildren() do track(child) end
 				Trajectories:Clean(workspace.ChildAdded:Connect(track))
+				-- Watch for fired TNT so the cannon prediction can learn the real launch off it.
+				Trajectories:Clean(workspace.ChildAdded:Connect(learnTnt))
 				for _, block in collectionService:GetTagged('block') do watchBlock(block) end
 				Trajectories:Clean(collectionService:GetInstanceAddedSignal('block'):Connect(watchBlock))
 				Trajectories:Clean(runService.RenderStepped:Connect(function()

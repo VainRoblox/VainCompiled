@@ -8092,6 +8092,11 @@ run(function()
 	local detachedInstances = {} -- [SurfaceAppearance/Atmosphere] = original Parent
 	local clearedTextures = {} -- [MeshPart] = original TextureID
 	local loweredMeshes = {} -- [MeshPart] = original RenderFidelity
+	-- nil until probed, then whether this client build actually lets RenderFidelity change at
+	-- run time. Some builds refuse and log "Cannot change SolidModel RenderFidelity during
+	-- Run-Time" once per mesh, which floods the console; when the probe shows it does not take,
+	-- we stop trying so that warning is printed at most once.
+	local fidelitySupported
 	local unshadowedParts = {} -- [BasePart] = true (had CastShadow on)
 	local flattenedParts = {} -- [BasePart] = original Material
 	local hiddenAccessories = {} -- [BasePart] = original Transparency
@@ -8215,9 +8220,19 @@ run(function()
 			v.Transparency = 1
 		end
 	
-		if LowMeshDetail.Enabled and v:IsA('MeshPart') and loweredMeshes[v] == nil then
-			loweredMeshes[v] = v.RenderFidelity
+		if LowMeshDetail.Enabled and fidelitySupported ~= false and v:IsA('MeshPart') and loweredMeshes[v] == nil then
+			local original = v.RenderFidelity
 			v.RenderFidelity = Enum.RenderFidelity.Performance
+			if fidelitySupported == nil then
+				-- First mesh: if the value did not take, the engine rejected it (and warned), so
+				-- do not touch RenderFidelity on any further mesh.
+				fidelitySupported = v.RenderFidelity == Enum.RenderFidelity.Performance
+			end
+			if fidelitySupported then
+				loweredMeshes[v] = original
+			else
+				v.RenderFidelity = original
+			end
 		end
 	
 		if RemoveTextures.Enabled and v:IsA('MeshPart') and v.TextureID ~= '' and clearedTextures[v] == nil then
