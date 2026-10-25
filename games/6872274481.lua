@@ -13597,6 +13597,33 @@ run(function()
 		return name == 'tnt' or name == 'siege_tnt'
 	end
 	
+	local function charHoldingTnt(char)
+		local hand = char and char:FindFirstChild('HandInvItem')
+		local tool = hand and hand.Value
+		local name = tool and tool.Name
+		return name == 'tnt' or name == 'siege_tnt'
+	end
+	
+	-- Whether someone other than you, holding TNT, is stood close enough to this cannon to fire
+	-- it - so an enemy Davey lining up a shot shows the same arc you would. Teammates only when
+	-- Show Teammates is on, the way their projectiles already follow that toggle.
+	local function othersTntAt(cannon)
+		local pos = cannon.Position
+		for _, plr in playersService:GetPlayers() do
+			if plr ~= lplr and plr.Character then
+				local root = plr.Character.PrimaryPart or plr.Character:FindFirstChild('HumanoidRootPart')
+				if root and (root.Position - pos).Magnitude <= CANNON_REACH and charHoldingTnt(plr.Character) then
+					if sameTeam(plr.UserId) then
+						if on(ShowTeam) then return true end
+					else
+						return true
+					end
+				end
+			end
+		end
+		return false
+	end
+	
 	local function jumpSpeed()
 		local ok, speed = pcall(function()
 			local humanoid = entitylib.character.Humanoid
@@ -13723,7 +13750,6 @@ run(function()
 		local flightRoot = entitylib.isAlive and entitylib.character.RootPart or nil
 		followFlight(flightRoot)
 		local tnt = holdingTnt()
-		local color = tnt and colorOf(TntColor, Color3.fromRGB(255, 80, 60)) or colorOf(CannonColor, Color3.fromRGB(255, 170, 60))
 		local root = entitylib.isAlive and entitylib.character.RootPart
 		local mine, mineGap
 		if root and not tnt and not selfFlight then
@@ -13745,12 +13771,21 @@ run(function()
 			end
 			local look = cannon:GetAttribute('LookVector')
 			if typeof(look) ~= 'Vector3' or look.Magnitude == 0 then continue end
-			if selfFlight and selfFlight.cannon == cannon and not tnt then continue end
-			seen[cannon] = true
 			local cache = cannonCache[cannon]
-			if refresh or not cache or cache.look ~= look or cache.tnt ~= tnt then
+			-- A TNT arc for this cannon when you hold TNT, or when someone else by it does, so an
+			-- enemy Davey's shot is drawn too. Only re-checked on the refresh tick, so it is free
+			-- between ticks.
+			local cannonTnt
+			if refresh or not cache then
+				cannonTnt = tnt or othersTntAt(cannon)
+			else
+				cannonTnt = cache.tnt
+			end
+			if selfFlight and selfFlight.cannon == cannon and not cannonTnt then continue end
+			seen[cannon] = true
+			if refresh or not cache or cache.look ~= look or cache.tnt ~= cannonTnt then
 				local start, velocity, gravity
-				if tnt then
+				if cannonTnt then
 					start = barrelPoint(cannon)
 					-- Learned from a real shot once one has been seen, the measured constants until then.
 					velocity = look.Unit * (tntSpeed or TNT_SPEED) + Vector3.new(0, tntLift or TNT_LIFT, 0)
@@ -13769,9 +13804,10 @@ run(function()
 					gravity = workspace.Gravity
 				end
 				local points, landing = simulate(start, velocity, gravity, false, CANNON_TIME)
-				cache = {look = look, tnt = tnt, points = points, landing = landing}
+				cache = {look = look, tnt = cannonTnt, points = points, landing = landing}
 				cannonCache[cannon] = cache
 			end
+			local color = cache.tnt and colorOf(TntColor, Color3.fromRGB(255, 80, 60)) or colorOf(CannonColor, Color3.fromRGB(255, 170, 60))
 			draw(cannon, cache.points, cache.landing, color)
 		end
 		for cannon in cannonCache do
