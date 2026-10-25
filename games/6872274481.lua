@@ -7954,6 +7954,10 @@ run(function()
 	Folder.Name = 'BeehiveESP'
 	Folder.Parent = vain.gui
 	local hives = {}
+	-- hive -> true, waiting for its card. A tag signal's thread cannot be given the capability to
+	-- make instances, so add() only queues and update() (on the RenderStepped loop, whose thread
+	-- can) builds it.
+	local pending = {}
 	
 	local function on(setting)
 		return setting ~= nil and setting.Enabled
@@ -8044,9 +8048,7 @@ run(function()
 		rounded plate over it carrying an icon, the bee count, the owner and the distance. update()
 		only sets what changes.
 	]]
-	local function add(hive)
-		-- A tag signal can run this on a thread without the capability to make instances.
-		if vain.ThreadFix then setthreadidentity(8) end
+	local function create(hive)
 		if hives[hive] then return end
 		local part = partOf(hive)
 		if not part then return end
@@ -8127,7 +8129,14 @@ run(function()
 		}
 	end
 	
+	-- Only queues; the card is built in update() where instances can be made.
+	local function add(hive)
+		if hives[hive] or pending[hive] then return end
+		pending[hive] = true
+	end
+	
 	local function remove(hive)
+		pending[hive] = nil
 		local entry = hives[hive]
 		if entry then
 			hives[hive] = nil
@@ -8205,6 +8214,14 @@ run(function()
 	end
 	
 	local function update()
+		-- Build queued hives here, on this thread, which can make instances.
+		if next(pending) then
+			for hive in pending do
+				pending[hive] = nil
+				if hive.Parent then create(hive) end
+			end
+		end
+	
 		local here = entitylib.isAlive and entitylib.character.RootPart.Position or nil
 		for hive, entry in hives do
 			if not (hive.Parent and entry.Adornee.Parent) then
@@ -8238,6 +8255,7 @@ run(function()
 			else
 				for hive in hives do remove(hive) end
 				table.clear(hives)
+				table.clear(pending)
 			end
 		end
 	})
@@ -10605,21 +10623,17 @@ run(function()
 		return Color3.fromHSV(slider.Hue or 0, slider.Sat or 0, slider.Value or 1)
 	end
 	
+	-- statue -> true, waiting for its highlight. Only queues here: a tag signal's thread cannot
+	-- be given the capability to make instances, so the highlight is created from updateStatues,
+	-- which runs on the RenderStepped loop connected on Vain's thread, where it can.
+	local pendingStatues = {}
 	local function addStatue(statue)
-		-- A tag signal can run this on a thread that may not create instances.
-		if vain.ThreadFix then setthreadidentity(8) end
-		if StatueRefs[statue] or not statue:IsA('Model') then return end
-		local highlight = Instance.new('Highlight')
-		highlight.Name = 'MinerStatue'
-		highlight.Adornee = statue
-		highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-		highlight.OutlineTransparency = 0
-		highlight.Enabled = false
-		highlight.Parent = StatueFolder
-		StatueRefs[statue] = highlight
+		if StatueRefs[statue] or pendingStatues[statue] or not statue:IsA('Model') then return end
+		pendingStatues[statue] = true
 	end
 	
 	local function removeStatue(statue)
+		pendingStatues[statue] = nil
 		local highlight = StatueRefs[statue]
 		if highlight then
 			highlight:Destroy()
@@ -10637,12 +10651,30 @@ run(function()
 		for statue in StatueRefs do removeStatue(statue) end
 		StatueFolder:ClearAllChildren()
 		table.clear(StatueRefs)
+		table.clear(pendingStatues)
 	end
 	
 	local function updateStatues()
 		-- Only while you are actually the Miner kit - the statues are its own thing, and are no
 		-- use to read when you cannot dig them.
 		local show = on(MinerStatues) and store.equippedKit == 'miner'
+	
+		-- Give any queued statue its highlight here, where the thread can make instances.
+		if next(pendingStatues) then
+			for statue in pendingStatues do
+				pendingStatues[statue] = nil
+				if statue.Parent and not StatueRefs[statue] then
+					local highlight = Instance.new('Highlight')
+					highlight.Name = 'MinerStatue'
+					highlight.Adornee = statue
+					highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+					highlight.OutlineTransparency = 0
+					highlight.Enabled = false
+					highlight.Parent = StatueFolder
+					StatueRefs[statue] = highlight
+				end
+			end
+		end
 		for statue, highlight in StatueRefs do
 			if not statue.Parent then
 				removeStatue(statue)
@@ -14777,6 +14809,10 @@ run(function()
 		redraws a frame apart, and now coalesces into one.
 	]]
 	local dirty = {}
+	-- chest -> os.clock() when it was tagged. The billboard is made from the Heartbeat loop
+	-- rather than here, because a game signal's thread cannot be given the capability to create
+	-- instances and the loop's (connected on Vain's thread) can.
+	local pendingBuild = {}
 	
 	local function queue(v)
 		dirty[v] = true
@@ -14982,26 +15018,12 @@ run(function()
 		queue(billboard)
 	end
 	
+	-- Only queues the chest. A game signal (or a task thread, or a WaitForChild resume) cannot be
+	-- given the capability to make instances, so the billboard is built from the Heartbeat loop,
+	-- whose thread can. The loop waits there for ChestFolderValue to land rather than yielding.
 	local function Added(v)
-		if vain.ThreadFix then
-			setthreadidentity(8)
-		end
-		if not StorageESP.Enabled then return end
-		-- WaitForChild is avoided on purpose: the thread it resumes on loses the capability
-		-- to make instances and cannot be given it back, which threw "lacking capability
-		-- Plugin". Build now if the value folder is already there - still on an elevatable
-		-- thread - or from a plain ChildAdded callback (which keeps it) when it lands later.
-		if v:FindFirstChild('ChestFolderValue') then
-			build(v)
-			return
-		end
-		local conn
-		conn = v.ChildAdded:Connect(function(child)
-			if child.Name ~= 'ChestFolderValue' then return end
-			conn:Disconnect()
-			build(v)
-		end)
-		task.delay(3, function() if conn.Connected then conn:Disconnect() end end)
+		if not StorageESP.Enabled or Reference[v] then return end
+		pendingBuild[v] = os.clock()
 	end
 	
 	StorageESP = vain.Categories.Render:CreateModule({
@@ -15013,6 +15035,20 @@ run(function()
 				-- inherits the identity of the thread that made the connection, and this one is
 				-- made on Vain's.
 				StorageESP:Clean(runService.Heartbeat:Connect(function()
+					-- Build queued chests here, on this thread (connected on Vain's), which keeps
+					-- the capability to make instances. Each waits for ChestFolderValue to appear,
+					-- and is given up on after a few seconds if it never does.
+					if next(pendingBuild) then
+						for v, since in pendingBuild do
+							if not v.Parent or os.clock() - since > 3 then
+								pendingBuild[v] = nil
+							elseif v:FindFirstChild('ChestFolderValue') then
+								pendingBuild[v] = nil
+								pcall(build, v)
+							end
+						end
+					end
+	
 					if not next(dirty) then return end
 	
 					local todo = dirty
@@ -15028,12 +15064,13 @@ run(function()
 	
 				StorageESP:Clean(collectionService:GetInstanceAddedSignal('chest'):Connect(Added))
 				for _, v in collectionService:GetTagged('chest') do
-					task.spawn(Added, v)
+					Added(v)
 				end
 			else
 				table.clear(Reference)
 				table.clear(alerted)
 				table.clear(dirty)
+				table.clear(pendingBuild)
 				Folder:ClearAllChildren()
 			end
 		end,
@@ -15132,6 +15169,9 @@ run(function()
 	Folder.Name = 'TrapESP'
 	Folder.Parent = vain.gui
 	local traps = {}
+	-- trap -> its info (or true), waiting for its card. Built from update() rather than the tag
+	-- signal, whose thread cannot be given the capability to make instances.
+	local pending = {}
 	local connections = {}
 	
 	-- Tag -> the setting it belongs to and what it is called when the block's name says
@@ -15200,7 +15240,15 @@ run(function()
 		return nil, true
 	end
 	
+	-- Only queues. A game signal's thread cannot be given the capability to make instances, so
+	-- the card is built in update(), which runs on the RenderStepped loop where it can.
+	local function add(trap, info)
+		if traps[trap] or pending[trap] then return end
+		pending[trap] = info or true
+	end
+	
 	local function remove(trap)
+		pending[trap] = nil
 		local entry = traps[trap]
 		if not entry then return end
 		entry.billboard:Destroy()
@@ -15209,11 +15257,7 @@ run(function()
 		traps[trap] = nil
 	end
 	
-	local function add(trap, info)
-		-- Game events can call this on a thread that may not create instances.
-		if vain.ThreadFix then
-			setthreadidentity(8)
-		end
+	local function create(trap, info)
 		if traps[trap] then return end
 		local part = partOf(trap)
 		if not part then return end
@@ -15272,6 +15316,14 @@ run(function()
 	end
 	
 	local function update()
+		-- Build queued traps here, on this thread, which can make instances.
+		if next(pending) then
+			for trap, info in pending do
+				pending[trap] = nil
+				if trap.Parent then create(trap, info ~= true and info or nil) end
+			end
+		end
+	
 		local here = entitylib.isAlive and entitylib.character.RootPart.Position
 		for trap, entry in traps do
 			if not (trap.Parent and entry.part.Parent) then
@@ -15348,6 +15400,7 @@ run(function()
 				end))
 			else
 				for trap in traps do remove(trap) end
+				table.clear(pending)
 			end
 		end
 	})
