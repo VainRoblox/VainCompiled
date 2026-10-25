@@ -11873,6 +11873,39 @@ run(function()
 		return found
 	end
 	
+	--[[
+		Hephaestus's level. The game shows it as "Lvl. x"; this reads the same number so Vain's tag
+		can show it as a clean "Lv x" like the other level kits. Its attribute name is not written
+		down here, so it is found by one that names Hephaestus - a level/lvl one preferred - with the
+		player's attributes printed once if nothing matched.
+	]]
+	local hephaestusProbed = false
+	local function hephaestusLevel(ent)
+		if not ent.Player then return nil end
+		local found, hint = nil, false
+		for _, holder in {ent.Player, ent.Character} do
+			if holder then
+				for name, value in holder:GetAttributes() do
+					local lower = name:lower()
+					if lower:find('hephaestus') then
+						hint = true
+						if type(value) == 'number' and value > 0 then
+							if lower:find('level') or lower:find('lvl') then return math.floor(value) end
+							found = found or math.floor(value)
+						end
+					end
+				end
+			end
+		end
+		if not found and hint and not hephaestusProbed then
+			hephaestusProbed = true
+			local keys = {}
+			for name in ent.Player:GetAttributes() do keys[#keys + 1] = name end
+			print('[Vain] NameTags: Hephaestus level not matched; player attributes: ' .. table.concat(keys, ', '))
+		end
+		return found
+	end
+	
 	-- rich lets the Normal renderer, whose label reads font tags, colour the Roman stats purple;
 	-- the Drawing renderer passes it false and gets the plain numeral, since its text is one
 	-- colour and cannot tint a single part.
@@ -11910,6 +11943,11 @@ run(function()
 		if oases then
 			local roman = toRoman(oases)
 			parts[#parts + 1] = rich and ('<font color="' .. ROMAN_PURPLE .. '">' .. roman .. '</font>') or roman
+		end
+		-- Hephaestus's level, as a clean "Lv x" rather than the game's "Lvl. x".
+		local heph = hephaestusLevel(ent)
+		if heph then
+			parts[#parts + 1] = 'Lv ' .. heph
 		end
 		return table.concat(parts, ' · ')
 	end
