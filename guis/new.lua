@@ -1239,16 +1239,35 @@ components = {
 			end
 		end
 		
+		-- The title text and its colour. A kept value that the current list does not hold - a
+		-- target who has left or is on another team - is drawn red, as a prompt to pick someone
+		-- who is actually here, without the value itself being thrown away.
+		local function refreshTitle()
+			title.Text = '         '..optionsettings.Name..' - '..labelOf(optionapi.Value)
+			local missing = optionsettings.Keep and not table.find(optionsettings.List, optionapi.Value)
+			title.TextColor3 = missing and Color3.fromRGB(255, 95, 95) or color.Dark(uipallet.Text, 0.16)
+		end
+		
 		function optionapi:Change(list)
 			optionsettings.List = list or {}
-			if not table.find(optionsettings.List, self.Value) then
+			if optionsettings.Keep then
+				-- The value is kept whatever the new list says; only its colour changes.
+				refreshTitle()
+			elseif not table.find(optionsettings.List, self.Value) then
 				self:SetValue(self.Value)
 			end
 		end
 		
 		function optionapi:SetValue(val, mouse)
-			self.Value = table.find(optionsettings.List, val) and val or optionsettings.List[1] or 'None'
-			title.Text = '         '..optionsettings.Name..' - '..labelOf(self.Value)
+			if optionsettings.Keep then
+				-- Keep lets a value outlive the list it was chosen from, so a teammate picked in one
+				-- match stays picked into the next, even before they have loaded in. Only an outright
+				-- nil falls back to the first option.
+				self.Value = val ~= nil and val or optionsettings.List[1] or 'None'
+			else
+				self.Value = table.find(optionsettings.List, val) and val or optionsettings.List[1] or 'None'
+			end
+			refreshTitle()
 			if dropdownchildren then
 				arrow.Rotation = 90
 				dropdownchildren:Destroy()
@@ -1386,10 +1405,14 @@ components = {
 					openSearch()
 					return
 				end
-				dropdown.Size = UDim2.new(1, 0, 0, 40 + (#optionsettings.List - 1) * 26)
+				-- One row per option that will actually be laid out: every item except the current
+				-- value, and the current value is only in the list to skip when it is really in it -
+				-- a kept value that is not in the list skips nothing, so the height must count it in.
+				local rows = #optionsettings.List - (table.find(optionsettings.List, optionapi.Value) and 1 or 0)
+				dropdown.Size = UDim2.new(1, 0, 0, 40 + rows * 26)
 				dropdownchildren = Instance.new('Frame')
 				dropdownchildren.Name = 'Children'
-				dropdownchildren.Size = UDim2.new(1, 0, 0, (#optionsettings.List - 1) * 26)
+				dropdownchildren.Size = UDim2.new(1, 0, 0, rows * 26)
 				dropdownchildren.Position = UDim2.fromOffset(0, 27)
 				dropdownchildren.BackgroundTransparency = 1
 				dropdownchildren.Parent = button

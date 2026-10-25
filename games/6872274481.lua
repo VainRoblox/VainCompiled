@@ -20501,6 +20501,7 @@ run(function()
 	    local StickySlime
 	    local VoidSlime
 	    local Limit
+	    local Range
 	
 	    local function getSlimes()
 	    	local slimes = {}
@@ -20529,6 +20530,17 @@ run(function()
 	    	return
 	    end
 	
+	    -- How far a slime is from the player it is being sent to. GetPivot works on both a part
+	    -- and a model, so it does not matter which shape the slime or the character is.
+	    local function withinRange(slime, player)
+	    	local char = player.Character
+	    	if not char then return false end
+	    	local ok, slimePos = pcall(function() return slime.RootPart:GetPivot().Position end)
+	    	local ok2, charPos = pcall(function() return char:GetPivot().Position end)
+	    	if not (ok and ok2) then return false end
+	    	return (slimePos - charPos).Magnitude <= Range.Value
+	    end
+	
 	    AutoNoelle = vain.Categories.Kit:CreateModule({
 	    	Name = 'Auto Noelle',
 	    	Tooltip = 'Automates the Noelle kit ability',
@@ -20542,7 +20554,7 @@ run(function()
 	    						local dropdown = AutoNoelle.Options[`{v.Name} Target`]
 	    						if dropdown then
 	    							local player = getPlayer(dropdown.Value)
-	    							if player and v.Data.Following.Value ~= player.UserId then
+	    							if player and v.Data.Following.Value ~= player.UserId and withinRange(v, player) then
 	    								bedwars.Client:Get('RequestMoveSlime'):CallServerAsync({
 	    									slimeId = v.Data:GetAttribute('Id'),
 	    									targetPlayerUserId = player.UserId,
@@ -20574,46 +20586,76 @@ run(function()
 	    	end
 	    end
 	
-	    local function addConnection(plr)
-	    	if plr:GetAttribute('Team') == lplr:GetAttribute('Team') then
-	    		table.insert(friends, `{plr.DisplayName} ({plr.Name})`)
-	    		setList(FrostySlime, friends)
-	    		setList(HealSlime, friends)
-	    		setList(StickySlime, friends)
-	    		setList(VoidSlime, friends)
-	    	end
+	    --[[
+	    	Whether a player belongs in the target list - a teammate, or yourself.
 	
-	    	vain:Clean(plr:GetAttributeChangedSignal('Team'):Connect(function()
-	    		if plr:GetAttribute('Team') == lplr:GetAttribute('Team') then
+	    	Noelle directs slimes to your own side, so only teammates and you belong here. The old
+	    	test compared the two Team attributes directly, but before a match assigns teams both
+	    	are nil, and nil == nil is true - so every player, enemies included, was added, and
+	    	they stayed in the list once there. Requiring your own team to be set first keeps
+	    	enemies out until the sides are actually known.
+	    ]]
+	    local function isTeammate(plr)
+	    	if plr == lplr then return true end
+	    	local myTeam = lplr:GetAttribute('Team')
+	    	return myTeam ~= nil and plr:GetAttribute('Team') == myTeam
+	    end
+	
+	    -- Rebuilt whole rather than appended to, so a player who changes team or leaves is
+	    -- dropped as cleanly as one is added, and nobody is ever listed twice.
+	    local function rebuild()
+	    	table.clear(friends)
+	    	friends[1] = 'None'
+	    	for _, plr in playersService:GetPlayers() do
+	    		if isTeammate(plr) then
 	    			table.insert(friends, `{plr.DisplayName} ({plr.Name})`)
-	    			setList(FrostySlime, friends)
-	    			setList(HealSlime, friends)
-	    			setList(StickySlime, friends)
-	    			setList(VoidSlime, friends)
 	    		end
-	    	end))
+	    	end
+	    	setList(FrostySlime, friends)
+	    	setList(HealSlime, friends)
+	    	setList(StickySlime, friends)
+	    	setList(VoidSlime, friends)
+	    end
+	
+	    local function addConnection(plr)
+	    	vain:Clean(plr:GetAttributeChangedSignal('Team'):Connect(rebuild))
+	    	rebuild()
 	    end
 	
 	    Notify = AutoNoelle:CreateToggle({ Name = 'Notify on direct' , Tooltip = 'Sends a notification each time a slime is successfully redirected to its target'})
 	    Limit = AutoNoelle:CreateToggle({ Name = 'Limit to item' , Tooltip = 'Only activates when a required item is in your hand'})
+	    Range = AutoNoelle:CreateSlider({
+	    	Name = 'Range',
+	    	Tooltip = 'Only directs a slime when its target is within this range of it\nDefault is 100',
+	    	Min = 0,
+	    	Max = 500,
+	    	Default = 100,
+	    	Suffix = function(val)
+	    		return val == 1 and 'stud' or 'studs'
+	    	end
+	    })
 	    FrostySlime = AutoNoelle:CreateDropdown({
 	    	Name = 'Frosty Slime Target',
 	    	List = {},
+	    	Keep = true,
 	    	Tooltip = 'Player to direct frost slimes to',
 	    })
 	    HealSlime = AutoNoelle:CreateDropdown({
 	    	Name = 'Heal Slime Target',
 	    	List = {},
+	    	Keep = true,
 	    	Tooltip = 'Player to direct heal slimes to',
 	    })
 	    StickySlime = AutoNoelle:CreateDropdown({
 	    	Name = 'Sticky Slime Target',
 	    	List = {},
+	    	Keep = true,
 	    	Tooltip = 'Player to direct sticky slimes to',
 	    })
 	    VoidSlime = AutoNoelle:CreateDropdown({
 	    	Name = 'Void Slime Target',
 	    	List = {},
+	    	Keep = true,
 	    	Tooltip = 'Player to direct void slimes to',
 	    })
 	
@@ -20621,6 +20663,11 @@ run(function()
 	    	addConnection(v)
 	    end
 	    vain:Clean(playersService.PlayerAdded:Connect(addConnection))
+	    vain:Clean(playersService.PlayerRemoving:Connect(rebuild))
+	    -- Your own team being assigned is what turns the list from empty into your teammates, so
+	    -- the list is rebuilt when it lands as well as when anyone else's changes.
+	    vain:Clean(lplr:GetAttributeChangedSignal('Team'):Connect(rebuild))
+	    rebuild()
 	end)
 	
 	kitRun(function()
