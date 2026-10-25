@@ -8284,7 +8284,11 @@ run(function()
 		end
 	})
 	BackgroundColor = BeehiveESP:CreateColorSlider({
-		Name = 'Background Color',
+		-- Renamed from 'Background Color' on purpose: the first build shipped with no colour
+		-- default, so the slider fell back to the component's cyan (hue 0.44) and that got saved
+		-- into profiles, overriding the black default added later. A fresh name drops that stale
+		-- saved value so the black below actually takes.
+		Name = 'Card Color',
 		Tooltip = 'Colour and opacity of the card background',
 		-- Near-black, the same dark card the rest of Vain's ESP uses, so the team-coloured count
 		-- and the white text read against it instead of washing out on a light background.
