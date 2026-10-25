@@ -10640,7 +10640,9 @@ run(function()
 	end
 	
 	local function updateStatues()
-		local show = on(MinerStatues)
+		-- Only while you are actually the Miner kit - the statues are its own thing, and are no
+		-- use to read when you cannot dig them.
+		local show = on(MinerStatues) and store.equippedKit == 'miner'
 		for statue, highlight in StatueRefs do
 			if not statue.Parent then
 				removeStatue(statue)
@@ -10761,7 +10763,7 @@ run(function()
 	HealthRange.Object.Visible = EldertreeHealth.Enabled
 	MinerStatues = KitESP:CreateToggle({
 		Name = 'Miner Statues',
-		Tooltip = 'Highlights Miner statues through walls, your team\'s and the enemy\'s',
+		Tooltip = 'While you are the Miner kit, highlights statues through walls - your team\'s red, the enemy\'s green',
 		Default = true,
 		Function = function(callback)
 			if OwnStatueColor and OwnStatueColor.Object then OwnStatueColor.Object.Visible = callback end
@@ -12130,6 +12132,10 @@ run(function()
 		name without the two crowding each other. Rebuilt whole for the same reason the effect
 		strip is: there are only ever a handful and they change rarely.
 	]]
+	local function textHeight()
+		return math.floor(14 * Scale.Value) + 3
+	end
+	
 	local function drawEnchants(nametag, ent)
 		local row = nametag:FindFirstChild('Row')
 		local container = row and row:FindFirstChild('Enchants')
@@ -12273,9 +12279,6 @@ run(function()
 		return label
 	end
 	
-	local function textHeight()
-		return math.floor(14 * Scale.Value) + 3
-	end
 	
 	local function hexOf(colour)
 		return string.format('%02X%02X%02X',
@@ -14921,22 +14924,13 @@ run(function()
 		end
 	end
 	
-	local function Added(v)
+	local function build(v)
 		if vain.ThreadFix then
 			setthreadidentity(8)
 		end
-		local chestValue = v:WaitForChild('ChestFolderValue', 3)
-		if not (chestValue and StorageESP.Enabled) then return end
-		if hiddenAsOwn(v) then return end
-		-- Build on a fresh task thread. A thread resumed from WaitForChild cannot always be given
-		-- the capability to make instances even with setthreadidentity re-applied, which threw
-		-- "lacking capability Plugin" on a chest drawn after the wait; a task thread elevates it.
-		task.spawn(function()
-		if vain.ThreadFix then
-			setthreadidentity(8)
-		end
-		local chest = chestValue.Value
-		if not chest then return end
+		local value = v:FindFirstChild('ChestFolderValue')
+		local chest = value and value.Value
+		if not (chest and StorageESP.Enabled) or Reference[v] or hiddenAsOwn(v) then return end
 		local billboard = Instance.new('BillboardGui')
 		billboard.Parent = Folder
 		billboard.Name = 'chest'
@@ -14986,7 +14980,28 @@ run(function()
 			queue(billboard)
 		end))
 		queue(billboard)
+	end
+	
+	local function Added(v)
+		if vain.ThreadFix then
+			setthreadidentity(8)
+		end
+		if not StorageESP.Enabled then return end
+		-- WaitForChild is avoided on purpose: the thread it resumes on loses the capability
+		-- to make instances and cannot be given it back, which threw "lacking capability
+		-- Plugin". Build now if the value folder is already there - still on an elevatable
+		-- thread - or from a plain ChildAdded callback (which keeps it) when it lands later.
+		if v:FindFirstChild('ChestFolderValue') then
+			build(v)
+			return
+		end
+		local conn
+		conn = v.ChildAdded:Connect(function(child)
+			if child.Name ~= 'ChestFolderValue' then return end
+			conn:Disconnect()
+			build(v)
 		end)
+		task.delay(3, function() if conn.Connected then conn:Disconnect() end end)
 	end
 	
 	StorageESP = vain.Categories.Render:CreateModule({
