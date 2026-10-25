@@ -10698,6 +10698,14 @@ run(function()
 			if not (card.Parent and KitDisplay.Enabled) then return end
 			if card:GetAttribute('KitLevelUser') ~= player.UserId then return end
 			if not level then return end
+	
+			-- The level can resolve instantly off the leaderboard, in which case this callback
+			-- runs right here on whichever thread drew the card - a draft-UI connection that may
+			-- not hold the Plugin capability - rather than on a request thread the way the kit
+			-- history row always does. Creating and parenting the badge into the game's GUI from
+			-- a thread without it throws "lacking capability Plugin", so take the identity first.
+			if vain.ThreadFix then setthreadidentity(8) end
+	
 			local existing = card:FindFirstChild('KitLevel')
 			if existing then existing:Destroy() end
 	
@@ -13680,6 +13688,9 @@ run(function()
 		if name ~= 'tnt' and name ~= 'siege_tnt' then return end
 		-- A frame late, so the server has set the launch velocity on the part.
 		task.defer(function()
+			-- A deferred thread may not carry the Plugin capability; take it before reading
+			-- game parts so this calibration can never throw "lacking capability Plugin".
+			if vain.ThreadFix then pcall(setthreadidentity, 8) end
 			local root = tntPart(inst)
 			if not (root and root.Parent) then return end
 			local v = root.AssemblyLinearVelocity
