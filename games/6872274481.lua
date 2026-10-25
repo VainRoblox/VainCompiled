@@ -11770,7 +11770,6 @@ run(function()
 		{'BarbarianRageLevel', 'Rage'},
 		{'WarlockEnergy', 'Energy'},
 		{'InfernalShieldEnergy', 'Shield'},
-		{'AeryStacks', 'Stacks'},
 		{'BullyStack', 'Stacks'},
 		{'SkeletonCount', 'Skeletons'},
 		{'Vacuum_GhostCount', 'Ghosts'}
@@ -11842,6 +11841,38 @@ run(function()
 		return found
 	end
 	
+	--[[
+		Nahla's oases - how many of the three the kit has unlocked (1-3). Shown as a tier the way
+		Void Knight's is, since it reads as a rank rather than a count. The attribute name is not
+		written down here either, so it is found by a name that mentions an oasis (or Nahla), and
+		the player's attributes are printed once if nothing matched but a Nahla one is around.
+	]]
+	local nahlaProbed = false
+	local function nahlaOases(ent)
+		if not ent.Player then return nil end
+		local found, hint = nil, false
+		for _, holder in {ent.Player, ent.Character} do
+			if holder then
+				for name, value in holder:GetAttributes() do
+					local lower = name:lower()
+					if lower:find('oasis') or lower:find('oases') or lower:find('nahla') then
+						hint = true
+						if not found and type(value) == 'number' and value > 0 then
+							found = math.floor(value)
+						end
+					end
+				end
+			end
+		end
+		if not found and hint and not nahlaProbed then
+			nahlaProbed = true
+			local keys = {}
+			for name in ent.Player:GetAttributes() do keys[#keys + 1] = name end
+			print('[Vain] NameTags: Nahla oases not matched; player attributes: ' .. table.concat(keys, ', '))
+		end
+		return found
+	end
+	
 	-- rich lets the Normal renderer, whose label reads font tags, colour the Roman stats purple;
 	-- the Drawing renderer passes it false and gets the plain numeral, since its text is one
 	-- colour and cannot tint a single part.
@@ -11867,6 +11898,18 @@ run(function()
 		local stacks = seahorseStacks(ent)
 		if stacks then
 			parts[#parts + 1] = tostring(stacks)
+		end
+		-- Aery's stacks, the same bare golden way as Sheila's.
+		local aery = ent.Player:GetAttribute('AeryStacks')
+		if aery == nil and ent.Character then aery = ent.Character:GetAttribute('AeryStacks') end
+		if type(aery) == 'number' and aery > 0 then
+			parts[#parts + 1] = tostring(math.floor(aery))
+		end
+		-- Nahla's oases unlocked (1-3), as a purple Roman tier like Void Knight's.
+		local oases = nahlaOases(ent)
+		if oases then
+			local roman = toRoman(oases)
+			parts[#parts + 1] = rich and ('<font color="' .. ROMAN_PURPLE .. '">' .. roman .. '</font>') or roman
 		end
 		return table.concat(parts, ' · ')
 	end
