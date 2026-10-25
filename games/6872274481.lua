@@ -10883,6 +10883,7 @@ run(function()
 		{'Summoner_ClawLevel', 'Claw'},
 		{'Summoner_SpellLevel', 'Spell'},
 		{'SpiritSummonerTier', 'Tier'},
+		{'AxolotlAmyLevel', 'Axolotl'},
 		{'BountyHunterLevel', 'Lv'},
 		{'TinkerMachineLevel', 'Lv'},
 		{'BarbarianRageLevel', 'Rage'},
@@ -10894,14 +10895,55 @@ run(function()
 		{'Vacuum_GhostCount', 'Ghosts'}
 	}
 	
-	local function kitStatsOf(ent)
+	local ROMAN_PURPLE = '#B366FF'
+	
+	-- Kit stats that read as a rank rather than a count - Void Knight's tier, Kaida's claw,
+	-- Bounty Hunter's level - shown as a Roman numeral instead of "Tier 2", since the level is
+	-- the whole of what they say. The value is the colour to draw the numeral in: a fixed purple
+	-- for those three, or, for Axolotl Amy, a function of the level, because her level is which
+	-- axolotl was unlocked and each has its own colour - shield blue, damage orange, break-speed
+	-- white, heal red, for levels one through four.
+	local AXOLOTL_COLORS = {'#4DA6FF', '#FF8C1A', '#FFFFFF', '#FF4D4D'}
+	local ROMAN_STATS = {
+		VoidKnightTier = ROMAN_PURPLE,
+		Summoner_ClawLevel = ROMAN_PURPLE,
+		BountyHunterLevel = ROMAN_PURPLE,
+		AxolotlAmyLevel = function(level)
+			return AXOLOTL_COLORS[level] or '#FFFFFF'
+		end,
+	}
+	
+	local function toRoman(n)
+		n = math.floor(n)
+		if n <= 0 then return tostring(n) end
+		local out = ''
+		for _, pair in {{1000,'M'},{900,'CM'},{500,'D'},{400,'CD'},{100,'C'},{90,'XC'},{50,'L'},{40,'XL'},{10,'X'},{9,'IX'},{5,'V'},{4,'IV'},{1,'I'}} do
+			while n >= pair[1] do
+				out = out .. pair[2]
+				n = n - pair[1]
+			end
+		end
+		return out
+	end
+	
+	-- rich lets the Normal renderer, whose label reads font tags, colour the Roman stats purple;
+	-- the Drawing renderer passes it false and gets the plain numeral, since its text is one
+	-- colour and cannot tint a single part.
+	local function kitStatsOf(ent, rich)
 		if not (KitStats and KitStats.Enabled and ent.Player) then return '' end
 		local parts = {}
 		for _, stat in KIT_STATS do
 			local value = ent.Player:GetAttribute(stat[1])
 			if value == nil and ent.Character then value = ent.Character:GetAttribute(stat[1]) end
 			if type(value) == 'number' and value > 0 then
-				parts[#parts + 1] = stat[2] .. ' ' .. math.floor(value)
+				local spec = ROMAN_STATS[stat[1]]
+				if spec then
+					local roman = toRoman(value)
+					local col = type(spec) == 'function' and spec(math.floor(value)) or spec
+					parts[#parts + 1] = rich and ('<font color="' .. col .. '">' .. roman .. '</font>') or roman
+				else
+					parts[#parts + 1] = stat[2] .. ' ' .. math.floor(value)
+				end
 			end
 		end
 		return table.concat(parts, ' · ')
@@ -11194,6 +11236,65 @@ run(function()
 	end
 	
 	--[[
+		The enchantments, as a small row inline left of the name.
+	
+		Separated from the effects - which stay in the strip above - so they can sit beside the
+		name without the two crowding each other. Rebuilt whole for the same reason the effect
+		strip is: there are only ever a handful and they change rarely.
+	]]
+	local function drawEnchants(nametag, ent)
+		local row = nametag:FindFirstChild('Row')
+		local container = row and row:FindFirstChild('Enchants')
+		if not container then return end
+	
+		for _, child in container:GetChildren() do
+			if not child:IsA('UIListLayout') then
+				child:Destroy()
+			end
+		end
+	
+		if not (Enchants and Enchants.Enabled) then
+			container.Visible = false
+			return
+		end
+	
+		local enchants = statusOf(ent)
+		if not enchants or #enchants == 0 then
+			container.Visible = false
+			return
+		end
+	
+		local size = math.max(10, textHeight())
+		local shown = 0
+		for _, entry in enchants do
+			if shown >= STATUS_SHOWN then break end
+			shown += 1
+	
+			if entry.image then
+				local icon = Instance.new('ImageLabel')
+				icon.BackgroundTransparency = 1
+				icon.Size = UDim2.fromOffset(size, size)
+				icon.Image = entry.image
+				icon.LayoutOrder = shown
+				icon.Parent = container
+			else
+				local word = Instance.new('TextLabel')
+				word.BackgroundTransparency = 1
+				word.AutomaticSize = Enum.AutomaticSize.X
+				word.Size = UDim2.fromOffset(0, size)
+				word.Text = entry.label
+				word.TextColor3 = Color3.new(1, 1, 1)
+				word.TextStrokeTransparency = 0.4
+				word.TextSize = math.max(8, math.floor(size * 0.6))
+				word.FontFace = FontOption.Value
+				word.LayoutOrder = shown
+				word.Parent = container
+			end
+		end
+		container.Visible = shown > 0
+	end
+	
+	--[[
 		The row of effect icons that sits above the name.
 	
 		Rebuilt whole rather than reconciled: there are only ever a handful, and the set
@@ -11213,22 +11314,17 @@ run(function()
 		layout.Padding = UDim.new(0, 2)
 		layout.Parent = strip
 	
-		local wantEnchants = Enchants and Enchants.Enabled
-		local wantEffects = Effects and Effects.Enabled
-		if not (wantEnchants or wantEffects) then
+		-- Effects only. The enchantments moved into their own row beside the name; the strip
+		-- above is now just the effects, which is what was asked for by "effects go above it all".
+		if not (Effects and Effects.Enabled) then
 			strip.Visible = false
 			return
 		end
 	
-		local enchants, effects = statusOf(ent)
+		local _, effects = statusOf(ent)
 	
-		-- Enchantments first, then effects, so a tag reads the same way every time. Both are
-		-- drawn as their own icon; the handful with no icon keep their word rather than vanish.
 		local entries = {}
-		if wantEnchants and enchants then
-			for _, entry in enchants do entries[#entries + 1] = entry end
-		end
-		if wantEffects and effects then
+		if effects then
 			for _, entry in effects do entries[#entries + 1] = entry end
 		end
 		if #entries == 0 then
@@ -11325,17 +11421,34 @@ run(function()
 			layout.Parent = row
 	
 			newPiece(row, 'Distance', 1)
+			-- Enchants get their own little row left of the name, where the rank badge used to be.
+			-- Effects stay in the strip above; only the enchantments sit inline here.
+			local enchantRow = Instance.new('Frame')
+			enchantRow.Name = 'Enchants'
+			enchantRow.BackgroundTransparency = 1
+			enchantRow.AutomaticSize = Enum.AutomaticSize.X
+			enchantRow.Size = UDim2.fromOffset(0, height)
+			enchantRow.LayoutOrder = 2
+			enchantRow.Visible = false
+			enchantRow.Parent = row
+			local enchantLayout = Instance.new('UIListLayout')
+			enchantLayout.FillDirection = Enum.FillDirection.Horizontal
+			enchantLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+			enchantLayout.SortOrder = Enum.SortOrder.LayoutOrder
+			enchantLayout.Padding = UDim.new(0, 2)
+			enchantLayout.Parent = enchantRow
+			newPiece(row, 'NameLabel', 3)
+			newPiece(row, 'HealthLabel', 4)
+			-- The rank badge now trails the health rather than leading the name.
 			local rankicon = Instance.new('ImageLabel')
 			rankicon.Name = 'RankIcon'
 			rankicon.BackgroundTransparency = 1
 			rankicon.Size = UDim2.fromOffset(height, height)
 			rankicon.ScaleType = Enum.ScaleType.Fit
-			rankicon.LayoutOrder = 2
+			rankicon.LayoutOrder = 5
 			rankicon.Visible = false
 			rankicon.Parent = row
-			newPiece(row, 'NameLabel', 3)
-			newPiece(row, 'HealthLabel', 4)
-			newPiece(row, 'KitStat', 5)
+			newPiece(row, 'KitStat', 6)
 	
 			--[[
 				The equipment as one centred row, laid out by a UIListLayout. Each icon used to
@@ -11486,7 +11599,10 @@ run(function()
 				row.HealthLabel.TextColor3 = Color3.fromHSV(math.clamp(ent.Health / math.max(ent.MaxHealth, 1), 0, 1) / 2.5, 0.89, 0.75)
 			end
 	
-			local kitText = kitStatsOf(ent)
+			local kitText = kitStatsOf(ent, true)
+			-- Rich so the purple Roman stats keep their colour; the gold below is the colour of
+			-- everything that is not tagged, which is the ordinary counted stats.
+			row.KitStat.RichText = true
 			row.KitStat.Text = kitText
 			row.KitStat.TextColor3 = Color3.fromRGB(255, 200, 60)
 			row.KitStat.Visible = kitText ~= ''
@@ -11513,6 +11629,7 @@ run(function()
 				setSlot('Kit', kit and kit ~= 'none' and bedwars.BedwarsKitMeta[kit] and bedwars.BedwarsKitMeta[kit].renderImage or nil)
 			end
 	
+			drawEnchants(nametag, ent)
 			drawEffects(nametag, ent)
 		end,
 		Drawing = function(ent)
