@@ -8092,11 +8092,13 @@ run(function()
 	local detachedInstances = {} -- [SurfaceAppearance/Atmosphere] = original Parent
 	local clearedTextures = {} -- [MeshPart] = original TextureID
 	local loweredMeshes = {} -- [MeshPart] = original RenderFidelity
-	-- nil until probed, then whether this client build actually lets RenderFidelity change at
-	-- run time. Some builds refuse and log "Cannot change SolidModel RenderFidelity during
-	-- Run-Time" once per mesh, which floods the console; when the probe shows it does not take,
-	-- we stop trying so that warning is printed at most once.
-	local fidelitySupported
+	-- Whether this client actually accepts runtime RenderFidelity changes. Some builds refuse and
+	-- log "Cannot change SolidModel RenderFidelity during Run-Time" for every mesh, flooding the
+	-- console. The catch is the property value DOES change even on those builds, so reading it
+	-- back cannot tell them apart - only the warning does. So the first mesh is probed by watching
+	-- the log while setting it (see probeFidelity); until that resolves nothing else is touched,
+	-- and if it warned we never touch RenderFidelity again, so the warning appears at most once.
+	local fidelityState = 'unknown' -- 'unknown' | 'probing' | 'ok' | 'bad'
 	local unshadowedParts = {} -- [BasePart] = true (had CastShadow on)
 	local flattenedParts = {} -- [BasePart] = original Material
 	local hiddenAccessories = {} -- [BasePart] = original Transparency
@@ -8145,6 +8147,41 @@ run(function()
 			detachedInstances[v] = v.Parent
 			v.Parent = nil
 		end
+	end
+	
+	-- Settles fidelityState from 'unknown' by setting RenderFidelity on one real mesh while
+	-- watching the log. If the build logs the "Cannot change SolidModel RenderFidelity" warning,
+	-- the trick is useless here and only spams, so mark it 'bad' and put the mesh back; otherwise
+	-- 'ok' and keep this mesh lowered. Done in its own thread because it has to wait a moment for
+	-- the warning to arrive.
+	local function probeFidelity(mesh)
+		fidelityState = 'probing'
+		task.spawn(function()
+			local warned = false
+			local conn
+			pcall(function()
+				local logService = cloneref(game:GetService('LogService'))
+				conn = logService.MessageOut:Connect(function(message, messageType)
+					if messageType == Enum.MessageType.MessageWarning
+						and type(message) == 'string' and message:find('RenderFidelity') then
+						warned = true
+					end
+				end)
+			end)
+			local original = mesh.RenderFidelity
+			pcall(function() mesh.RenderFidelity = Enum.RenderFidelity.Performance end)
+			task.wait(0.15)
+			if conn then pcall(function() conn:Disconnect() end) end
+			if warned or not conn then
+				-- Warned, or we could not even watch the log to be sure - either way, do not keep
+				-- setting it. Put the probe mesh back the way it was.
+				pcall(function() mesh.RenderFidelity = original end)
+				fidelityState = 'bad'
+			else
+				loweredMeshes[mesh] = original
+				fidelityState = 'ok'
+			end
+		end)
 	end
 	
 	-- Applies whichever optimizations are enabled to a single instance. Independent ifs for
@@ -8220,18 +8257,15 @@ run(function()
 			v.Transparency = 1
 		end
 	
-		if LowMeshDetail.Enabled and fidelitySupported ~= false and v:IsA('MeshPart') and loweredMeshes[v] == nil then
-			local original = v.RenderFidelity
-			v.RenderFidelity = Enum.RenderFidelity.Performance
-			if fidelitySupported == nil then
-				-- First mesh: if the value did not take, the engine rejected it (and warned), so
-				-- do not touch RenderFidelity on any further mesh.
-				fidelitySupported = v.RenderFidelity == Enum.RenderFidelity.Performance
-			end
-			if fidelitySupported then
-				loweredMeshes[v] = original
-			else
-				v.RenderFidelity = original
+		if LowMeshDetail.Enabled and fidelityState ~= 'bad' and v:IsA('MeshPart') and loweredMeshes[v] == nil then
+			if fidelityState == 'ok' then
+				loweredMeshes[v] = v.RenderFidelity
+				v.RenderFidelity = Enum.RenderFidelity.Performance
+			elseif fidelityState == 'unknown' then
+				-- Probe on this first mesh and leave the rest until it resolves. While probing,
+				-- other meshes are skipped so nothing sets RenderFidelity a second time before we
+				-- know whether it warns.
+				probeFidelity(v)
 			end
 		end
 	

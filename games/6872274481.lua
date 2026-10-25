@@ -5874,7 +5874,19 @@ run(function()
 									-- per target: the weapon's own attack speed by default, or the
 									-- Hit delay slider when it is set above zero.
 									if (AttackTimes[v] or 0) > tick() then continue end
-									AttackTimes[v] = tick() + (HitDelay.Value > 0 and HitDelay.Value or (meta.sword.attackSpeed or 0.5))
+									local delay = HitDelay.Value > 0 and HitDelay.Value or (meta.sword.attackSpeed or 0.5)
+									-- Schedule the next swing from the slot this one was due at, not from
+									-- now. Measuring from now folds the loop's own latency - the gap between
+									-- the slot opening and this pass reaching it - into every cooldown, and
+									-- that drift is what drops a ~0.285s weapon from its 3.5 hits a second
+									-- down to the ~3.3 it feels like: each swing lands a little late, and
+									-- that lateness becomes the next swing's starting line. Advancing from
+									-- the due time instead holds the cadence at the weapon's true speed.
+									-- Resync to now if we fell a whole period behind (a lag spike or the
+									-- target leaving and returning) so it can never queue a burst.
+									local due = AttackTimes[v] or 0
+									if due < tick() - delay then due = tick() end
+									AttackTimes[v] = due + delay
 									-- The swing this asked for is going out, so release AntiMelee to
 									-- bury the root again rather than leaving it surfaced.
 									store.antiMeleeWantAttack = nil
@@ -5982,7 +5994,12 @@ run(function()
 						Attacking = false
 						store.KillauraTarget = nil
 					end
-					task.wait(#attacked > 0 and #attacked * 0.02 or 1 / UpdateRate.Value)
+					-- Poll at the update rate even while landing hits, rather than the old
+					-- 0.02-per-target wait which could sit slower than a tick and let an open
+					-- cooldown go uncaught for an extra frame or two. The per-target schedule
+					-- above already paces the actual swings, so checking more often only tightens
+					-- how soon each open slot is used - which is what pulls the rate up to the cap.
+					task.wait(1 / UpdateRate.Value)
 				until not Killaura.Enabled
 			else
 				store.KillauraTarget = nil
