@@ -13579,10 +13579,13 @@ run(function()
 	--[[
 		Cannon TNT, measured: the server fires it at the cannon's aim times 44.35 plus 36.84
 		straight up, whatever the elevation (aims of 8, 26 and 45 degrees all fit to within a
-		tenth), and from there it is an ordinary physics part falling at the world's gravity.
+		tenth). It does NOT fall at the world's gravity - a BodyForce cancels most of it, so it
+		floats down at about 53.8 and flies far further than world gravity would draw. These are
+		only the starting point: learnTnt below re-reads all three off a real shot each session.
 	]]
 	local TNT_SPEED = 44.35
 	local TNT_LIFT = 36.84
+	local TNT_GRAVITY = 53.8
 	
 	local function watchBlock(block)
 		if block.Name == 'cannon' then cannonBlocks[block] = true end
@@ -13751,7 +13754,7 @@ run(function()
 					start = barrelPoint(cannon)
 					-- Learned from a real shot once one has been seen, the measured constants until then.
 					velocity = look.Unit * (tntSpeed or TNT_SPEED) + Vector3.new(0, tntLift or TNT_LIFT, 0)
-					gravity = tntGravity or workspace.Gravity
+					gravity = tntGravity or TNT_GRAVITY
 				else
 					local up = Vector3.new(0, jumpSpeed(), 0)
 					if cannon == mine then
