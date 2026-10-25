@@ -11527,7 +11527,7 @@ run(function()
 			layout.Padding = UDim.new(0, 4)
 			layout.Parent = row
 	
-			newPiece(row, 'Distance', 1)
+			newPiece(row, 'Distance', 2)
 			-- Enchants get their own little row left of the name, where the rank badge used to be.
 			-- Effects stay in the strip above; only the enchantments sit inline here.
 			local enchantRow = Instance.new('Frame')
@@ -11535,7 +11535,7 @@ run(function()
 			enchantRow.BackgroundTransparency = 1
 			enchantRow.AutomaticSize = Enum.AutomaticSize.X
 			enchantRow.Size = UDim2.fromOffset(0, height)
-			enchantRow.LayoutOrder = 2
+			enchantRow.LayoutOrder = 1
 			enchantRow.Visible = false
 			enchantRow.Parent = row
 			local enchantLayout = Instance.new('UIListLayout')
