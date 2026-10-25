@@ -10243,6 +10243,7 @@ run(function()
 	local KitHistory
 	local HistoryCount
 	local ShowTeam, MostPlayed, IconSize, RowPosition, WinTint
+	local Level
 	local showsPlayer
 	
 	--[[
@@ -10438,6 +10439,99 @@ run(function()
 		end)
 	end
 	
+	--[[
+		The player's Bedwars level, from their profile.
+	
+		The level is not on the player or the character - it comes back with the profile the
+		server hands over for RequestProfileData - and the exact field it sits under is not
+		something the game spells out here, so this reads the shapes a level realistically takes
+		rather than one guessed name. If none match but a profile did come back, it prints the
+		profile's keys once, so the real field can be named and added.
+	]]
+	local levelCache, levelWaiting, levelProbed = {}, {}, false
+	
+	local function levelOf(profile)
+		if type(profile) ~= 'table' then return nil end
+		for _, key in {'level', 'Level', 'playerLevel', 'bedwarsLevel', 'accountLevel'} do
+			if type(profile[key]) == 'number' then return math.floor(profile[key]) end
+		end
+		for _, key in {'stats', 'progression', 'levelData', 'profile', 'data', 'player'} do
+			local sub = profile[key]
+			if type(sub) == 'table' and type(sub.level) == 'number' then return math.floor(sub.level) end
+		end
+		return nil
+	end
+	
+	local function fetchLevel(player, callback)
+		local userId = player.UserId
+		local cached = levelCache[userId]
+		if cached ~= nil and cached ~= 'pending' then
+			callback(cached ~= false and cached or nil)
+			return
+		end
+		levelWaiting[userId] = levelWaiting[userId] or {}
+		table.insert(levelWaiting[userId], callback)
+		if cached == 'pending' then return end
+		levelCache[userId] = 'pending'
+	
+		task.spawn(function()
+			local ok, profile = pcall(function()
+				return bedwars.Client:Get('RequestProfileData'):CallServer(player)
+			end)
+			local level = ok and levelOf(profile) or nil
+	
+			if ok and not level and type(profile) == 'table' and not levelProbed then
+				levelProbed = true
+				local keys = {}
+				for key in profile do keys[#keys + 1] = tostring(key) end
+				print('[Vain] KitRender: player level not found; profile keys: ' .. table.concat(keys, ', '))
+			end
+	
+			levelCache[userId] = level or false
+			for _, waiting in levelWaiting[userId] or {} do
+				task.spawn(pcall, waiting, level)
+			end
+			levelWaiting[userId] = nil
+		end)
+	end
+	
+	-- A small level badge in the top-left of a player's card, so their Bedwars level reads at a
+	-- glance next to their kit history.
+	local function drawLevel(card, player)
+		if not card then return end
+		local old = card:FindFirstChild('KitLevel')
+		if old then old:Destroy() end
+		if not (Level and Level.Enabled and player) then return end
+		if not showsPlayer(player) then return end
+	
+		-- Same guard as the history row: the card is only drawn on if it still shows the player
+		-- it was asked for, since cards are reused as the list reorders.
+		card:SetAttribute('KitLevelUser', player.UserId)
+		fetchLevel(player, function(level)
+			if not (card.Parent and KitDisplay.Enabled) then return end
+			if card:GetAttribute('KitLevelUser') ~= player.UserId then return end
+			if not level then return end
+			local existing = card:FindFirstChild('KitLevel')
+			if existing then existing:Destroy() end
+	
+			local label = Instance.new('TextLabel')
+			label.Name = 'KitLevel'
+			label.Position = UDim2.fromScale(0.03, 0.04)
+			label.Size = UDim2.fromScale(0.26, 0.15)
+			label.BackgroundColor3 = Color3.new(0, 0, 0)
+			label.BackgroundTransparency = 0.4
+			label.Text = ' ' .. level .. ' '
+			label.TextColor3 = Color3.fromRGB(255, 215, 90)
+			label.TextScaled = true
+			label.TextXAlignment = Enum.TextXAlignment.Center
+			label.Font = Enum.Font.GothamBold
+			label.ZIndex = 11
+			label.Parent = card
+			Instance.new('UICorner', label).CornerRadius = UDim.new(0.25, 0)
+			KitDisplay:Clean(label)
+		end)
+	end
+	
 	local function getKitMeta(player)
 		local kit = player:GetAttribute('PlayingAsKits') or player:GetAttribute('PlayingAsKit') or 'none'
 		return bedwars.BedwarsKitMeta[kit] or bedwars.BedwarsKitMeta.none or {renderImage = ''}
@@ -10547,6 +10641,7 @@ run(function()
 				KitDisplay:Clean(kitConn)
 				update()
 				drawHistory(v, player)
+				drawLevel(v, player)
 			end
 			bindKit()
 	
@@ -10598,6 +10693,7 @@ run(function()
 				KitDisplay:Clean(kitConn)
 				update()
 				drawHistory(v, player)
+				drawLevel(v, player)
 			end
 			bindKit()
 	
@@ -10786,6 +10882,17 @@ run(function()
 		Name = 'Win Tint',
 		Tooltip = 'Rings each kit green for a win, red for a loss',
 		Darker = true
+	})
+	Level = KitDisplay:CreateToggle({
+		Name = 'Player Level',
+		Tooltip = 'Shows each player\'s Bedwars level on their card',
+		Default = true,
+		Function = function()
+			if KitDisplay.Enabled then
+				KitDisplay:Toggle()
+				KitDisplay:Toggle()
+			end
+		end
 	})
 	IconSize = KitDisplay:CreateSlider({
 		Name = 'Icon Size',
