@@ -562,6 +562,26 @@ local function buildMotion(origin, rootPos, offset, velocity, fall, playerHeight
 		flying = flying and oldest ~= nil and now - oldest.at > 0.25
 	end
 
+	--[[
+		A jump is not flight.
+
+		A remote's replicated vertical velocity can read steady for the few frames a jump is
+		watched - it does not always show the gravity decay a local one would - so a plain jump
+		was taken for flight. Flight is then exempt from the apex cap below and is carried up in
+		a straight line at that speed, so at range the aim sailed a long way over a target who
+		had only jumped and comes back down to a set height. A jump gives itself away: it leaves
+		the ground (a recent takeoff), and it rises no faster than a jump can. Either of those
+		means a jump, so let gravity and the apex cap handle it instead of treating it as flight.
+	]]
+	if flying and fall > 0 then
+		local jumpCeil = (playerJump and playerJump > 0 and playerJump * 1.2) or 55
+		local lastTakeoff = track and track.takeoffs[#track.takeoffs]
+		local recentTakeoff = lastTakeoff and now - lastTakeoff.at < 1.2
+		if recentTakeoff or (velocity.Y > 0 and velocity.Y <= jumpCeil) then
+			flying = false
+		end
+	end
+
 	-- Hopping: seen taking off repeatedly, or flagged by the caller.
 	local hopSpeed, hopEvery
 	if track then
