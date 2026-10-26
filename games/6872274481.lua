@@ -5997,13 +5997,14 @@ run(function()
 						Attacking = false
 						store.KillauraTarget = nil
 					end
-					-- Poll at the update rate even while landing hits, rather than the old
-					-- 0.02-per-target wait which could sit slower than a tick and let an open
-					-- cooldown go uncaught for an extra frame or two. The per-target schedule
-					-- above already paces the actual swings, so checking more often only tightens
-					-- how soon each open slot is used - which is what pulls the rate up to the cap.
-					-- Spam goes flat out at one pass a frame so no open slot is ever left waiting.
-					task.wait(Spam.Enabled and 0 or 1 / UpdateRate.Value)
+					-- While a target is in range, poll every frame (wait 0) so each weapon's own
+					-- cooldown is used the instant it opens rather than up to an update-rate tick
+					-- later - that latency is the whole gap between the drop-safe default and the
+					-- weapon's cap, and closing it costs nothing since the per-target schedule
+					-- above still never swings faster than the weapon allows (so no ghost hits).
+					-- Idle, fall back to the update rate so the target scan is not run every frame
+					-- for nothing. Spam already runs flat out.
+					task.wait((Spam.Enabled or #attacked > 0) and 0 or 1 / UpdateRate.Value)
 				until not Killaura.Enabled
 			else
 				store.KillauraTarget = nil
