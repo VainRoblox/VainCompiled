@@ -5508,7 +5508,6 @@ run(function()
 	local Limit
 	local LegitAura
 	local HitDelay
-	local Spam
 	local IgnoreMilo
 	-- player -> true while they are disguised as a block by the Milo kit. Filled from the
 	-- game's own mimic broadcasts (see the tracker below), so it covers everyone, not just us.
@@ -5874,22 +5873,17 @@ run(function()
 									-- and the target box played while nothing landed. Pace attacks
 									-- per target: the weapon's own attack speed by default, or the
 									-- Hit delay slider when it is set above zero.
-									-- Spam throws a hit at every target every pass with no cooldown, so the
-									-- server accepts one the instant each weapon's own timer opens and none
-									-- is ever missed to scheduling - the most hits that can land, at the cost
-									-- of firing far more requests than land. Without it, the swing is paced:
-									if not Spam.Enabled then
-										if (AttackTimes[v] or 0) > tick() then continue end
-										local delay = HitDelay.Value > 0 and HitDelay.Value or (meta.sword.attackSpeed or 0.5)
-										-- Measured from the actual swing, so the gap between consecutive hits
-										-- is never shorter than the weapon allows. Scheduling from the slot's
-										-- due time instead let a gap now and then dip just under the attack
-										-- speed, and the server drops anything faster than that - which showed
-										-- up as ghost hits that landed on screen and did nothing. A touch of
-										-- latency above the cap is the price of every swing registering; the
-										-- tighter poll below keeps that latency small.
-										AttackTimes[v] = tick() + delay
-									end
+									if (AttackTimes[v] or 0) > tick() then continue end
+									-- A shade under the weapon's own speed on the default, so the rate sits
+									-- nearer 35-36 hits per ten seconds than the ~33 the full attack speed
+									-- plus poll latency leaves. It is measured from the actual swing, so the
+									-- gap is never a scheduling-drift burst; the slight overclock just means
+									-- the swing is ready the moment the weapon's timer opens rather than a
+									-- poll-tick after it, while the update-rate poll's own jitter keeps the
+									-- timing varied instead of landing dead on the cap every time (which is
+									-- what reads as a bot). A manual Hit delay is used exactly as set.
+									local delay = HitDelay.Value > 0 and HitDelay.Value or (meta.sword.attackSpeed or 0.5) * 0.95
+									AttackTimes[v] = tick() + delay
 									-- The swing this asked for is going out, so release AntiMelee to
 									-- bury the root again rather than leaving it surfaced.
 									store.antiMeleeWantAttack = nil
@@ -5997,15 +5991,11 @@ run(function()
 						Attacking = false
 						store.KillauraTarget = nil
 					end
-					-- Poll at the update rate even while landing hits, rather than the old
-					-- 0.02-per-target wait which could sit slower than a tick and let an open
-					-- cooldown go uncaught for an extra frame or two. The per-target schedule
-					-- above already paces the actual swings, so checking more often only tightens
-					-- how soon each open slot is used - which is what pulls the rate up to the cap.
-					-- Not pushed to one pass a frame on purpose: landing every swing at the exact
-					-- cap, dead on time, reads as inhuman and gets flagged. The small tick of slack
-					-- the update rate leaves is what keeps it under that. Spam ignores this.
-					task.wait(Spam.Enabled and 0 or 1 / UpdateRate.Value)
+					-- Poll at the update rate even while landing hits. Not pushed to one pass a
+					-- frame on purpose: that lands every swing dead on the cap, on time, which
+					-- reads as inhuman and gets flagged. The update rate's own jitter is the slack
+					-- that keeps the timing varied while the slight overclock above lifts the rate.
+					task.wait(1 / UpdateRate.Value)
 				until not Killaura.Enabled
 			else
 				store.KillauraTarget = nil
@@ -6314,10 +6304,6 @@ run(function()
 	LegitAura = Killaura:CreateToggle({
 		Name = 'Swing only',
 		Tooltip = 'Only attacks while swinging manually'
-	})
-	Spam = Killaura:CreateToggle({
-		Name = 'Spam Hits',
-		Tooltip = 'Fires a hit every frame with no cooldown to land the most hits possible\nSends far more requests than register, and ignores Hit delay'
 	})
 end)
 
